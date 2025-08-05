@@ -23,18 +23,18 @@ To get started we need a few things. Be prepared to setup the following:
 
 1. **Install Python**: Make sure you have Python installed on your machine. You can download it from [python.org](https://www.python.org/downloads/).
 2. **Install Required Libraries**: You can install the required libraries using pip. Open a terminal and run the following command:
-   ```
+   ```bash
    pip install numpy sounddevice
    ```
 3. **Configure Twitch Integration**: If you want to enable Twitch chat notifications, you'll need to set up the config.py file with your Twitch credentials. 
-    ```
+    ```python
     TWITCH_CHANNEL = "HeroHarmony"
     TWITCH_BOT_USERNAME = "HeroBot"
     TWITCH_OAUTH_TOKEN = "oauth:your_token_here"
     ```
    Replace the placeholders with your actual Twitch channel name, bot username, and OAuth token. You can generate an OAuth token from [Twitch Token Generator](https://twitchtokengenerator.com/). You want to use the client ID to formulate the OAuth token.
 4. **Run the Script**: You can run the script using the following command:
-   ```
+   ```bash
    python live_analysis.py
    ```
    Follow the terminal prompts to enable Twitch alerts and select your audio input device.
@@ -46,29 +46,65 @@ Audio is different for everyone, so I'll explain my setup. I'm using voicemeeter
 
 When you run the live_analysis script, it will list all available audio input devices. Select the one that corresponds to your monitoring device. For me this was listed as "CABLE Output (VB-Audio Virtual Cable)".
 
-# Command Line Arguments
+# Advanced Usage
+
+## Command Line Arguments
 You can skip the interactive prompts by providing command line arguments when running the script. 
 
 Show available audio devices
-```
+```bash
 python live_analysis.py --list-devices
 ```
 
 Use specific audio device and disable Twitch alerts
-```
+```bash
 python live_analysis.py --audio-device 2 --no-twitch
 ```
 
 Enable Twitch alerts with specific audio device
-```
+```bash
 python live_analysis.py --twitch --audio-device 1
 ```
 
-## Command Line Options
+### Command Line Options
 - `--list-devices`: Lists all available audio input devices and exits.
 - `--audio-device DEVICE_ID`: Specifies the audio input device to use by its ID.
 - `--twitch`: Enables Twitch chat notifications.
 - `--no-twitch`: Disables Twitch chat notifications.
+
+## Alert Configuration
+You can configure the alert settings in the `live_analysis.py` file. The following parameters can be adjusted:
+```python
+# Alert configuration
+ALERT_CONFIG = {
+    'detections_for_alert': 6,
+    'alert_cooldown_minutes': 1,
+    'detection_window_seconds': 90,
+    'confidence_threshold': 70,
+    'clean_audio_reset_seconds': 60,
+}
+```
+
+- `detections_for_alert`: Number of detections needed to trigger an alert.
+- `alert_cooldown_minutes`: Minimum time in minutes between alerts.
+- `detection_window_seconds`: After N seconds, the script will reset the detection count.
+- `confidence_threshold`: Minimum confidence percentage for a detection to be counted.
+- `clean_audio_reset_seconds`: Cosmetic use. After N seconds alert message will read as a new detection or ongoing detection.
+
+## Thresholds for Detection Methods
+You can also adjust the thresholds for each detection method in the `live_analysis.py` file.
+These options are largely based on my own testing, otherwise untested.
+```python
+THRESHOLDS = {
+    'silence_ratio': 0.60,         # Only flag if >60% silence (major dropouts)
+    'amplitude_jump': 2.5,         # Much higher - only flag dramatic jumps
+    'envelope_discontinuity': 2.0, # Higher threshold
+    'gap_duration_ms': 100,        # Flag gaps longer than 100ms (significant dropouts)
+    'min_audio_level': 0.005,      # Minimum RMS to even analyze
+    'max_normal_gaps': 2,          # Max gaps allowed in normal audio
+    'suspicious_gap_count': 4,     # Number of gaps that suggests real problems
+}
+```
 
 # In Action
 Running the script will look something like this in the terminal.
@@ -123,6 +159,21 @@ INFO:twitch_chat:💬 Sent: 🟠 MINOR Audio issues detected! 6 glitches in 1.5 
 
 # Detection Methods
 You might have noticed that not all detection methods are enabled. This is because some methods are more prone to false positives, especially in dynamic audio environments like gaming or music streaming. The currently enabled methods have been selected for their balance between sensitivity and specificity in detecting streaming-related audio glitches.
+
+You can toggle detection methods in the `live_analysis.py` file by modifying the `APPROACHES` dictionary. Here's a quick overview of the available detection methods:
+```python
+# Detection approaches - focused on streaming glitches
+APPROACHES = {
+    'silence_gaps': True,           # Dropouts/gaps from streaming
+    'amplitude_jumps': False,       # Sudden level changes
+    'envelope_discontinuity': True, # Audio cuts/breaks
+    'temporal_consistency': False,  # inconsistent volume changes
+    'energy_variance': False,       # changes in overall loudness
+    'zero_crossings': False,        # how often waveform crosses zero
+    'spectral_rolloff': False,      # frequency energy drop-off
+    'spectral_centroid': False,     # center of mass of frequencies
+}
+```
 
 In any case, lets review what each detection method does. The following is a big dump of AI generated explanations - so don't waste too much time reading it all! I'm putting it here for future reference.
 

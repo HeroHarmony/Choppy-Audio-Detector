@@ -1,6 +1,8 @@
 # Choppy-Audio-Detector
 This is a Python-based script that **listens to an audio channel in real-time and detects streaming-related audio glitches**. It will send chat messages to your Twitch channel when it detects these issues.
 
+**Most common use case:** You're streaming remotely from a phone and your audio passes through a PC — typically via OBS, SRT ingest, or Belabox.
+
 I was inspired to create this tool after regularly experiencing audio issues, particularly audio glitches caused by unstable bitrate connections when streaming outdoors. In my pursuit to find a solution, I realized I'm not alone. Small streamers like myself often don't have the chatters to help identify these issues in real-time. Other times chatters may mention issues, but instructions are not clear. It can be very frustrating to find out hours later that your stream had audio issues.
 
 The audio glitches can be described as "robotic," "choppy," "broken,", and "glitchy." 
@@ -14,9 +16,8 @@ The script is largely developed with the help of AI. While I am a software engin
 
 To get started we need a few things. Be prepared to setup the following:
 - Python 3.x
-- Required Python libraries: numpy, sounddevice
 - (Optional) Twitch account and OAuth token for chat integration
-- Have understanding of your audio input devices. If you use Voicemeeter, you're in luck, as I use it too.
+- Have an understanding of your audio input devices. If you use Voicemeeter, you're in luck, as I use it too.
 
 ## Setup
 
@@ -196,7 +197,8 @@ Purpose: Tracks the "center of mass" of the audio’s frequencies — like where
 ### Why it’s disabled:
 Again, too variable during normal gameplay or talking, so it doesn't help reliably detect glitches.
 
-# Buy Me a Coffee
+# Support
+## Buy Me a Coffee
 If this has helped you in any way, consider buying me a coffee! While I essentially built this with AI and played the role of architect and tester, I still had to put in time and effort, recording and analyzing audio samples, dealing with AI's hallucinations, and hopefully making this approachable by streamers from all walks of life.
 
 Like other streamers I use StreamElements for my tipping platform.
@@ -204,3 +206,13 @@ Like other streamers I use StreamElements for my tipping platform.
 [![Tip Me via StreamElements](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://streamelements.com/heroharmony/tip)
 
 You can also show your support by following me on Twitch: [twitch.tv/heroharmony](https://www.twitch.tv/heroharmony)
+
+## Shoutouts 
+- Thank you to the Moblin folks for making IRL streaming much more approachable on iPhone.
+- Cheers to the many IRL streamers who have inspired me, most whom don't know me:
+    - [kiridane](https://www.twitch.tv/kiridane)
+    - [Toronto Tech & Transit (Henry)](https://www.youtube.com/@TorontoTechTransitTV)
+    - [Toxickbunny](https://www.twitch.tv/toxickbunny)
+    - [Johnny Strides](https://www.youtube.com/@JohnnyStrides)
+    - [CookSux](https://www.twitch.tv/cooksux)
+    - [JinnyTTY](https://www.twitch.tv/jinnytty)

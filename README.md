@@ -1,9 +1,9 @@
 # Choppy-Audio-Detector
 This is a Python-based script that **listens to an audio channel in real-time and detects streaming-related audio glitches**. It will send chat messages to your Twitch channel when it detects these issues.
 
-**Most common use case:** You're streaming remotely from a phone and your audio passes through a PC — typically via OBS, SRT ingest, or Belabox.
+**Most common use case:** You're streaming remotely from a mobile phone/device and your audio passes through a computer — typically via OBS, SRT ingest, or Belabox. As long as you can isolate and monitor the audio, you can use this script.
 
-I was inspired to create this tool after regularly experiencing audio issues, particularly audio glitches caused by unstable bitrate connections when streaming outdoors. In my pursuit to find a solution, I realized I'm not alone. Small streamers like myself often don't have the chatters to help identify these issues in real-time. Other times chatters may mention issues, but instructions are not clear. It can be very frustrating to find out hours later that your stream had audio issues.
+I was inspired to create this tool after regularly experiencing audio issues, particularly audio glitches caused by unstable bitrate connections when streaming outdoors. In particular it seems that OBS's "Media Source" is not 100% reliable in playing back SRT (and RTMP?). In my pursuit to find a solution, I realized I'm not alone. Small streamers like myself often don't have the chatters to help identify these issues in real-time. Other times chatters may mention issues, but instructions are not clear. It can be very frustrating to find out hours later that your stream had audio issues.
 
 The audio glitches can be described as "robotic," "choppy," "broken,", and "glitchy." 
 
@@ -50,6 +50,9 @@ Audio is different for everyone, so I'll explain my setup. I'm using voicemeeter
 `Settings > Audio > Advanced > Monitoring Device > Cable Input (VB-Audio Virtual Cable)`
 
 When you run the live_analysis script, it will list all available audio input devices. Select the one that corresponds to your monitoring device. For me this was listed as "CABLE Output (VB-Audio Virtual Cable)".
+
+### Not Only For The Streamer
+I'd like to point out that since this script is designed to monitor audio input, it can be used by users other than the streamer/broadcaster. For example, you could be the moderator of a channel and run this script to monitor the streamer's audio quality. Just be sure to isolate the audio input to the streamer's audio channel. Similiarly, you can test this script with previously recorded audio.
 
 # Advanced Usage
 

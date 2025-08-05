@@ -32,12 +32,17 @@ To get started we need a few things. Be prepared to setup the following:
     TWITCH_BOT_USERNAME = "HeroBot"
     TWITCH_OAUTH_TOKEN = "oauth:your_token_here"
     ```
-   Replace the placeholders with your actual Twitch channel name, bot username, and OAuth token. You can generate an OAuth token from [Twitch Token Generator](https://twitchtokengenerator.com/). You want to use the client ID to formulate the OAuth token.
-4. **Run the Script**: You can run the script using the following command:
+   Replace the placeholders with your actual Twitch channel name, bot username, and the bot's OAuth token. You can generate an OAuth token from [Twitch Token Generator](https://twitchtokengenerator.com/). You want to use the client ID to formulate the OAuth token.
+
+4. **Run the Script**: 
+    Open a terminal and navigate the script directory. 
+    Run the script using the following command:
    ```bash
    python live_analysis.py
    ```
    Follow the terminal prompts to enable Twitch alerts and select your audio input device.
+
+   Skip the interactive prompts by using command line arguments. [See Advanced Usage section below for details.](#advanced-usage)
 5. **That's it!** The script should now be running and monitoring your audio input for glitches.
 
 # Audio Input Device

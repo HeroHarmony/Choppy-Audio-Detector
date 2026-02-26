@@ -86,7 +86,7 @@ You can configure the alert settings in the `live_analysis.py` file. The followi
 # Alert configuration
 ALERT_CONFIG = {
     'detections_for_alert': 6,
-    'alert_cooldown_minutes': 1,
+    'alert_cooldown_ms': 60000,
     'detection_window_seconds': 90,
     'confidence_threshold': 70,
     'clean_audio_reset_seconds': 60,
@@ -94,7 +94,7 @@ ALERT_CONFIG = {
 ```
 
 - `detections_for_alert`: Number of detections needed to trigger an alert.
-- `alert_cooldown_minutes`: Minimum time in minutes between alerts.
+- `alert_cooldown_ms`: Minimum time in milliseconds between alerts.
 - `detection_window_seconds`: After N seconds, the script will reset the detection count.
 - `confidence_threshold`: Minimum confidence percentage for a detection to be counted.
 - `clean_audio_reset_seconds`: Cosmetic use. After N seconds alert message will read as a new detection or ongoing detection.
@@ -139,7 +139,7 @@ Active detection methods:
 Alert Configuration:
   🎯 Detections needed for alert: 6
   ⏱️  Detection window: 90s
-  🔄 Alert cooldown: 1 minutes
+  Alert cooldown: ~1.0 min
   📊 Confidence threshold: 70%
   🔄 Episode reset after: 60s clean audio
  
@@ -148,7 +148,7 @@ Building baseline audio profile...
 ```
 
 Example of detecting glitching audio.
-After 6 recent detections, the script will send a message to Twitch chat. Further detections will be ignored for 1 minute due to the cooldown period.
+After 6 recent detections, the script will send a message to Twitch chat. Further detections will be ignored for 60000 ms due to the cooldown period.
 
 ```
 [20:17:20.626] 🚨 STREAMING GLITCH DETECTED!

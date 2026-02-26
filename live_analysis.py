@@ -50,7 +50,7 @@ APPROACHES = {
 # Alert configuration
 ALERT_CONFIG = {
     'detections_for_alert': 6,      # Number of detections needed to trigger alert
-    'alert_cooldown_minutes': 10,    # Minimum time between alerts
+    'alert_cooldown_ms': 600000,     # Minimum time between alerts (milliseconds)
     'detection_window_seconds': 90, # Time window to count detections in
     'confidence_threshold': 70,     # Minimum confidence for counting detection
     'clean_audio_reset_seconds': 60, # Seconds of clean audio to reset episode
@@ -601,8 +601,9 @@ class BalancedChoppyDetector:
 
         # Check cooldown
         time_since_last_alert = current_time - self.last_alert_time
-        if time_since_last_alert < ALERT_CONFIG['alert_cooldown_minutes'] * 60:
-            cooldown_remaining = ALERT_CONFIG['alert_cooldown_minutes'] * 60 - time_since_last_alert
+        cooldown_seconds = ALERT_CONFIG['alert_cooldown_ms'] / 1000.0
+        if time_since_last_alert < cooldown_seconds:
+            cooldown_remaining = cooldown_seconds - time_since_last_alert
             return False, 0, 0, cooldown_remaining
 
         # Count recent high-confidence detections
@@ -795,9 +796,8 @@ class BalancedChoppyDetector:
             else:
                 # Show why alert wasn't sent
                 if cooldown_remaining > 0:
-                    minutes, seconds = divmod(int(cooldown_remaining), 60)
-                    cooldown_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
-                    print(f"    Alert cooldown active ({cooldown_str} remaining)")
+                    cooldown_minutes = cooldown_remaining / 60.0
+                    print(f"    Alert cooldown active (~{cooldown_minutes:.1f} min remaining)")
                 else:
                     print(f"    Recent detections: {detection_count}/{ALERT_CONFIG['detections_for_alert']} (need {ALERT_CONFIG['detections_for_alert']} for alert)")
             
@@ -829,7 +829,7 @@ class BalancedChoppyDetector:
             f"  Fast-burst alert: {ALERT_CONFIG['fast_alert_burst_detections']} detections in "
             f"{ALERT_CONFIG['fast_alert_window_seconds']}s at >= {ALERT_CONFIG['fast_alert_min_confidence']}%"
         )
-        print(f"  Alert cooldown: {ALERT_CONFIG['alert_cooldown_minutes']} minutes")
+        print(f"  Alert cooldown: ~{ALERT_CONFIG['alert_cooldown_ms'] / 60000.0:.1f} min")
         print(f"  Confidence threshold: {ALERT_CONFIG['confidence_threshold']}%")
         print(f"  De-dup window: {ALERT_CONFIG['event_dedup_seconds']}s")
         print(f"  Episode reset after: {ALERT_CONFIG['clean_audio_reset_seconds']}s clean audio")

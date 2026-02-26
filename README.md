@@ -31,6 +31,7 @@ To get started we need a few things. Be prepared to setup the following:
     TWITCH_CHANNEL = "HeroHarmony"
     TWITCH_BOT_USERNAME = "HeroBot"
     TWITCH_OAUTH_TOKEN = "oauth:your_token_here"
+    ALERT_COOLDOWN_MS = 60000  # Optional
     ```
    Replace the placeholders with your actual Twitch channel name, bot username, and the bot's OAuth token. You can generate an OAuth token from [Twitch Token Generator](https://twitchtokengenerator.com/). You want to use the client ID to formulate the OAuth token.
 

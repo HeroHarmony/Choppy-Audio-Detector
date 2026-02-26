@@ -28,6 +28,34 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+DEFAULT_ALERT_COOLDOWN_MS = 60000
+
+
+def resolve_alert_cooldown_ms():
+    """Load optional ALERT_COOLDOWN_MS from config.py with safe fallback."""
+    try:
+        from config import ALERT_COOLDOWN_MS  # Optional setting
+    except ImportError:
+        return DEFAULT_ALERT_COOLDOWN_MS
+
+    try:
+        cooldown_ms = int(ALERT_COOLDOWN_MS)
+    except (TypeError, ValueError):
+        print(
+            f"[WARN] Invalid ALERT_COOLDOWN_MS value ({ALERT_COOLDOWN_MS!r}); "
+            f"using default {DEFAULT_ALERT_COOLDOWN_MS}"
+        )
+        return DEFAULT_ALERT_COOLDOWN_MS
+
+    if cooldown_ms <= 0:
+        print(
+            f"[WARN] ALERT_COOLDOWN_MS must be > 0 ({cooldown_ms}); "
+            f"using default {DEFAULT_ALERT_COOLDOWN_MS}"
+        )
+        return DEFAULT_ALERT_COOLDOWN_MS
+
+    return cooldown_ms
+
 # Configuration
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 4096  # Larger chunks for stability
@@ -50,7 +78,7 @@ APPROACHES = {
 # Alert configuration
 ALERT_CONFIG = {
     'detections_for_alert': 6,      # Number of detections needed to trigger alert
-    'alert_cooldown_ms': 600000,     # Minimum time between alerts (milliseconds)
+    'alert_cooldown_ms': resolve_alert_cooldown_ms(),  # Minimum time between alerts (milliseconds)
     'detection_window_seconds': 90, # Time window to count detections in
     'confidence_threshold': 70,     # Minimum confidence for counting detection
     'clean_audio_reset_seconds': 60, # Seconds of clean audio to reset episode

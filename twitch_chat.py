@@ -64,7 +64,7 @@ class TwitchBot:
                 if "Welcome" in response or "001" in response or "353" in response:
                     self.connected = True
                     self.reconnect_attempts = 0
-                    logger.info(f"✅ Successfully connected to Twitch as {self.username} in {self.channel}")
+                    logger.info(f"Successfully connected to Twitch as {self.username} in {self.channel}")
                     return True
                 else:
                     logger.warning(f"Unexpected connection response: {response}")
@@ -156,7 +156,7 @@ class TwitchBot:
                     message_bytes = f"PRIVMSG {self.channel} :{message}\r\n".encode('utf-8')
                     self.sock.send(message_bytes)
                     
-                    logger.info(f"💬 Sent: {message}")
+                    logger.info(f"Sent: {message}")
                     return True
                     
             except socket.timeout:
@@ -224,7 +224,7 @@ class TwitchBot:
                 finally:
                     self.sock = None
                     
-            logger.info("🛑 Disconnected from Twitch")
+            logger.info("Disconnected from Twitch")
 
     def __del__(self):
         """Cleanup on object destruction"""

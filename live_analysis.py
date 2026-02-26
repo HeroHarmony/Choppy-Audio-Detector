@@ -13,6 +13,7 @@ from collections import deque
 from datetime import datetime
 import warnings
 import logging
+import math
 warnings.filterwarnings('ignore')
 
 # Import Twitch bot (assuming it's in the same directory)
@@ -48,7 +49,7 @@ APPROACHES = {
 # Alert configuration
 ALERT_CONFIG = {
     'detections_for_alert': 6,      # Number of detections needed to trigger alert
-    'alert_cooldown_minutes': 1,    # Minimum time between alerts
+    'alert_cooldown_minutes': 10,    # Minimum time between alerts
     'detection_window_seconds': 90, # Time window to count detections in
     'confidence_threshold': 70,     # Minimum confidence for counting detection
     'clean_audio_reset_seconds': 60, # Seconds of clean audio to reset episode
@@ -122,6 +123,9 @@ def select_audio_device(device_id=None):
 
 class BalancedChoppyDetector:
     def __init__(self, enable_twitch=True, audio_device=None):
+        self.volume_report_interval_sec = 30
+        self._volume_report_started = False
+        self._last_volume_report_time = 0.0
         self.audio_buffer = deque(maxlen=BUFFER_SIZE)
         self.running = False
         self.lock = threading.Lock()
@@ -162,6 +166,11 @@ class BalancedChoppyDetector:
         if len(self.baseline_stats['rms_history']) < 5:
             return 0.1  # Default assumption
         return np.median(list(self.baseline_stats['rms_history']))
+    
+    def _format_volume(self, rms: float) -> str:
+        """Format RMS as both raw value and dBFS (assuming audio is -1..1 float)."""
+        dbfs = 20.0 * math.log10(rms + 1e-12)
+        return f"RMS={rms:.6f} ({dbfs:.1f} dBFS)"
 
     def silence_gaps_detector(self, audio):
         """Detect actual dropouts/gaps in streaming audio (not normal speech pauses)"""
@@ -544,6 +553,21 @@ class BalancedChoppyDetector:
                     continue
                     
                 audio = np.array(list(self.audio_buffer))
+
+            # --- Volume heartbeat (prints once at start, then every 30 seconds) ---
+            rms_level = float(np.sqrt(np.mean(audio**2)))
+
+            if not self._volume_report_started:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎚️ Detection running. "
+                      f"{self._format_volume(rms_level)} | min_analyze={THRESHOLDS['min_audio_level']}")
+                self._volume_report_started = True
+                self._last_volume_report_time = current_time
+
+            elif (current_time - self._last_volume_report_time) >= self.volume_report_interval_sec:
+                status = "OK" if rms_level >= THRESHOLDS['min_audio_level'] else "quiet"
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎚️ Audio level: "
+                      f"{self._format_volume(rms_level)} [{status}]")
+                self._last_volume_report_time = current_time
                 
             # Analyze audio
             results = self.analyze_audio(audio)

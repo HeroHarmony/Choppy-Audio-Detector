@@ -50,7 +50,12 @@ To get started we need a few things. Be prepared to setup the following:
 Audio is different for everyone, so I'll explain my setup. I'm using voicemeeter to manage my audio devices. I've configured Open Broadcaster Software (OBS) to use one of voicemeeter's virtual inputs, namely Cable Input, as the monitoring device. For this, on OBS go to:
 `Settings > Audio > Advanced > Monitoring Device > Cable Input (VB-Audio Virtual Cable)`
 
-When you run the live_analysis script, it will list all available audio input devices. Select the one that corresponds to your monitoring device. For me this was listed as "CABLE Output (VB-Audio Virtual Cable)".
+When you run the live_analysis script, it will list available audio input/capture devices, not OBS render devices. That means the names can look inverted for virtual cables:
+
+- OBS Monitoring Device: `CABLE Input (VB-Audio Virtual Cable)`
+- Script capture device: `CABLE Output (VB-Audio Virtual Cable)`
+
+Those are the two ends of the same virtual cable. If you monitor to a device that does not expose a paired capture endpoint, the script will not be able to read it directly. In that case, route OBS monitoring through a virtual cable or another device pair that provides an input/capture side.
 
 ### Not Only For The Streamer
 I'd like to point out that since this script is designed to monitor audio input, it can be used by users other than the streamer/broadcaster. For example, you could be the moderator of a channel and run this script to monitor the streamer's audio quality. Just be sure to isolate the audio input to the streamer's audio channel. Similiarly, you can test this script with previously recorded audio.

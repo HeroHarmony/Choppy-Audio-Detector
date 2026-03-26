@@ -110,6 +110,30 @@ THRESHOLDS = {
     'suspicious_gap_count': 4,     # Number of gaps that suggests real problems
 }
 
+def get_hostapi_name(hostapi_index):
+    """Return a readable host API name for a PortAudio device."""
+    try:
+        return sd.query_hostapis(hostapi_index)['name']
+    except Exception:
+        return "Unknown"
+
+def infer_obs_monitoring_device(device_name):
+    """Best-effort hint for the OBS monitoring-device name that feeds this input."""
+    normalized = " ".join(str(device_name).split())
+
+    replacements = (
+        ("CABLE Output", "CABLE Input"),
+        ("Voicemeeter Output", "Voicemeeter Input"),
+        ("Voicemeeter AUX Output", "Voicemeeter AUX Input"),
+        ("Voicemeeter VAIO3 Output", "Voicemeeter VAIO3 Input"),
+    )
+
+    for source, target in replacements:
+        if source in normalized:
+            return normalized.replace(source, target)
+
+    return None
+
 def list_audio_devices():
     """List available audio input devices"""
     devices = sd.query_devices()
@@ -117,13 +141,23 @@ def list_audio_devices():
     
     print("\nAvailable audio input devices:")
     print("-" * 50)
+    print("OBS Monitoring Device is an output/render device.")
+    print("This script records from input/capture devices, so virtual cables often look inverted:")
+    print("  OBS 'CABLE Input' -> script 'CABLE Output'")
+    print()
     
     for i, device in enumerate(devices):
         if device['max_input_channels'] > 0:
             input_devices.append((i, device))
             status = " (default)" if i == sd.default.device[0] else ""
-            print(f"  {len(input_devices)-1}: {device['name']}{status}")
+            hostapi_name = get_hostapi_name(device.get('hostapi'))
+            selection_index = len(input_devices) - 1
+            print(f"  {selection_index}: {device['name']}{status}")
+            print(f"     PortAudio Index: {i}, Host API: {hostapi_name}")
             print(f"     Channels: {device['max_input_channels']}, Sample Rate: {device['default_samplerate']}")
+            obs_hint = infer_obs_monitoring_device(device['name'])
+            if obs_hint:
+                print(f"     OBS Monitoring Device likely appears as: {obs_hint}")
     
     return input_devices
 
@@ -170,7 +204,10 @@ class BalancedChoppyDetector:
         self.volume_report_interval_sec = 10
         self._volume_report_started = False
         self._last_volume_report_time = 0.0
-        self.audio_buffer = deque(maxlen=BUFFER_SIZE)
+        self.sample_rate = int(SAMPLE_RATE)
+        self.stream_channels = 1
+        self.device_info = None
+        self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
         self.running = False
         self.lock = threading.Lock()
         self.audio_device = audio_device
@@ -213,6 +250,39 @@ class BalancedChoppyDetector:
 
     def _timestamp(self):
         return datetime.now().strftime("%H:%M:%S")
+
+    def configure_audio_stream(self):
+        """Use the selected device's native defaults when possible."""
+        self.sample_rate = int(SAMPLE_RATE)
+        self.stream_channels = 1
+        self.device_info = None
+
+        if self.audio_device is None:
+            self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+            return
+
+        try:
+            device_info = sd.query_devices(self.audio_device)
+            self.device_info = device_info
+
+            default_samplerate = device_info.get('default_samplerate')
+            if default_samplerate:
+                self.sample_rate = int(round(float(default_samplerate)))
+
+            max_input_channels = int(device_info.get('max_input_channels', 0) or 0)
+            if max_input_channels <= 0:
+                raise ValueError("Selected device reports no input channels")
+
+            self.stream_channels = 1
+            self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+        except Exception as e:
+            print(
+                f"[{self._timestamp()}] [WARN] Could not load selected device defaults: {e}. "
+                f"Falling back to {SAMPLE_RATE} Hz mono."
+            )
+            self.sample_rate = int(SAMPLE_RATE)
+            self.stream_channels = 1
+            self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
 
     def _start_detection_thread(self):
         if self.detection_thread and self.detection_thread.is_alive():
@@ -342,7 +412,7 @@ class BalancedChoppyDetector:
         gaps = []
         for start, end in zip(gap_starts, gap_ends):
             duration_samples = end - start
-            duration_ms = (duration_samples / SAMPLE_RATE) * 1000
+            duration_ms = (duration_samples / self.sample_rate) * 1000
             gaps.append({
                 'start': start,
                 'end': end,
@@ -480,7 +550,7 @@ class BalancedChoppyDetector:
         if np.max(np.abs(centered)) < 1e-8:
             return False, 0.0, 0.0, modulation_depth, 0.0
 
-        env_sr = SAMPLE_RATE / hop
+        env_sr = self.sample_rate / hop
         spectrum = np.abs(np.fft.rfft(centered))
         freqs = np.fft.rfftfreq(len(centered), d=1.0 / env_sr)
 
@@ -808,7 +878,7 @@ class BalancedChoppyDetector:
                     continue
 
                 with self.lock:
-                    if len(self.audio_buffer) < SAMPLE_RATE:  # Need at least 1 second
+                    if len(self.audio_buffer) < self.sample_rate:  # Need at least 1 second
                         continue
 
                     audio = np.array(list(self.audio_buffer), dtype=np.float32)
@@ -855,9 +925,15 @@ class BalancedChoppyDetector:
                     time_since_callback >= 5.0 and
                     (current_time - self.last_stale_audio_warning_time) >= 10.0
                 ):
+                    device_label = (
+                        self.device_info.get('name')
+                        if isinstance(self.device_info, dict)
+                        else self.audio_device
+                    )
                     print(
                         f"[{self._timestamp()}] [WARN] No fresh audio callback data for "
-                        f"{time_since_callback:.1f}s; stream may be stalled."
+                        f"{time_since_callback:.1f}s; stream may be stalled. "
+                        f"Device={device_label!r}, format={self.sample_rate}Hz/{self.stream_channels}ch"
                     )
                     self.last_stale_audio_warning_time = current_time
 
@@ -982,6 +1058,19 @@ class BalancedChoppyDetector:
         print(f"  Episode reset after: {ALERT_CONFIG['clean_audio_reset_seconds']}s clean audio")
         print(f"  Log low-confidence possible glitches: {ALERT_CONFIG['log_possible_glitches']}")
         print()
+
+        self.configure_audio_stream()
+        if self.device_info is not None:
+            hostapi_name = get_hostapi_name(self.device_info.get('hostapi'))
+            print("Selected Audio Device:")
+            print(f"  Name: {self.device_info.get('name')}")
+            print(f"  Host API: {hostapi_name}")
+            print(f"  Stream Format: {self.sample_rate} Hz, {self.stream_channels} channel")
+            print(
+                f"  Device Capabilities: {self.device_info.get('max_input_channels')} input channels, "
+                f"default {self.device_info.get('default_samplerate')} Hz"
+            )
+            print()
         
         self.running = True
         self.last_audio_callback_time = time_module.time()
@@ -994,8 +1083,8 @@ class BalancedChoppyDetector:
                 try:
                     with sd.InputStream(
                         device=self.audio_device,
-                        samplerate=SAMPLE_RATE,
-                        channels=1,
+                        samplerate=self.sample_rate,
+                        channels=self.stream_channels,
                         blocksize=CHUNK_SIZE,
                         callback=self.audio_callback
                     ):

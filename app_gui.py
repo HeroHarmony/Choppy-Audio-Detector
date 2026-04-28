@@ -306,6 +306,8 @@ class MainWindow(QMainWindow):
         self.build_settings_tab()
         self.build_advanced_tab()
         self.build_console_tab()
+        self._last_tab_index = self.tabs.currentIndex()
+        self.tabs.currentChanged.connect(self.handle_tab_changed)
         self.refresh_devices()
         self.apply_settings_to_controls()
         self.apply_theme()
@@ -418,6 +420,7 @@ class MainWindow(QMainWindow):
 
     def build_templates_tab(self) -> None:
         tab = QWidget()
+        self.templates_tab = tab
         layout = QVBoxLayout(tab)
         self.template_first_minor = QTextEdit()
         self.template_first_moderate = QTextEdit()
@@ -519,6 +522,7 @@ class MainWindow(QMainWindow):
 
     def build_settings_tab(self) -> None:
         tab = QWidget()
+        self.settings_tab = tab
         layout = QVBoxLayout(tab)
         columns = QHBoxLayout()
         group_title_style = "QGroupBox { font-size: 19px; font-weight: 600; }"
@@ -648,6 +652,7 @@ class MainWindow(QMainWindow):
 
     def build_advanced_tab(self) -> None:
         tab = QWidget()
+        self.advanced_tab = tab
         layout = QVBoxLayout(tab)
         layout.setSpacing(10)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -1097,6 +1102,18 @@ class MainWindow(QMainWindow):
             ongoing=self.template_ongoing.toPlainText().strip(),
         )
 
+    def is_templates_dirty(self) -> bool:
+        current = self.collect_templates()
+        saved = self.settings.alert_templates
+        return any(
+            (
+                current.first_minor != saved.first_minor,
+                current.first_moderate != saved.first_moderate,
+                current.first_severe != saved.first_severe,
+                current.ongoing != saved.ongoing,
+            )
+        )
+
     def reset_template_to_default(self, template_key: str) -> None:
         defaults = AlertTemplates()
         if template_key == "first_minor":
@@ -1149,6 +1166,99 @@ class MainWindow(QMainWindow):
         self.restart_meter_preview()
         self.update_meter_display_mode()
         self.append_console("Settings saved.")
+
+    def is_settings_dirty(self) -> bool:
+        commands = self.settings.chat_commands
+        allowed_users = [
+            line.strip().lower()
+            for line in self.allowed_chat_users.toPlainText().splitlines()
+            if line.strip()
+        ]
+        return any(
+            (
+                self.auto_restart_minutes.value() != self.settings.auto_restart_minutes,
+                self.auto_start_monitoring.isChecked() != self.settings.auto_start_monitoring,
+                self.alert_cooldown_ms.value() != self.settings.alert_cooldown_ms,
+                self.twitch_channel.text().strip().lstrip("#") != self.settings.twitch_channel,
+                self.twitch_bot_username.text().strip() != self.settings.twitch_bot_username,
+                self.twitch_oauth_token.text().strip() != self.settings.twitch_oauth_token,
+                self.chat_commands_enabled.isChecked() != commands.chat_commands_enabled,
+                self.start_command.text().strip() != commands.start_command,
+                self.stop_command.text().strip() != commands.stop_command,
+                self.restart_command.text().strip() != commands.restart_command,
+                self.status_command.text().strip() != commands.status_command,
+                self.list_devices_command.text().strip() != commands.list_devices_command,
+                self.switch_device_command_prefix.text().strip() != commands.switch_device_command_prefix,
+                allowed_users != commands.allowed_chat_users,
+                self.send_command_responses.isChecked() != commands.send_command_responses,
+                self.logs_enabled.isChecked() != self.settings.log_settings.logs_enabled,
+                self.keep_preview_while_monitoring.isChecked() != self.settings.keep_preview_while_monitoring,
+                self.smooth_preview_meter.isChecked() != self.settings.smooth_preview_meter,
+                self.preview_meter_fps.value() != self.settings.preview_meter_fps,
+                self.dark_mode_enabled.isChecked() != self.settings.dark_mode_enabled,
+                self.log_directory.text().strip() != self.settings.log_settings.log_directory,
+            )
+        )
+
+    def is_advanced_dirty(self) -> bool:
+        for key, *_ in self.alert_config_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            current = self._get_advanced_widget_value(widget, DEFAULT_ALERT_CONFIG[key])
+            saved = self.settings.advanced_alert_config.get(key, DEFAULT_ALERT_CONFIG[key])
+            if current != saved:
+                return True
+        for key, *_ in self.threshold_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            current = self._get_advanced_widget_value(widget, DEFAULT_THRESHOLDS[key])
+            saved = self.settings.advanced_thresholds.get(key, DEFAULT_THRESHOLDS[key])
+            if current != saved:
+                return True
+        for key, _ in self.methods_schema():
+            widget = self.advanced_widgets.get(f"method:{key}")
+            if widget is None:
+                continue
+            if bool(widget.isChecked()) != bool(self.settings.detection_methods.get(key, DEFAULT_APPROACHES[key])):
+                return True
+        return False
+
+    def handle_tab_changed(self, new_index: int) -> None:
+        previous_index = self._last_tab_index
+        self._last_tab_index = new_index
+        previous_widget = self.tabs.widget(previous_index)
+        if previous_widget is self.settings_tab and self.is_settings_dirty():
+            answer = QMessageBox.question(
+                self,
+                "Unsaved Settings",
+                "You have unsaved changes in Settings. Save now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self.save_all_settings()
+        elif previous_widget is self.templates_tab and self.is_templates_dirty():
+            answer = QMessageBox.question(
+                self,
+                "Unsaved Templates",
+                "You have unsaved changes in Responses. Save now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self.save_templates()
+        elif previous_widget is self.advanced_tab and self.is_advanced_dirty():
+            answer = QMessageBox.question(
+                self,
+                "Unsaved Advanced Changes",
+                "You have unsaved changes in Advanced. Save now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self.save_advanced_settings()
 
     def apply_advanced_to_controls(self) -> None:
         for key, *_ in self.alert_config_schema():

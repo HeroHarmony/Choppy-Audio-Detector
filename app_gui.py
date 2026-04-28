@@ -43,6 +43,7 @@ except ImportError as exc:
 
 from choppy_detector_gui.alert_templates import AlertTemplates
 from choppy_detector_gui.file_logging import AppFileLogger
+from choppy_detector_gui.obs_websocket_service import ObsConnectionConfig, ObsWebSocketService
 from choppy_detector_gui.runtime import DetectorRuntime
 from choppy_detector_gui.settings import (
     AppSettings,
@@ -131,6 +132,7 @@ QScrollBar::handle:vertical {
 
 class RuntimeSignals(QObject):
     event = Signal(str, object)
+    obs_event = Signal(str, object)
 
 
 class ObsLevelMeter(QWidget):
@@ -265,6 +267,7 @@ class MainWindow(QMainWindow):
         self.file_logger = AppFileLogger(self.settings.log_settings)
         self.signals = RuntimeSignals()
         self.signals.event.connect(self.handle_runtime_event)
+        self.signals.obs_event.connect(self.handle_obs_event)
         self.runtime = DetectorRuntime(
             self.settings,
             event_handler=lambda event_type, payload: self.signals.event.emit(event_type, payload),
@@ -276,6 +279,7 @@ class MainWindow(QMainWindow):
             event_handler=lambda event_type, payload: self.signals.event.emit(event_type, payload),
             file_logger=self.file_logger,
         )
+        self.obs_service = ObsWebSocketService()
         self._loading_devices = False
         self._last_audio_level_seen_at: datetime | None = None
         self._monitoring_started_at: datetime | None = None
@@ -305,6 +309,7 @@ class MainWindow(QMainWindow):
         self.build_templates_tab()
         self.build_settings_tab()
         self.build_advanced_tab()
+        self.build_websocket_tab()
         self.build_console_tab()
         self.build_support_tab()
         self._last_tab_index = self.tabs.currentIndex()
@@ -666,6 +671,111 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         self.tabs.addTab(tab, "Support")
 
+    def build_websocket_tab(self) -> None:
+        tab = QWidget()
+        self.websocket_tab = tab
+        root_layout = QVBoxLayout(tab)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        root_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setSpacing(10)
+
+        connection_group = QGroupBox("OBS Connection")
+        connection_form = QFormLayout(connection_group)
+        self.obs_enabled = QCheckBox("Enable OBS WebSocket integration")
+        self.obs_enabled.stateChanged.connect(self.update_obs_controls_enabled)
+        connection_form.addRow("Enabled", self.obs_enabled)
+        self.obs_host = QLineEdit()
+        self.obs_host.setPlaceholderText("127.0.0.1")
+        connection_form.addRow("Host", self.obs_host)
+        self.obs_port = QSpinBox()
+        self.obs_port.setRange(1, 65535)
+        connection_form.addRow("Port", self.obs_port)
+        self.obs_password = QLineEdit()
+        self.obs_password.setEchoMode(QLineEdit.Password)
+        self.obs_password.setPlaceholderText("OBS WebSocket password")
+        connection_form.addRow("Password", self.obs_password)
+        self.obs_status = QLabel("Disconnected")
+        self.obs_status.setStyleSheet("color: #ff9c4a; font-weight: 700;")
+        connection_form.addRow("Status", self.obs_status)
+
+        connection_buttons = QHBoxLayout()
+        self.obs_connect_button = QPushButton("Connect")
+        self.obs_disconnect_button = QPushButton("Disconnect")
+        self.obs_test_button = QPushButton("Test OBS Connection")
+        self.obs_connect_button.clicked.connect(self.connect_obs)
+        self.obs_disconnect_button.clicked.connect(self.disconnect_obs)
+        self.obs_test_button.clicked.connect(self.test_obs_connection)
+        connection_buttons.addWidget(self.obs_connect_button)
+        connection_buttons.addWidget(self.obs_disconnect_button)
+        connection_buttons.addWidget(self.obs_test_button)
+        connection_form.addRow("", self._wrap_layout(connection_buttons))
+
+        target_group = QGroupBox("Target Source")
+        target_form = QFormLayout(target_group)
+        self.obs_target_source = QComboBox()
+        self.obs_target_source.setEditable(False)
+        self.obs_refresh_sources_button = QPushButton("Refresh Sources")
+        self.obs_refresh_sources_button.clicked.connect(self.refresh_obs_sources)
+        source_row = QHBoxLayout()
+        source_row.addWidget(self.obs_target_source, 1)
+        source_row.addWidget(self.obs_refresh_sources_button)
+        target_form.addRow("Source", self._wrap_layout(source_row))
+
+        automation_group = QGroupBox("Automation")
+        automation_form = QFormLayout(automation_group)
+        self.obs_auto_refresh_enabled = QCheckBox("Auto refresh on detected issues")
+        automation_form.addRow("Auto refresh", self.obs_auto_refresh_enabled)
+        self.obs_auto_refresh_min_severity = QComboBox()
+        self.obs_auto_refresh_min_severity.addItems(["minor", "moderate", "severe"])
+        self.obs_auto_refresh_min_severity.setMinimumContentsLength(10)
+        self.obs_auto_refresh_min_severity.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.obs_auto_refresh_min_severity.setMinimumWidth(140)
+        automation_form.addRow("Min severity", self.obs_auto_refresh_min_severity)
+        self.obs_auto_refresh_cooldown_sec = QSpinBox()
+        self.obs_auto_refresh_cooldown_sec.setRange(0, 86400)
+        self.obs_auto_refresh_cooldown_sec.setSuffix(" sec")
+        automation_form.addRow("Cooldown", self.obs_auto_refresh_cooldown_sec)
+        self.obs_refresh_off_on_delay_ms = QSpinBox()
+        self.obs_refresh_off_on_delay_ms.setRange(0, 10000)
+        self.obs_refresh_off_on_delay_ms.setSingleStep(50)
+        self.obs_refresh_off_on_delay_ms.setSuffix(" ms")
+        automation_form.addRow("Off/on delay", self.obs_refresh_off_on_delay_ms)
+
+        actions_group = QGroupBox("Actions")
+        actions_layout = QVBoxLayout(actions_group)
+        self.obs_refresh_now_button = QPushButton("Refresh Source Now")
+        self.obs_refresh_now_button.clicked.connect(self.refresh_obs_source_now)
+        self.obs_save_button = QPushButton("Save WebSocket Settings")
+        self.obs_save_button.clicked.connect(self.save_obs_settings)
+        actions_layout.addWidget(self.obs_refresh_now_button)
+        actions_layout.addWidget(self.obs_save_button)
+
+        if not self.obs_service.available:
+            warning = QLabel("obsws-python is not installed. Install dependencies to enable OBS controls.")
+            warning.setStyleSheet("color: #f0c04a;")
+            layout.addWidget(warning)
+
+        layout.addWidget(connection_group)
+        layout.addWidget(target_group)
+        layout.addWidget(automation_group)
+        layout.addWidget(actions_group)
+        layout.addStretch(1)
+        self.tabs.addTab(tab, "WebSocket")
+
+    def _wrap_layout(self, inner_layout: QHBoxLayout) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setLayout(inner_layout)
+        return wrapper
+
     def build_console_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -909,10 +1019,12 @@ class MainWindow(QMainWindow):
         self.preview_meter_fps.setValue(self.settings.preview_meter_fps)
         self.dark_mode_enabled.setChecked(self.settings.dark_mode_enabled)
         self.log_directory.setText(self.settings.log_settings.log_directory)
+        self.apply_obs_settings_to_controls()
         self.apply_advanced_to_controls()
         self.refresh_channel_options()
         self.update_meter_refresh_timer()
         self.update_twitch_status_from_settings()
+        self.update_obs_controls_enabled()
 
     def apply_theme(self) -> None:
         app = QApplication.instance()
@@ -1202,6 +1314,7 @@ class MainWindow(QMainWindow):
         self.settings.preview_meter_fps = self.preview_meter_fps.value()
         self.settings.dark_mode_enabled = self.dark_mode_enabled.isChecked()
         self.settings.log_settings.log_directory = self.log_directory.text().strip()
+        self.collect_obs_from_controls()
         self.collect_advanced_from_controls()
         self.file_logger.settings = self.settings.log_settings
         save_settings(self.settings)
@@ -1244,6 +1357,57 @@ class MainWindow(QMainWindow):
                 self.preview_meter_fps.value() != self.settings.preview_meter_fps,
                 self.dark_mode_enabled.isChecked() != self.settings.dark_mode_enabled,
                 self.log_directory.text().strip() != self.settings.log_settings.log_directory,
+            )
+        )
+
+    def apply_obs_settings_to_controls(self) -> None:
+        obs_settings = self.settings.obs_websocket
+        self.obs_enabled.setChecked(obs_settings.enabled)
+        self.obs_host.setText(obs_settings.host)
+        self.obs_port.setValue(obs_settings.port)
+        self.obs_password.setText(obs_settings.password)
+        self.obs_auto_refresh_enabled.setChecked(obs_settings.auto_refresh_enabled)
+        idx = self.obs_auto_refresh_min_severity.findText(obs_settings.auto_refresh_min_severity)
+        self.obs_auto_refresh_min_severity.setCurrentIndex(max(0, idx))
+        self.obs_auto_refresh_cooldown_sec.setValue(obs_settings.auto_refresh_cooldown_sec)
+        self.obs_refresh_off_on_delay_ms.setValue(obs_settings.refresh_off_on_delay_ms)
+        self.refresh_obs_sources()
+        self.update_obs_controls_enabled()
+
+    def collect_obs_from_controls(self) -> None:
+        obs_settings = self.settings.obs_websocket
+        obs_settings.enabled = self.obs_enabled.isChecked()
+        obs_settings.host = self.obs_host.text().strip()
+        obs_settings.port = self.obs_port.value()
+        obs_settings.password = self.obs_password.text()
+        obs_settings.auto_refresh_enabled = self.obs_auto_refresh_enabled.isChecked()
+        obs_settings.auto_refresh_min_severity = self.obs_auto_refresh_min_severity.currentText().strip().lower()
+        obs_settings.auto_refresh_cooldown_sec = self.obs_auto_refresh_cooldown_sec.value()
+        obs_settings.refresh_off_on_delay_ms = self.obs_refresh_off_on_delay_ms.value()
+        selected_source = self.obs_target_source.currentText().strip()
+        if selected_source:
+            obs_settings.target_source = selected_source
+
+    def save_obs_settings(self) -> None:
+        self.collect_obs_from_controls()
+        save_settings(self.settings)
+        self.append_console("WebSocket settings saved.")
+        self.update_obs_controls_enabled()
+
+    def is_websocket_dirty(self) -> bool:
+        obs_settings = self.settings.obs_websocket
+        selected_source = self.obs_target_source.currentText().strip()
+        return any(
+            (
+                self.obs_enabled.isChecked() != obs_settings.enabled,
+                self.obs_host.text().strip() != obs_settings.host,
+                self.obs_port.value() != obs_settings.port,
+                self.obs_password.text() != obs_settings.password,
+                self.obs_auto_refresh_enabled.isChecked() != obs_settings.auto_refresh_enabled,
+                self.obs_auto_refresh_min_severity.currentText().strip().lower() != obs_settings.auto_refresh_min_severity,
+                self.obs_auto_refresh_cooldown_sec.value() != obs_settings.auto_refresh_cooldown_sec,
+                self.obs_refresh_off_on_delay_ms.value() != obs_settings.refresh_off_on_delay_ms,
+                selected_source != obs_settings.target_source,
             )
         )
 
@@ -1306,6 +1470,189 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.Yes:
                 self.save_advanced_settings()
+        elif previous_widget is getattr(self, "websocket_tab", None) and self.is_websocket_dirty():
+            answer = QMessageBox.question(
+                self,
+                "Unsaved WebSocket Changes",
+                "You have unsaved changes in WebSocket. Save now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self.save_obs_settings()
+
+    def set_obs_status(self, label: str, color_hex: str) -> None:
+        self.obs_status.setText(label)
+        self.obs_status.setStyleSheet(f"color: {color_hex}; font-weight: 700;")
+
+    def connect_obs(self) -> None:
+        if not self.obs_enabled.isChecked():
+            QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
+            return
+        self.collect_obs_from_controls()
+        cfg = ObsConnectionConfig(
+            host=self.settings.obs_websocket.host,
+            port=self.settings.obs_websocket.port,
+            password=self.settings.obs_websocket.password,
+        )
+        self.set_obs_status("Connecting", "#4aa3ff")
+        self.set_obs_busy(True)
+        self._run_obs_task("connect", lambda: self.obs_service.connect(cfg))
+
+    def test_obs_connection(self) -> None:
+        if not self.obs_enabled.isChecked():
+            QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
+            return
+        self.collect_obs_from_controls()
+        cfg = ObsConnectionConfig(
+            host=self.settings.obs_websocket.host,
+            port=self.settings.obs_websocket.port,
+            password=self.settings.obs_websocket.password,
+        )
+        self.set_obs_status("Testing", "#4aa3ff")
+        self.set_obs_busy(True)
+
+        def _test_once() -> tuple[bool, str]:
+            temp = ObsWebSocketService()
+            ok, message = temp.connect(cfg)
+            if ok:
+                temp.disconnect()
+                return True, f"Connection test successful to {cfg.host}:{cfg.port} (test socket closed)."
+            return False, message
+
+        self._run_obs_task("test", _test_once)
+
+    def disconnect_obs(self) -> None:
+        self.obs_service.disconnect()
+        self.set_obs_status("Disconnected", "#ff9c4a")
+        self.append_console("Disconnected from OBS WebSocket.")
+        self.update_obs_controls_enabled()
+
+    def refresh_obs_sources(self) -> None:
+        selected_before = self.obs_target_source.currentText().strip() or self.settings.obs_websocket.target_source
+        self.obs_target_source.blockSignals(True)
+        self.obs_target_source.clear()
+        sources = self.obs_service.list_sources()
+        if sources:
+            self.obs_target_source.addItems(sources)
+            idx = self.obs_target_source.findText(selected_before)
+            self.obs_target_source.setCurrentIndex(max(0, idx))
+            self.obs_refresh_now_button.setEnabled(True)
+            self.set_obs_status("Connected", "#3fcf5e")
+        else:
+            if selected_before:
+                self.obs_target_source.addItem(selected_before)
+                self.obs_target_source.setCurrentIndex(0)
+            self.obs_refresh_now_button.setEnabled(bool(selected_before))
+        self.obs_target_source.blockSignals(False)
+        self.update_obs_controls_enabled()
+
+    def refresh_obs_source_now(self) -> None:
+        if not self.obs_enabled.isChecked():
+            QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
+            return
+        source = self.obs_target_source.currentText().strip()
+        if not source:
+            QMessageBox.warning(self, "No Source Selected", "Choose an OBS source first.")
+            return
+        self.set_obs_status("Refreshing", "#4aa3ff")
+        self.set_obs_busy(True)
+        self._run_obs_task(
+            "refresh",
+            lambda: self.obs_service.refresh_source(
+                source_name=source,
+                off_on_delay_ms=self.obs_refresh_off_on_delay_ms.value(),
+            ),
+        )
+
+    def set_obs_busy(self, busy: bool) -> None:
+        self.obs_connect_button.setEnabled(not busy)
+        self.obs_disconnect_button.setEnabled(not busy)
+        self.obs_test_button.setEnabled(not busy)
+        self.obs_refresh_now_button.setEnabled(not busy and bool(self.obs_target_source.currentText().strip()))
+        self.obs_refresh_sources_button.setEnabled(not busy)
+
+    def update_obs_controls_enabled(self) -> None:
+        enabled = self.obs_enabled.isChecked()
+        widgets = (
+            self.obs_host,
+            self.obs_port,
+            self.obs_password,
+            self.obs_connect_button,
+            self.obs_disconnect_button,
+            self.obs_test_button,
+            self.obs_target_source,
+            self.obs_refresh_sources_button,
+            self.obs_refresh_now_button,
+            self.obs_auto_refresh_enabled,
+            self.obs_auto_refresh_min_severity,
+            self.obs_auto_refresh_cooldown_sec,
+            self.obs_refresh_off_on_delay_ms,
+            self.obs_save_button,
+        )
+        for widget in widgets:
+            widget.setEnabled(enabled)
+        if not enabled:
+            self.set_obs_status("Disabled", "#8f8f8f")
+            return
+        if self.obs_service.is_connected:
+            self.set_obs_status("Connected", "#3fcf5e")
+        else:
+            self.set_obs_status("Disconnected", "#ff9c4a")
+        # Refresh button should require a selected source.
+        if enabled:
+            self.obs_refresh_now_button.setEnabled(bool(self.obs_target_source.currentText().strip()))
+
+    def _run_obs_task(self, action: str, fn) -> None:
+        def worker() -> None:
+            try:
+                ok, message = fn()
+            except Exception as exc:
+                ok, message = False, str(exc)
+            self.signals.obs_event.emit(action, {"ok": ok, "message": message})
+
+        threading.Thread(target=worker, name=f"obs-{action}-worker", daemon=True).start()
+
+    def handle_obs_event(self, action: str, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        ok = bool(data.get("ok", False))
+        message = str(data.get("message", ""))
+        self.set_obs_busy(False)
+
+        if action == "connect":
+            if ok:
+                self.set_obs_status("Connected", "#3fcf5e")
+                self.append_console(message)
+                self.refresh_obs_sources()
+            else:
+                self.set_obs_status("Error", "#ff6a6a")
+                QMessageBox.warning(self, "OBS Connection Failed", message)
+                self.append_console(message)
+            return
+
+        if action == "test":
+            if ok:
+                self.set_obs_status("Test OK", "#3fcf5e")
+                QMessageBox.information(self, "OBS Connection Test", message)
+                self.append_console(message)
+            else:
+                self.set_obs_status("Test Failed", "#ff6a6a")
+                QMessageBox.warning(self, "OBS Connection Test Failed", message)
+                self.append_console(message)
+            self.update_obs_controls_enabled()
+            return
+
+        if action == "refresh":
+            if ok:
+                self.set_obs_status("Connected", "#3fcf5e")
+                self.append_console(message)
+                self.append_event(message)
+            else:
+                self.set_obs_status("Error", "#ff6a6a")
+                QMessageBox.warning(self, "OBS Refresh Failed", message)
+                self.append_console(message)
+            self.update_obs_controls_enabled()
+            return
 
     def apply_advanced_to_controls(self) -> None:
         for key, *_ in self.alert_config_schema():
@@ -1515,6 +1862,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self.stop_meter_preview()
         self.command_service.stop()
+        self.obs_service.disconnect()
         self.runtime.stop(source="gui-close")
         super().closeEvent(event)
 

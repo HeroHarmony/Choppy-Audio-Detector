@@ -696,6 +696,8 @@ class MainWindow(QMainWindow):
 
         connection_group = QGroupBox("OBS Connection")
         connection_form = QFormLayout(connection_group)
+        connection_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        connection_form.setFormAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.obs_enabled = QCheckBox("Enable OBS WebSocket integration")
         self.obs_enabled.stateChanged.connect(self.update_obs_controls_enabled)
         connection_form.addRow("Enabled", self.obs_enabled)
@@ -727,6 +729,8 @@ class MainWindow(QMainWindow):
 
         target_group = QGroupBox("Target Source")
         target_form = QFormLayout(target_group)
+        target_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        target_form.setFormAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.obs_target_scene = QComboBox()
         self.obs_target_scene.setEditable(False)
         self.obs_refresh_scenes_button = QPushButton("Refresh Scenes")
@@ -734,7 +738,9 @@ class MainWindow(QMainWindow):
         scene_row = QHBoxLayout()
         scene_row.addWidget(self.obs_target_scene, 1)
         scene_row.addWidget(self.obs_refresh_scenes_button)
-        target_form.addRow("Scene (optional)", self._wrap_layout(scene_row))
+        scene_field = self._wrap_layout(scene_row)
+        scene_field.setToolTip("Optional. Leave as 'All Scenes' to search all scenes.")
+        target_form.addRow("Scene", scene_field)
         self.obs_target_source = QComboBox()
         self.obs_target_source.setEditable(False)
         self.obs_refresh_sources_button = QPushButton("Refresh Sources")
@@ -746,6 +752,8 @@ class MainWindow(QMainWindow):
 
         automation_group = QGroupBox("Automation")
         automation_form = QFormLayout(automation_group)
+        automation_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        automation_form.setFormAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.obs_auto_refresh_enabled = QCheckBox("Auto refresh on detected issues")
         automation_form.addRow("Auto refresh", self.obs_auto_refresh_enabled)
         self.obs_auto_refresh_min_severity = QComboBox()
@@ -786,6 +794,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(tab, "WebSocket")
 
     def _wrap_layout(self, inner_layout: QHBoxLayout) -> QWidget:
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.setSpacing(8)
         wrapper = QWidget()
         wrapper.setLayout(inner_layout)
         return wrapper

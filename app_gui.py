@@ -844,6 +844,8 @@ class MainWindow(QMainWindow):
             ("log_possible_glitches", "Log lower-confidence possible glitches.", "bool", 0, 1, 1),
             ("possible_log_min_confidence", "Minimum confidence for possible glitch logging.", "float", 0.0, 1.0, 0.01),
             ("possible_log_interval_seconds", "Minimum seconds between possible glitch logs.", "float", 0.0, 60.0, 0.5),
+            ("max_alert_age_seconds", "Drop queued alerts older than this age.", "float", 1.0, 120.0, 0.5),
+            ("max_alert_send_window_seconds", "Max send+retry window before giving up.", "float", 0.5, 60.0, 0.5),
         )
 
     def threshold_schema(self):

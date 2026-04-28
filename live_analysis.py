@@ -100,6 +100,8 @@ ALERT_CONFIG = {
     'log_possible_glitches': True,       # Show occasional low-confidence hints
     'possible_log_min_confidence': 0.70, # Only log stronger low-confidence hits
     'possible_log_interval_seconds': 10.0,# Throttle repeated "possible" logs
+    'max_alert_age_seconds': 15.0,       # Drop stale queued alerts
+    'max_alert_send_window_seconds': 8.0,# Give up on sending if retries exceed this window
 }
 
 # More reasonable thresholds for streaming glitch detection
@@ -264,8 +266,6 @@ class BalancedChoppyDetector:
         self.alert_sender_thread = None
         self.twitch_connection_thread = None
         self.alert_queue_drops = 0
-        self.max_alert_age_seconds = 15.0
-        self.max_alert_send_window_seconds = 8.0
 
     def emit_event(self, event_type, **payload):
         if self.event_callback:
@@ -390,21 +390,22 @@ class BalancedChoppyDetector:
             try:
                 queued_at = float(payload.get('queued_at', time_module.time()))
                 age_seconds = max(0.0, time_module.time() - queued_at)
-                if age_seconds > self.max_alert_age_seconds:
+                max_alert_age_seconds = float(ALERT_CONFIG.get('max_alert_age_seconds', 15.0))
+                if age_seconds > max_alert_age_seconds:
                     print(
                         f"[{self._timestamp()}] [WARN] Dropping stale Twitch alert "
-                        f"(age={age_seconds:.1f}s > {self.max_alert_age_seconds:.1f}s)"
+                        f"(age={age_seconds:.1f}s > {max_alert_age_seconds:.1f}s)"
                     )
                     self.emit_event(
                         "alert.dropped_stale",
                         age_seconds=round(age_seconds, 2),
-                        max_age_seconds=self.max_alert_age_seconds,
+                        max_age_seconds=max_alert_age_seconds,
                     )
                     self.log_file_event(
                         "warn",
                         "alert.dropped_stale",
                         age_seconds=round(age_seconds, 2),
-                        max_age_seconds=self.max_alert_age_seconds,
+                        max_age_seconds=max_alert_age_seconds,
                     )
                     continue
                 self.send_twitch_alert(
@@ -852,28 +853,30 @@ class BalancedChoppyDetector:
 
             if queued_at is not None:
                 age_seconds = max(0.0, time_module.time() - float(queued_at))
-                if age_seconds > self.max_alert_age_seconds:
+                max_alert_age_seconds = float(ALERT_CONFIG.get('max_alert_age_seconds', 15.0))
+                if age_seconds > max_alert_age_seconds:
                     print(
                         f"[{self._timestamp()}] [WARN] Skipping stale Twitch alert before send "
-                        f"(age={age_seconds:.1f}s > {self.max_alert_age_seconds:.1f}s)"
+                        f"(age={age_seconds:.1f}s > {max_alert_age_seconds:.1f}s)"
                     )
                     self.emit_event(
                         "alert.dropped_stale",
                         age_seconds=round(age_seconds, 2),
-                        max_age_seconds=self.max_alert_age_seconds,
+                        max_age_seconds=max_alert_age_seconds,
                     )
                     self.log_file_event(
                         "warn",
                         "alert.dropped_stale",
                         age_seconds=round(age_seconds, 2),
-                        max_age_seconds=self.max_alert_age_seconds,
+                        max_age_seconds=max_alert_age_seconds,
                     )
                     return False
 
             # Send to chat with a hard cutoff so stale alerts do not linger in retries.
+            max_alert_send_window_seconds = float(ALERT_CONFIG.get('max_alert_send_window_seconds', 8.0))
             success = self.twitch_bot.send_message(
                 message,
-                max_total_seconds=self.max_alert_send_window_seconds,
+                max_total_seconds=max_alert_send_window_seconds,
             )
             if success:
                 self.total_alerts_sent += 1

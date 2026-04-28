@@ -106,6 +106,9 @@ class ObsWebSocketService:
             return []
 
     def refresh_source(self, source_name: str, off_on_delay_ms: int = 500) -> tuple[bool, str]:
+        return self.refresh_source_in_scene(source_name=source_name, scene_name="", off_on_delay_ms=off_on_delay_ms)
+
+    def refresh_source_in_scene(self, source_name: str, scene_name: str = "", off_on_delay_ms: int = 500) -> tuple[bool, str]:
         with self._lock:
             client = self._client
             connected = self._connected
@@ -113,6 +116,7 @@ class ObsWebSocketService:
             return False, "OBS is not connected."
 
         source_name = str(source_name).strip()
+        scene_name = str(scene_name).strip()
         if not source_name:
             return False, "No OBS source selected."
 
@@ -121,7 +125,8 @@ class ObsWebSocketService:
         # Preferred path for this app: toggle scene items off then on so delay is honored.
         try:
             toggled = 0
-            for scene in self.list_scenes():
+            scene_candidates = [scene_name] if scene_name else self.list_scenes()
+            for scene in scene_candidates:
                 items = client.get_scene_item_list(scene).scene_items
                 for item in items:
                     if str(item.get("sourceName", "")).strip() != source_name:
@@ -137,7 +142,8 @@ class ObsWebSocketService:
                 delay_sec = delay_ms / 1000.0
                 return True, (
                     f"Refreshed source '{source_name}' by toggling {toggled} scene item(s) "
-                    f"with {delay_sec:.2f}s off/on delay."
+                    f"with {delay_sec:.2f}s off/on delay"
+                    + (f" in scene '{scene_name}'." if scene_name else ".")
                 )
         except Exception:
             # Continue to media restart fallback below.

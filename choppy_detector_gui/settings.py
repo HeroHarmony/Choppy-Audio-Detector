@@ -123,6 +123,7 @@ class ObsWebSocketSettings:
     port: int = 4455
     password: str = ""
     target_source: str = ""
+    target_scene: str = ""
     auto_refresh_enabled: bool = False
     auto_refresh_min_severity: str = "severe"
     auto_refresh_cooldown_sec: int = 300
@@ -138,6 +139,7 @@ class ObsWebSocketSettings:
             port=int(data.get("port") or 4455),
             password=str(data.get("password") or ""),
             target_source=str(data.get("target_source") or ""),
+            target_scene=str(data.get("target_scene") or ""),
             auto_refresh_enabled=bool(data.get("auto_refresh_enabled", False)),
             auto_refresh_min_severity=str(data.get("auto_refresh_min_severity") or "severe").strip().lower(),
             auto_refresh_cooldown_sec=int(data.get("auto_refresh_cooldown_sec") or 300),

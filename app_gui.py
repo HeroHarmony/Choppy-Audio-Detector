@@ -307,6 +307,10 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
+        self.global_twitch_status_badge = QLabel("Twitch: Idle")
+        self.global_obs_status_badge = QLabel("OBS: Disconnected")
+        self.statusBar().addPermanentWidget(self.global_twitch_status_badge)
+        self.statusBar().addPermanentWidget(self.global_obs_status_badge)
         self.build_main_tab()
         self.build_templates_tab()
         self.build_settings_tab()
@@ -723,6 +727,14 @@ class MainWindow(QMainWindow):
 
         target_group = QGroupBox("Target Source")
         target_form = QFormLayout(target_group)
+        self.obs_target_scene = QComboBox()
+        self.obs_target_scene.setEditable(False)
+        self.obs_refresh_scenes_button = QPushButton("Refresh Scenes")
+        self.obs_refresh_scenes_button.clicked.connect(self.refresh_obs_scenes)
+        scene_row = QHBoxLayout()
+        scene_row.addWidget(self.obs_target_scene, 1)
+        scene_row.addWidget(self.obs_refresh_scenes_button)
+        target_form.addRow("Scene (optional)", self._wrap_layout(scene_row))
         self.obs_target_source = QComboBox()
         self.obs_target_source.setEditable(False)
         self.obs_refresh_sources_button = QPushButton("Refresh Sources")
@@ -1042,6 +1054,11 @@ class MainWindow(QMainWindow):
     def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
         self.twitch_status_badge.setText(f"Twitch: {label}")
         self.twitch_status_badge.setStyleSheet(
+            f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"
+            " border-radius: 8px; padding: 2px 8px;"
+        )
+        self.global_twitch_status_badge.setText(f"Twitch: {label}")
+        self.global_twitch_status_badge.setStyleSheet(
             f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"
             " border-radius: 8px; padding: 2px 8px;"
         )
@@ -1373,6 +1390,11 @@ class MainWindow(QMainWindow):
         self.obs_auto_refresh_min_severity.setCurrentIndex(max(0, idx))
         self.obs_auto_refresh_cooldown_sec.setValue(obs_settings.auto_refresh_cooldown_sec)
         self.obs_refresh_off_on_delay_ms.setValue(obs_settings.refresh_off_on_delay_ms)
+        self.refresh_obs_scenes()
+        if obs_settings.target_scene:
+            idx_scene = self.obs_target_scene.findText(obs_settings.target_scene)
+            if idx_scene >= 0:
+                self.obs_target_scene.setCurrentIndex(idx_scene)
         self.refresh_obs_sources()
         self.update_obs_controls_enabled()
 
@@ -1386,6 +1408,8 @@ class MainWindow(QMainWindow):
         obs_settings.auto_refresh_min_severity = self.obs_auto_refresh_min_severity.currentText().strip().lower()
         obs_settings.auto_refresh_cooldown_sec = self.obs_auto_refresh_cooldown_sec.value()
         obs_settings.refresh_off_on_delay_ms = self.obs_refresh_off_on_delay_ms.value()
+        scene_value = self.obs_target_scene.currentText().strip()
+        obs_settings.target_scene = "" if scene_value == "All Scenes" else scene_value
         selected_source = self.obs_target_source.currentText().strip()
         if selected_source:
             obs_settings.target_source = selected_source
@@ -1399,6 +1423,8 @@ class MainWindow(QMainWindow):
     def is_websocket_dirty(self) -> bool:
         obs_settings = self.settings.obs_websocket
         selected_source = self.obs_target_source.currentText().strip()
+        selected_scene = self.obs_target_scene.currentText().strip()
+        normalized_scene = "" if selected_scene == "All Scenes" else selected_scene
         return any(
             (
                 self.obs_enabled.isChecked() != obs_settings.enabled,
@@ -1409,6 +1435,7 @@ class MainWindow(QMainWindow):
                 self.obs_auto_refresh_min_severity.currentText().strip().lower() != obs_settings.auto_refresh_min_severity,
                 self.obs_auto_refresh_cooldown_sec.value() != obs_settings.auto_refresh_cooldown_sec,
                 self.obs_refresh_off_on_delay_ms.value() != obs_settings.refresh_off_on_delay_ms,
+                normalized_scene != obs_settings.target_scene,
                 selected_source != obs_settings.target_source,
             )
         )
@@ -1486,6 +1513,11 @@ class MainWindow(QMainWindow):
     def set_obs_status(self, label: str, color_hex: str) -> None:
         self.obs_status.setText(label)
         self.obs_status.setStyleSheet(f"color: {color_hex}; font-weight: 700;")
+        self.global_obs_status_badge.setText(f"OBS: {label}")
+        self.global_obs_status_badge.setStyleSheet(
+            f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"
+            " border-radius: 8px; padding: 2px 8px;"
+        )
 
     def connect_obs(self) -> None:
         if not self.obs_enabled.isChecked():
@@ -1530,8 +1562,22 @@ class MainWindow(QMainWindow):
         self.append_console("Disconnected from OBS WebSocket.")
         self.update_obs_controls_enabled()
 
+    def refresh_obs_scenes(self) -> None:
+        selected_before = self.obs_target_scene.currentText().strip() or self.settings.obs_websocket.target_scene
+        self.obs_target_scene.blockSignals(True)
+        self.obs_target_scene.clear()
+        self.obs_target_scene.addItem("All Scenes")
+        scenes = self.obs_service.list_scenes()
+        if scenes:
+            self.obs_target_scene.addItems(scenes)
+            idx = self.obs_target_scene.findText(selected_before)
+            self.obs_target_scene.setCurrentIndex(0 if idx < 0 else idx)
+        self.obs_target_scene.blockSignals(False)
+
     def refresh_obs_sources(self) -> None:
         selected_before = self.obs_target_source.currentText().strip() or self.settings.obs_websocket.target_source
+        selected_scene = self.obs_target_scene.currentText().strip()
+        self.refresh_obs_scenes()
         self.obs_target_source.blockSignals(True)
         self.obs_target_source.clear()
         sources = self.obs_service.list_sources()
@@ -1541,11 +1587,15 @@ class MainWindow(QMainWindow):
             self.obs_target_source.setCurrentIndex(max(0, idx))
             self.obs_refresh_now_button.setEnabled(True)
             self.set_obs_status("Connected", "#3fcf5e")
+            if selected_before and idx < 0:
+                self.append_console(f"Saved OBS source '{selected_before}' no longer exists. Select a new source.")
         else:
             if selected_before:
                 self.obs_target_source.addItem(selected_before)
                 self.obs_target_source.setCurrentIndex(0)
             self.obs_refresh_now_button.setEnabled(bool(selected_before))
+        if selected_scene and selected_scene != "All Scenes" and self.obs_target_scene.findText(selected_scene) < 0:
+            self.append_console(f"Saved OBS scene '{selected_scene}' no longer exists. Using scene-agnostic mode.")
         self.obs_target_source.blockSignals(False)
         self.update_obs_controls_enabled()
 
@@ -1561,8 +1611,9 @@ class MainWindow(QMainWindow):
         self.set_obs_busy(True)
         self._run_obs_task(
             "refresh",
-            lambda: self.obs_service.refresh_source(
+            lambda: self.obs_service.refresh_source_in_scene(
                 source_name=source,
+                scene_name="" if self.obs_target_scene.currentText().strip() == "All Scenes" else self.obs_target_scene.currentText().strip(),
                 off_on_delay_ms=self.obs_refresh_off_on_delay_ms.value(),
             ),
         )
@@ -1573,6 +1624,7 @@ class MainWindow(QMainWindow):
         self.obs_test_button.setEnabled(not busy)
         self.obs_refresh_now_button.setEnabled(not busy and bool(self.obs_target_source.currentText().strip()))
         self.obs_refresh_sources_button.setEnabled(not busy)
+        self.obs_refresh_scenes_button.setEnabled(not busy)
 
     def update_obs_controls_enabled(self) -> None:
         enabled = self.obs_enabled.isChecked()
@@ -1584,7 +1636,9 @@ class MainWindow(QMainWindow):
             self.obs_disconnect_button,
             self.obs_test_button,
             self.obs_target_source,
+            self.obs_target_scene,
             self.obs_refresh_sources_button,
+            self.obs_refresh_scenes_button,
             self.obs_refresh_now_button,
             self.obs_auto_refresh_enabled,
             self.obs_auto_refresh_min_severity,
@@ -1832,6 +1886,8 @@ class MainWindow(QMainWindow):
             return
 
         source = self.obs_target_source.currentText().strip() or obs_settings.target_source.strip()
+        scene_choice = self.obs_target_scene.currentText().strip()
+        scene = "" if scene_choice == "All Scenes" else (scene_choice or obs_settings.target_scene.strip())
         if not source:
             self.append_console("OBS auto-refresh skipped: no target source selected.")
             return
@@ -1860,8 +1916,9 @@ class MainWindow(QMainWindow):
         self.set_obs_busy(True)
         self._run_obs_task(
             "auto_refresh",
-            lambda: self.obs_service.refresh_source(
+            lambda: self.obs_service.refresh_source_in_scene(
                 source_name=source,
+                scene_name=scene,
                 off_on_delay_ms=obs_settings.refresh_off_on_delay_ms,
             ),
         )

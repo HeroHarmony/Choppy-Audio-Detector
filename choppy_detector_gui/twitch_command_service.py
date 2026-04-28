@@ -41,6 +41,7 @@ class TwitchCommandService:
         self.bot = None
         self.thread: threading.Thread | None = None
         self.running = False
+        self._connect_retry_count = 0
 
     def start(self) -> None:
         if self.running or not self.settings.chat_commands.chat_commands_enabled:
@@ -76,38 +77,60 @@ class TwitchCommandService:
 
     def _run(self) -> None:
         assert self.bot is not None
-        self.emit(
-            "chat_commands.connecting",
-            channel=getattr(self.bot, "channel", ""),
-            username=getattr(self.bot, "username", ""),
-        )
-        self.file_logger.log(
-            "info",
-            "chat_commands.connecting",
-            channel=getattr(self.bot, "channel", ""),
-            username=getattr(self.bot, "username", ""),
-        )
-        if not self.bot.connect():
-            error = getattr(self.bot, "last_error", "") or "Unknown Twitch connection failure"
-            response = getattr(self.bot, "last_response", "")
-            self.emit("chat_commands.connection_failed", error=error, response=response)
-            self.file_logger.log(
-                "error",
-                "chat_commands.connection_failed",
-                error=error,
-                response=response,
+        while self.running:
+            self.emit(
+                "chat_commands.connecting",
+                channel=getattr(self.bot, "channel", ""),
+                username=getattr(self.bot, "username", ""),
             )
-            self.running = False
-            return
+            self.file_logger.log(
+                "info",
+                "chat_commands.connecting",
+                channel=getattr(self.bot, "channel", ""),
+                username=getattr(self.bot, "username", ""),
+            )
+            if not self.bot.connect():
+                error = getattr(self.bot, "last_error", "") or "Unknown Twitch connection failure"
+                response = getattr(self.bot, "last_response", "")
+                self.emit("chat_commands.connection_failed", error=error, response=response)
+                self.file_logger.log(
+                    "error",
+                    "chat_commands.connection_failed",
+                    error=error,
+                    response=response,
+                )
+                self._connect_retry_count += 1
+                retry_delay_sec = min(60, 2 ** min(self._connect_retry_count, 6))
+                self.emit(
+                    "chat_commands.reconnect_scheduled",
+                    delay_seconds=retry_delay_sec,
+                    attempt=self._connect_retry_count,
+                )
+                self.file_logger.log(
+                    "warn",
+                    "chat_commands.reconnect_scheduled",
+                    delay_seconds=retry_delay_sec,
+                    attempt=self._connect_retry_count,
+                )
+                for _ in range(retry_delay_sec):
+                    if not self.running:
+                        break
+                    threading.Event().wait(1.0)
+                continue
 
-        self.emit("chat_commands.connected")
-        self.file_logger.log("info", "chat_commands.connected")
-        try:
-            self.bot.listen(callback=self._handle_raw_message, should_continue=lambda: self.running)
-        finally:
-            self.running = False
-            self.emit("chat_commands.disconnected")
-            self.file_logger.log("info", "chat_commands.disconnected")
+            self._connect_retry_count = 0
+            self.emit("chat_commands.connected")
+            self.file_logger.log("info", "chat_commands.connected")
+            try:
+                self.bot.listen(callback=self._handle_raw_message, should_continue=lambda: self.running)
+            finally:
+                self.emit("chat_commands.disconnected")
+                self.file_logger.log("info", "chat_commands.disconnected")
+            if self.running:
+                self.emit("chat_commands.reconnecting")
+                self.file_logger.log("warn", "chat_commands.reconnecting")
+
+        self.running = False
 
     def _handle_raw_message(self, raw_message: str) -> None:
         for message in parse_twitch_messages(raw_message):

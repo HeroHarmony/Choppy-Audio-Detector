@@ -19,6 +19,14 @@ import math
 import traceback
 warnings.filterwarnings('ignore')
 
+from choppy_detector_gui.alert_templates import AlertTemplates
+from choppy_detector_gui.audio_devices import (
+    get_hostapi_name,
+    infer_obs_monitoring_device,
+    list_audio_devices as list_all_audio_devices,
+    list_input_devices,
+)
+
 # Import Twitch bot (assuming it's in the same directory)
 try:
     from twitch_chat import TwitchBot
@@ -92,6 +100,10 @@ ALERT_CONFIG = {
     'log_possible_glitches': True,       # Show occasional low-confidence hints
     'possible_log_min_confidence': 0.70, # Only log stronger low-confidence hits
     'possible_log_interval_seconds': 10.0,# Throttle repeated "possible" logs
+    'max_alert_age_seconds': 15.0,       # Drop stale queued alerts
+    'max_alert_send_window_seconds': 8.0,# Give up on sending if retries exceed this window
+    'twitch_send_failures_for_pause': 3, # Consecutive send failures before pausing
+    'twitch_send_pause_seconds': 60.0,   # Circuit-breaker pause window
 }
 
 # More reasonable thresholds for streaming glitch detection
@@ -110,34 +122,9 @@ THRESHOLDS = {
     'suspicious_gap_count': 4,     # Number of gaps that suggests real problems
 }
 
-def get_hostapi_name(hostapi_index):
-    """Return a readable host API name for a PortAudio device."""
-    try:
-        return sd.query_hostapis(hostapi_index)['name']
-    except Exception:
-        return "Unknown"
-
-def infer_obs_monitoring_device(device_name):
-    """Best-effort hint for the OBS monitoring-device name that feeds this input."""
-    normalized = " ".join(str(device_name).split())
-
-    replacements = (
-        ("CABLE Output", "CABLE Input"),
-        ("Voicemeeter Output", "Voicemeeter Input"),
-        ("Voicemeeter AUX Output", "Voicemeeter AUX Input"),
-        ("Voicemeeter VAIO3 Output", "Voicemeeter VAIO3 Input"),
-    )
-
-    for source, target in replacements:
-        if source in normalized:
-            return normalized.replace(source, target)
-
-    return None
-
 def list_audio_devices():
     """List available audio input devices"""
-    devices = sd.query_devices()
-    input_devices = []
+    input_devices = list_input_devices()
     
     print("\nAvailable audio input devices:")
     print("-" * 50)
@@ -145,21 +132,30 @@ def list_audio_devices():
     print("This script records from input/capture devices, so virtual cables often look inverted:")
     print("  OBS 'CABLE Input' -> script 'CABLE Output'")
     print()
+    for device in input_devices:
+        status = " (default)" if device.is_default else ""
+        print(f"  {device.selection_index}: {device.name}{status}")
+        print(f"     PortAudio Index: {device.portaudio_index}, Host API: {device.hostapi_name}")
+        print(f"     Channels: {device.max_input_channels}, Sample Rate: {device.default_samplerate}")
+        if device.obs_monitoring_hint:
+            print(f"     OBS Monitoring Device likely appears as: {device.obs_monitoring_hint}")
+
+    output_devices = [device for device in list_all_audio_devices(include_output_only=True) if not device.is_monitorable]
+    if output_devices:
+        print()
+        print("Output/render devices shown for routing reference only:")
+        for device in output_devices:
+            status = " (default)" if device.is_default else ""
+            print(f"  - {device.name}{status}")
+            print(f"     PortAudio Index: {device.portaudio_index}, Host API: {device.hostapi_name}")
+            print(f"     Output Channels: {device.max_output_channels}, Sample Rate: {device.default_samplerate}")
     
-    for i, device in enumerate(devices):
-        if device['max_input_channels'] > 0:
-            input_devices.append((i, device))
-            status = " (default)" if i == sd.default.device[0] else ""
-            hostapi_name = get_hostapi_name(device.get('hostapi'))
-            selection_index = len(input_devices) - 1
-            print(f"  {selection_index}: {device['name']}{status}")
-            print(f"     PortAudio Index: {i}, Host API: {hostapi_name}")
-            print(f"     Channels: {device['max_input_channels']}, Sample Rate: {device['default_samplerate']}")
-            obs_hint = infer_obs_monitoring_device(device['name'])
-            if obs_hint:
-                print(f"     OBS Monitoring Device likely appears as: {obs_hint}")
-    
-    return input_devices
+    return [(device.portaudio_index, {
+        'name': device.name,
+        'hostapi': None,
+        'max_input_channels': device.max_input_channels,
+        'default_samplerate': device.default_samplerate,
+    }) for device in input_devices]
 
 def select_audio_device(device_id=None):
     """Select audio device interactively or by ID"""
@@ -200,10 +196,22 @@ def select_audio_device(device_id=None):
         return input_devices[0][0]
 
 class BalancedChoppyDetector:
-    def __init__(self, enable_twitch=True, audio_device=None):
+    def __init__(
+        self,
+        enable_twitch=True,
+        audio_device=None,
+        input_channel_index=0,
+        twitch_channel=None,
+        twitch_bot_username=None,
+        twitch_oauth_token=None,
+        event_callback=None,
+        alert_templates=None,
+        file_logger=None,
+    ):
         self.volume_report_interval_sec = 10
         self._volume_report_started = False
         self._last_volume_report_time = 0.0
+        self._last_audio_level_event_time = 0.0
         self.sample_rate = int(SAMPLE_RATE)
         self.stream_channels = 1
         self.device_info = None
@@ -211,6 +219,13 @@ class BalancedChoppyDetector:
         self.running = False
         self.lock = threading.Lock()
         self.audio_device = audio_device
+        self.input_channel_index = max(0, int(input_channel_index or 0))
+        self.twitch_channel = twitch_channel
+        self.twitch_bot_username = twitch_bot_username
+        self.twitch_oauth_token = twitch_oauth_token
+        self.event_callback = event_callback
+        self.alert_templates = alert_templates or AlertTemplates()
+        self.file_logger = file_logger
         self.baseline_stats = {
             'rms_history': deque(maxlen=50),
             'established_baseline': False
@@ -220,7 +235,12 @@ class BalancedChoppyDetector:
         self.twitch_enabled = enable_twitch and TWITCH_AVAILABLE
         self.twitch_bot = None
         if self.twitch_enabled:
-            self.twitch_bot = TwitchBot()
+            self.twitch_bot = TwitchBot(
+                channel=self.twitch_channel,
+                username=self.twitch_bot_username,
+                token=self.twitch_oauth_token,
+            )
+        self._audio_callback_started = False
             
         # Alert tracking - simplified
         self.detection_history = deque(maxlen=200)  # Store recent detections
@@ -246,7 +266,25 @@ class BalancedChoppyDetector:
         self.detection_thread = None
         self.alert_queue = Queue(maxsize=32)
         self.alert_sender_thread = None
+        self.twitch_connection_thread = None
         self.alert_queue_drops = 0
+        self._pending_alert_by_key = {}
+        self._twitch_send_fail_streak = 0
+        self._twitch_send_paused_until = 0.0
+
+    def emit_event(self, event_type, **payload):
+        if self.event_callback:
+            try:
+                self.event_callback(event_type, payload)
+            except Exception:
+                pass
+
+    def log_file_event(self, level, event, message="", **fields):
+        if self.file_logger:
+            try:
+                self.file_logger.log(level, event, message, **fields)
+            except Exception:
+                pass
 
     def _timestamp(self):
         return datetime.now().strftime("%H:%M:%S")
@@ -273,7 +311,8 @@ class BalancedChoppyDetector:
             if max_input_channels <= 0:
                 raise ValueError("Selected device reports no input channels")
 
-            self.stream_channels = 1
+            self.input_channel_index = min(self.input_channel_index, max_input_channels - 1)
+            self.stream_channels = max(1, self.input_channel_index + 1)
             self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
         except Exception as e:
             print(
@@ -281,6 +320,7 @@ class BalancedChoppyDetector:
                 f"Falling back to {SAMPLE_RATE} Hz mono."
             )
             self.sample_rate = int(SAMPLE_RATE)
+            self.input_channel_index = 0
             self.stream_channels = 1
             self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
 
@@ -309,17 +349,58 @@ class BalancedChoppyDetector:
         )
         self.alert_sender_thread.start()
 
+    def _start_twitch_connection_thread(self):
+        if not self.twitch_enabled or not self.twitch_bot:
+            return
+
+        if self.twitch_connection_thread and self.twitch_connection_thread.is_alive():
+            return
+
+        self.twitch_connection_thread = threading.Thread(
+            target=self.connect_to_twitch,
+            name="twitch-connection",
+            daemon=True,
+        )
+        self.twitch_connection_thread.start()
+
     def queue_twitch_alert(self, detection_count, time_span_minutes, is_first_alert):
         """Queue alert delivery so network work never blocks detection."""
         if not self.twitch_enabled or not self.twitch_bot:
             return False
 
+        key = "first" if is_first_alert else "ongoing"
+        now_ts = time_module.time()
+        existing = self._pending_alert_by_key.get(key)
+        if existing is not None:
+            # Coalesce while pending: keep the newest/highest-severity snapshot.
+            existing['detection_count'] = max(int(existing.get('detection_count', 0)), int(detection_count))
+            existing['time_span_minutes'] = max(float(existing.get('time_span_minutes', 0.0)), float(time_span_minutes))
+            existing['queued_at'] = now_ts
+            self.emit_event(
+                "alert.coalesced",
+                key=key,
+                detection_count=existing['detection_count'],
+                time_span_minutes=existing['time_span_minutes'],
+            )
+            self.log_file_event(
+                "info",
+                "alert.coalesced",
+                key=key,
+                detection_count=existing['detection_count'],
+                time_span_minutes=round(existing['time_span_minutes'], 2),
+            )
+            return True
+
         try:
-            self.alert_queue.put_nowait({
+            payload = {
                 'detection_count': detection_count,
                 'time_span_minutes': time_span_minutes,
                 'is_first_alert': is_first_alert,
-            })
+                'queued_at': now_ts,
+                'coalesce_key': key,
+            }
+            self.alert_queue.put_nowait(payload)
+            self._pending_alert_by_key[key] = payload
             return True
         except Full:
             self.alert_queue_drops += 1
@@ -338,10 +419,36 @@ class BalancedChoppyDetector:
                 continue
 
             try:
+                coalesce_key = payload.get('coalesce_key')
+                if coalesce_key:
+                    pending = self._pending_alert_by_key.get(coalesce_key)
+                    if pending is payload:
+                        self._pending_alert_by_key.pop(coalesce_key, None)
+                queued_at = float(payload.get('queued_at', time_module.time()))
+                age_seconds = max(0.0, time_module.time() - queued_at)
+                max_alert_age_seconds = float(ALERT_CONFIG.get('max_alert_age_seconds', 15.0))
+                if age_seconds > max_alert_age_seconds:
+                    print(
+                        f"[{self._timestamp()}] [WARN] Dropping stale Twitch alert "
+                        f"(age={age_seconds:.1f}s > {max_alert_age_seconds:.1f}s)"
+                    )
+                    self.emit_event(
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=max_alert_age_seconds,
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=max_alert_age_seconds,
+                    )
+                    continue
                 self.send_twitch_alert(
                     payload['detection_count'],
                     payload['time_span_minutes'],
                     payload['is_first_alert'],
+                    queued_at=queued_at,
                 )
             except Exception as e:
                 print(f"[{self._timestamp()}] [ERROR] Alert sender failure: {e}")
@@ -360,6 +467,7 @@ class BalancedChoppyDetector:
             and len(self.baseline_stats['rms_history']) >= 20):
             self.baseline_stats['established_baseline'] = True
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Baseline audio profile established.")
+            self.emit_event("baseline.established")
             
     def get_baseline_rms(self):
         """Get typical RMS level"""
@@ -731,48 +839,131 @@ class BalancedChoppyDetector:
             return False
             
         try:
+            self.emit_event(
+                "twitch.connecting",
+                channel=getattr(self.twitch_bot, "channel", ""),
+                username=getattr(self.twitch_bot, "username", ""),
+            )
+            self.log_file_event(
+                "info",
+                "twitch.connecting",
+                channel=getattr(self.twitch_bot, "channel", ""),
+                username=getattr(self.twitch_bot, "username", ""),
+            )
             if self.twitch_bot.connect():
                 print("Connected to Twitch chat")
+                self.emit_event("twitch.connected")
+                self.log_file_event("info", "twitch.connected")
                 return True
             else:
                 print("[ERROR] Failed to connect to Twitch chat")
+                error = getattr(self.twitch_bot, "last_error", "") or "Unknown Twitch connection failure"
+                response = getattr(self.twitch_bot, "last_response", "")
+                self.emit_event("twitch.connection_failed", error=error, response=response)
+                self.log_file_event("error", "twitch.connection_failed", error=error, response=response)
                 return False
         except Exception as e:
             print(f"[ERROR] Twitch connection error: {e}")
+            self.emit_event("twitch.connection_error", error=str(e))
+            self.log_file_event("error", "twitch.connection_error", error=str(e))
             return False
 
-    def send_twitch_alert(self, detection_count, time_span_minutes, is_first_alert):
+    def send_twitch_alert(self, detection_count, time_span_minutes, is_first_alert, queued_at=None):
         """Send alert to Twitch chat"""
         if not self.twitch_enabled or not self.twitch_bot:
             return False
 
         try:
-            # Determine severity
-            if detection_count >= 12:
-                severity = "[SEVERE]"
-            elif detection_count >= 8:
-                severity = "[MODERATE]"
-            else:
-                severity = "[MINOR]"
+            now_ts = time_module.time()
+            if now_ts < self._twitch_send_paused_until:
+                remaining = self._twitch_send_paused_until - now_ts
+                self.emit_event("twitch.send_paused", seconds_remaining=round(remaining, 2))
+                self.log_file_event(
+                    "warn",
+                    "twitch.send_paused",
+                    seconds_remaining=round(remaining, 2),
+                )
+                return False
 
-            # Create message based on whether this is first alert or followup
-            if is_first_alert:
-                message = f"{severity} Audio issues detected! {detection_count} glitches in {time_span_minutes:.1f} minutes. Stream audio may be choppy! modCheck"
-            else:
-                message = f"{severity} Ongoing audio issue: {detection_count} glitches in last {time_span_minutes:.1f} minutes. Still unstable... modCheck"
+            device_name = (
+                self.device_info.get('name')
+                if isinstance(self.device_info, dict)
+                else str(self.audio_device)
+            )
+            message = self.alert_templates.render(
+                detection_count=detection_count,
+                time_span_minutes=time_span_minutes,
+                is_first_alert=is_first_alert,
+                confidence_threshold=ALERT_CONFIG['confidence_threshold'],
+                device_name=device_name,
+            )
 
-            # Send to chat
-            success = self.twitch_bot.send_message(message)
+            if queued_at is not None:
+                age_seconds = max(0.0, time_module.time() - float(queued_at))
+                max_alert_age_seconds = float(ALERT_CONFIG.get('max_alert_age_seconds', 15.0))
+                if age_seconds > max_alert_age_seconds:
+                    print(
+                        f"[{self._timestamp()}] [WARN] Skipping stale Twitch alert before send "
+                        f"(age={age_seconds:.1f}s > {max_alert_age_seconds:.1f}s)"
+                    )
+                    self.emit_event(
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=max_alert_age_seconds,
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=max_alert_age_seconds,
+                    )
+                    return False
+
+            # Send to chat with a hard cutoff so stale alerts do not linger in retries.
+            max_alert_send_window_seconds = float(ALERT_CONFIG.get('max_alert_send_window_seconds', 8.0))
+            success = self.twitch_bot.send_message(
+                message,
+                max_total_seconds=max_alert_send_window_seconds,
+            )
             if success:
+                self._twitch_send_fail_streak = 0
+                if self._twitch_send_paused_until > 0:
+                    self._twitch_send_paused_until = 0.0
+                    self.emit_event("twitch.send_resumed")
+                    self.log_file_event("info", "twitch.send_resumed")
                 self.total_alerts_sent += 1
                 print(f"Twitch alert sent: {message}")
+                self.emit_event("alert.sent", message=message)
+                self.log_file_event("info", "alert.sent", message=message)
             else:
+                self._twitch_send_fail_streak += 1
                 print("[ERROR] Failed to send Twitch alert")
+                self.emit_event("alert.failed", message=message)
+                self.log_file_event("error", "alert.failed", message=message)
+                fail_limit = int(ALERT_CONFIG.get('twitch_send_failures_for_pause', 3))
+                pause_seconds = float(ALERT_CONFIG.get('twitch_send_pause_seconds', 60.0))
+                if self._twitch_send_fail_streak >= fail_limit:
+                    self._twitch_send_paused_until = time_module.time() + pause_seconds
+                    self.emit_event(
+                        "twitch.send_circuit_open",
+                        fail_streak=self._twitch_send_fail_streak,
+                        pause_seconds=pause_seconds,
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "twitch.send_circuit_open",
+                        fail_streak=self._twitch_send_fail_streak,
+                        pause_seconds=pause_seconds,
+                    )
+                    self._twitch_send_fail_streak = 0
 
             return success
 
         except Exception as e:
+            self._twitch_send_fail_streak += 1
             print(f"[ERROR] Error sending Twitch alert: {e}")
+            self.emit_event("alert.error", error=str(e))
+            self.log_file_event("error", "alert.error", error=str(e))
             return False
 
     def should_send_alert(self):
@@ -852,14 +1043,39 @@ class BalancedChoppyDetector:
                 print(f"[{self._timestamp()}] Audio callback status: {status}")
 
             with self.lock:
-                audio_data = indata[:, 0] if indata.ndim > 1 else indata
+                if indata.ndim > 1:
+                    channel_idx = min(self.input_channel_index, indata.shape[1] - 1)
+                    audio_data = indata[:, channel_idx]
+                else:
+                    audio_data = indata
                 self.audio_buffer.extend(audio_data)
 
-            self.last_audio_callback_time = time_module.time()
+            current_time = time_module.time()
+            self.last_audio_callback_time = current_time
+            if not self._audio_callback_started:
+                self._audio_callback_started = True
+                self.emit_event("audio.callback_started")
+                self.log_file_event("info", "audio.callback_started", device=self.audio_device)
+            if current_time - self._last_audio_level_event_time >= 0.05:
+                rms_level = float(np.sqrt(np.mean(audio_data**2)))
+                peak_level = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
+                rms_dbfs = 20.0 * math.log10(rms_level + 1e-12)
+                peak_dbfs = 20.0 * math.log10(peak_level + 1e-12)
+                self.emit_event(
+                    "audio.level",
+                    rms=rms_level,
+                    peak=peak_level,
+                    rms_dbfs=rms_dbfs,
+                    peak_dbfs=peak_dbfs,
+                    dbfs=rms_dbfs,
+                )
+                self._last_audio_level_event_time = current_time
         except Exception as e:
             self.audio_callback_errors += 1
             print(f"[{self._timestamp()}] [ERROR] Audio callback failure #{self.audio_callback_errors}: {e}")
             print(traceback.format_exc().rstrip())
+            self.emit_event("audio.callback_error", error=str(e), count=self.audio_callback_errors)
+            self.log_file_event("error", "audio.callback_error", error=str(e), count=self.audio_callback_errors)
 
     def detection_loop(self):
         """Main detection loop with reasonable timing"""
@@ -935,6 +1151,17 @@ class BalancedChoppyDetector:
                         f"{time_since_callback:.1f}s; stream may be stalled. "
                         f"Device={device_label!r}, format={self.sample_rate}Hz/{self.stream_channels}ch"
                     )
+                    self.emit_event(
+                        "audio.stale",
+                        seconds=time_since_callback,
+                        device=str(device_label),
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "audio.stale",
+                        seconds=f"{time_since_callback:.1f}",
+                        device=device_label,
+                    )
                     self.last_stale_audio_warning_time = current_time
 
                 # Analyze audio
@@ -994,6 +1221,29 @@ class BalancedChoppyDetector:
                 print(f"\n[{timestamp}] STREAMING GLITCH DETECTED!")
                 print(f"  Confidence: {confidence:.1%}")
                 print(f"  Reasons: {reasons}")
+                device_name = (
+                    self.device_info.get('name')
+                    if isinstance(self.device_info, dict)
+                    else str(self.audio_device)
+                )
+                active_methods = [
+                    method for method, result in results.items() if result.get('choppy')
+                ]
+                self.emit_event(
+                    "glitch.detected",
+                    confidence=round(confidence * 100, 1),
+                    reasons=reasons,
+                    methods=active_methods,
+                    device=device_name,
+                )
+                self.log_file_event(
+                    "warn",
+                    "glitch.detected",
+                    confidence=round(confidence * 100, 1),
+                    reasons=reasons,
+                    methods=",".join(active_methods),
+                    device=device_name,
+                )
 
                 for method, result in results.items():
                     if result['choppy']:
@@ -1007,6 +1257,19 @@ class BalancedChoppyDetector:
                         self.last_alert_time = current_time
                         self.current_episode_started = True
                         print("    Twitch alert queued")
+                        self.emit_event(
+                            "alert.queued",
+                            detection_count=detection_count,
+                            time_span_minutes=time_span,
+                            is_first_alert=is_first_alert,
+                        )
+                        self.log_file_event(
+                            "info",
+                            "alert.queued",
+                            detection_count=detection_count,
+                            time_span_minutes=f"{time_span:.1f}",
+                            is_first_alert=is_first_alert,
+                        )
                 else:
                     if cooldown_remaining > 0:
                         cooldown_minutes = cooldown_remaining / 60.0
@@ -1024,16 +1287,29 @@ class BalancedChoppyDetector:
                 self.last_detection_traceback = traceback.format_exc()
                 print(f"[{self._timestamp()}] [ERROR] Detection loop failure #{self.detection_loop_errors}: {e}")
                 print(self.last_detection_traceback.rstrip())
+                self.emit_event(
+                    "detector.error",
+                    error=str(e),
+                    count=self.detection_loop_errors,
+                )
+                self.log_file_event(
+                    "error",
+                    "detector.error",
+                    error=str(e),
+                    count=self.detection_loop_errors,
+                )
                 time.sleep(1.0)
 
     def start_detection(self):
         """Start balanced detection with optional Twitch integration"""
         print("Balanced Choppy Audio Detector with Twitch Integration")
         print("Focused on detecting streaming-related audio glitches")
+        self.emit_event("monitoring.starting")
+        self.log_file_event("info", "monitoring.starting", device=self.audio_device)
         
         if self.twitch_enabled:
-            print("Attempting to connect to Twitch...")
-            self.connect_to_twitch()
+            print("Attempting to connect to Twitch in background...")
+            self._start_twitch_connection_thread()
         else:
             print("Running without Twitch integration")
             
@@ -1089,6 +1365,14 @@ class BalancedChoppyDetector:
                         callback=self.audio_callback
                     ):
                         print(f"[{self._timestamp()}] Audio input stream opened")
+                        self.emit_event(
+                            "audio.stream_opened",
+                            device=self.device_info.get('name') if isinstance(self.device_info, dict) else self.audio_device,
+                            sample_rate=self.sample_rate,
+                            channels=self.stream_channels,
+                            channel_index=self.input_channel_index,
+                        )
+                        self.log_file_event("info", "audio.stream_opened", device=self.audio_device)
                         while self.running:
                             if self.detection_thread and not self.detection_thread.is_alive():
                                 print(f"[{self._timestamp()}] [WARN] Detection loop thread stopped; restarting")
@@ -1100,6 +1384,8 @@ class BalancedChoppyDetector:
                 except Exception as e:
                     print(f"[{self._timestamp()}] [ERROR] Audio input stream failure: {e}")
                     print(traceback.format_exc().rstrip())
+                    self.emit_event("audio.stream_error", error=str(e))
+                    self.log_file_event("error", "audio.stream_error", error=str(e), device=self.audio_device)
                     if not self.running:
                         break
                     print(f"[{self._timestamp()}] Restarting audio input stream in 2 seconds...")
@@ -1119,6 +1405,8 @@ class BalancedChoppyDetector:
 
             if self.twitch_bot:
                 self.twitch_bot.disconnect()
+            self.emit_event("monitoring.stopped")
+            self.log_file_event("info", "monitoring.stopped")
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -1152,11 +1440,38 @@ Examples:
         metavar='N',
         help='Audio device number to use (see --list-devices)'
     )
+
+    parser.add_argument(
+        '--audio-channel',
+        '--channel',
+        dest='audio_channel',
+        type=int,
+        metavar='N',
+        help='Input audio channel index to analyze (default: 0)'
+    )
     
     parser.add_argument(
         '--list-devices', 
         action='store_true', 
         help='List available audio devices and exit'
+    )
+
+    parser.add_argument(
+        '--twitch-channel',
+        type=str,
+        help='Twitch channel name (without #)'
+    )
+
+    parser.add_argument(
+        '--twitch-bot-username',
+        type=str,
+        help='Twitch bot username override'
+    )
+
+    parser.add_argument(
+        '--twitch-oauth-token',
+        type=str,
+        help='Twitch OAuth token override'
     )
     
     return parser.parse_args()
@@ -1207,7 +1522,14 @@ def main():
         if audio_device is None:
             return
     
-    detector = BalancedChoppyDetector(enable_twitch=enable_twitch, audio_device=audio_device)
+    detector = BalancedChoppyDetector(
+        enable_twitch=enable_twitch,
+        audio_device=audio_device,
+        input_channel_index=max(0, int(args.audio_channel or 0)),
+        twitch_channel=(str(args.twitch_channel).strip().lstrip("#") if args.twitch_channel else None),
+        twitch_bot_username=(str(args.twitch_bot_username).strip() if args.twitch_bot_username else None),
+        twitch_oauth_token=(str(args.twitch_oauth_token).strip() if args.twitch_oauth_token else None),
+    )
     
     try:
         detector.start_detection()

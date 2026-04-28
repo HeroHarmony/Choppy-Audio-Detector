@@ -105,13 +105,13 @@ You can launch the GUI with command line options similar to `live_analysis.py`:
 ```bash
 python app_gui.py --list-devices
 python app_gui.py --audio-device 2 --twitch
-python app_gui.py --audio-device 2 --channel 1
+python app_gui.py --audio-device 2 --audio-channel 1
 python app_gui.py --no-twitch
 ```
 
 - `--list-devices`: Lists available audio input devices and exits.
 - `--audio-device N`: Selects audio input device by GUI index.
-- `--channel N`: Selects input channel index and auto-starts monitoring.
+- `--audio-channel N`: Selects input audio channel index and auto-starts monitoring.
 - `--twitch`: Enables Twitch alerts.
 - `--no-twitch`: Disables Twitch alerts.
 - `--twitch-channel NAME`: Sets Twitch channel (without `#`).
@@ -119,10 +119,12 @@ python app_gui.py --no-twitch
 - `--twitch-oauth-token TOKEN`: Sets Twitch OAuth token.
 
 Compared to `live_analysis.py`, the GUI supports all shared flags (`--list-devices`, `--audio-device`, `--twitch`, `--no-twitch`) plus:
-- `--channel N`
+- `--audio-channel N` (legacy alias: `--channel N`)
 - `--twitch-channel NAME`
 - `--twitch-bot-username USER`
 - `--twitch-oauth-token TOKEN`
+
+`live_analysis.py` now supports these same options for CLI/GUI parity.
 
 # Audio Input Device
 Audio is different for everyone, so I'll explain my setup. I'm using voicemeeter to manage my audio devices. I've configured Open Broadcaster Software (OBS) to use one of voicemeeter's virtual inputs, namely Cable Input, as the monitoring device. For this, on OBS go to:

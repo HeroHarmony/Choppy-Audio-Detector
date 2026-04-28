@@ -1440,11 +1440,38 @@ Examples:
         metavar='N',
         help='Audio device number to use (see --list-devices)'
     )
+
+    parser.add_argument(
+        '--audio-channel',
+        '--channel',
+        dest='audio_channel',
+        type=int,
+        metavar='N',
+        help='Input audio channel index to analyze (default: 0)'
+    )
     
     parser.add_argument(
         '--list-devices', 
         action='store_true', 
         help='List available audio devices and exit'
+    )
+
+    parser.add_argument(
+        '--twitch-channel',
+        type=str,
+        help='Twitch channel name (without #)'
+    )
+
+    parser.add_argument(
+        '--twitch-bot-username',
+        type=str,
+        help='Twitch bot username override'
+    )
+
+    parser.add_argument(
+        '--twitch-oauth-token',
+        type=str,
+        help='Twitch OAuth token override'
     )
     
     return parser.parse_args()
@@ -1495,7 +1522,14 @@ def main():
         if audio_device is None:
             return
     
-    detector = BalancedChoppyDetector(enable_twitch=enable_twitch, audio_device=audio_device)
+    detector = BalancedChoppyDetector(
+        enable_twitch=enable_twitch,
+        audio_device=audio_device,
+        input_channel_index=max(0, int(args.audio_channel or 0)),
+        twitch_channel=(str(args.twitch_channel).strip().lstrip("#") if args.twitch_channel else None),
+        twitch_bot_username=(str(args.twitch_bot_username).strip() if args.twitch_bot_username else None),
+        twitch_oauth_token=(str(args.twitch_oauth_token).strip() if args.twitch_oauth_token else None),
+    )
     
     try:
         detector.start_detection()

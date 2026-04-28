@@ -22,12 +22,22 @@ Enable Twitch alerts with specific audio device:
 python live_analysis.py --twitch --audio-device 1
 ```
 
+Use a specific channel within the selected audio device:
+
+```bash
+python live_analysis.py --audio-device 2 --audio-channel 1
+```
+
 ### Command Line Options
 
 - `--list-devices`: Lists all available audio input devices and exits.
 - `--audio-device DEVICE_ID`: Specifies the audio input device by ID.
+- `--audio-channel N` (legacy alias: `--channel N`): Selects input audio channel index.
 - `--twitch`: Enables Twitch chat notifications.
 - `--no-twitch`: Disables Twitch chat notifications.
+- `--twitch-channel NAME`: Overrides Twitch channel (without `#`).
+- `--twitch-bot-username USER`: Overrides Twitch bot username.
+- `--twitch-oauth-token TOKEN`: Overrides Twitch OAuth token.
 
 ## Runtime Configuration (Script Mode)
 

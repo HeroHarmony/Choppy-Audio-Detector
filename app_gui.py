@@ -324,8 +324,8 @@ class MainWindow(QMainWindow):
             return
         if getattr(options, "audio_device", None) is not None:
             self.settings.selected_device_id = int(options.audio_device)
-        if getattr(options, "channel", None) is not None:
-            self.settings.selected_channel_index = max(0, int(options.channel))
+        if getattr(options, "audio_channel", None) is not None:
+            self.settings.selected_channel_index = max(0, int(options.audio_channel))
             self.auto_start_requested = True
         if getattr(options, "twitch", False):
             self.settings.twitch_enabled = True
@@ -1681,14 +1681,21 @@ def parse_gui_arguments() -> argparse.Namespace:
         epilog="""
 Examples:
   python app_gui.py --audio-device 2
-  python app_gui.py --audio-device 2 --channel 1
+  python app_gui.py --audio-device 2 --audio-channel 1
   python app_gui.py --no-twitch
   python app_gui.py --list-devices
         """,
     )
     parser.add_argument("--list-devices", action="store_true", help="List available audio input devices and exit")
     parser.add_argument("--audio-device", type=int, metavar="N", help="Select audio input device by GUI index")
-    parser.add_argument("--channel", type=int, metavar="N", help="Select input channel index and auto-start")
+    parser.add_argument(
+        "--audio-channel",
+        "--channel",
+        dest="audio_channel",
+        type=int,
+        metavar="N",
+        help="Select input audio channel index and auto-start",
+    )
     parser.add_argument("--twitch", action="store_true", help="Enable Twitch chat alerts")
     parser.add_argument("--no-twitch", action="store_true", help="Disable Twitch chat alerts")
     parser.add_argument("--twitch-channel", type=str, help="Twitch channel name (without #)")

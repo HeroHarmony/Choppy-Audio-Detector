@@ -40,6 +40,8 @@ DEFAULT_ALERT_CONFIG = {
     "possible_log_interval_seconds": 10.0,
     "max_alert_age_seconds": 15.0,
     "max_alert_send_window_seconds": 8.0,
+    "twitch_send_failures_for_pause": 3,
+    "twitch_send_pause_seconds": 60.0,
 }
 
 DEFAULT_THRESHOLDS = {

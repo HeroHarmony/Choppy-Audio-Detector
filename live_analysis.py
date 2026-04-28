@@ -102,6 +102,8 @@ ALERT_CONFIG = {
     'possible_log_interval_seconds': 10.0,# Throttle repeated "possible" logs
     'max_alert_age_seconds': 15.0,       # Drop stale queued alerts
     'max_alert_send_window_seconds': 8.0,# Give up on sending if retries exceed this window
+    'twitch_send_failures_for_pause': 3, # Consecutive send failures before pausing
+    'twitch_send_pause_seconds': 60.0,   # Circuit-breaker pause window
 }
 
 # More reasonable thresholds for streaming glitch detection
@@ -266,6 +268,9 @@ class BalancedChoppyDetector:
         self.alert_sender_thread = None
         self.twitch_connection_thread = None
         self.alert_queue_drops = 0
+        self._pending_alert_by_key = {}
+        self._twitch_send_fail_streak = 0
+        self._twitch_send_paused_until = 0.0
 
     def emit_event(self, event_type, **payload):
         if self.event_callback:
@@ -363,13 +368,39 @@ class BalancedChoppyDetector:
         if not self.twitch_enabled or not self.twitch_bot:
             return False
 
+        key = "first" if is_first_alert else "ongoing"
+        now_ts = time_module.time()
+        existing = self._pending_alert_by_key.get(key)
+        if existing is not None:
+            # Coalesce while pending: keep the newest/highest-severity snapshot.
+            existing['detection_count'] = max(int(existing.get('detection_count', 0)), int(detection_count))
+            existing['time_span_minutes'] = max(float(existing.get('time_span_minutes', 0.0)), float(time_span_minutes))
+            existing['queued_at'] = now_ts
+            self.emit_event(
+                "alert.coalesced",
+                key=key,
+                detection_count=existing['detection_count'],
+                time_span_minutes=existing['time_span_minutes'],
+            )
+            self.log_file_event(
+                "info",
+                "alert.coalesced",
+                key=key,
+                detection_count=existing['detection_count'],
+                time_span_minutes=round(existing['time_span_minutes'], 2),
+            )
+            return True
+
         try:
-            self.alert_queue.put_nowait({
+            payload = {
                 'detection_count': detection_count,
                 'time_span_minutes': time_span_minutes,
                 'is_first_alert': is_first_alert,
-                'queued_at': time_module.time(),
-            })
+                'queued_at': now_ts,
+                'coalesce_key': key,
+            }
+            self.alert_queue.put_nowait(payload)
+            self._pending_alert_by_key[key] = payload
             return True
         except Full:
             self.alert_queue_drops += 1
@@ -388,6 +419,11 @@ class BalancedChoppyDetector:
                 continue
 
             try:
+                coalesce_key = payload.get('coalesce_key')
+                if coalesce_key:
+                    pending = self._pending_alert_by_key.get(coalesce_key)
+                    if pending is payload:
+                        self._pending_alert_by_key.pop(coalesce_key, None)
                 queued_at = float(payload.get('queued_at', time_module.time()))
                 age_seconds = max(0.0, time_module.time() - queued_at)
                 max_alert_age_seconds = float(ALERT_CONFIG.get('max_alert_age_seconds', 15.0))
@@ -838,6 +874,17 @@ class BalancedChoppyDetector:
             return False
 
         try:
+            now_ts = time_module.time()
+            if now_ts < self._twitch_send_paused_until:
+                remaining = self._twitch_send_paused_until - now_ts
+                self.emit_event("twitch.send_paused", seconds_remaining=round(remaining, 2))
+                self.log_file_event(
+                    "warn",
+                    "twitch.send_paused",
+                    seconds_remaining=round(remaining, 2),
+                )
+                return False
+
             device_name = (
                 self.device_info.get('name')
                 if isinstance(self.device_info, dict)
@@ -879,18 +926,41 @@ class BalancedChoppyDetector:
                 max_total_seconds=max_alert_send_window_seconds,
             )
             if success:
+                self._twitch_send_fail_streak = 0
+                if self._twitch_send_paused_until > 0:
+                    self._twitch_send_paused_until = 0.0
+                    self.emit_event("twitch.send_resumed")
+                    self.log_file_event("info", "twitch.send_resumed")
                 self.total_alerts_sent += 1
                 print(f"Twitch alert sent: {message}")
                 self.emit_event("alert.sent", message=message)
                 self.log_file_event("info", "alert.sent", message=message)
             else:
+                self._twitch_send_fail_streak += 1
                 print("[ERROR] Failed to send Twitch alert")
                 self.emit_event("alert.failed", message=message)
                 self.log_file_event("error", "alert.failed", message=message)
+                fail_limit = int(ALERT_CONFIG.get('twitch_send_failures_for_pause', 3))
+                pause_seconds = float(ALERT_CONFIG.get('twitch_send_pause_seconds', 60.0))
+                if self._twitch_send_fail_streak >= fail_limit:
+                    self._twitch_send_paused_until = time_module.time() + pause_seconds
+                    self.emit_event(
+                        "twitch.send_circuit_open",
+                        fail_streak=self._twitch_send_fail_streak,
+                        pause_seconds=pause_seconds,
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "twitch.send_circuit_open",
+                        fail_streak=self._twitch_send_fail_streak,
+                        pause_seconds=pause_seconds,
+                    )
+                    self._twitch_send_fail_streak = 0
 
             return success
 
         except Exception as e:
+            self._twitch_send_fail_streak += 1
             print(f"[ERROR] Error sending Twitch alert: {e}")
             self.emit_event("alert.error", error=str(e))
             self.log_file_event("error", "alert.error", error=str(e))

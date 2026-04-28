@@ -846,6 +846,8 @@ class MainWindow(QMainWindow):
             ("possible_log_interval_seconds", "Minimum seconds between possible glitch logs.", "float", 0.0, 60.0, 0.5),
             ("max_alert_age_seconds", "Drop queued alerts older than this age.", "float", 1.0, 120.0, 0.5),
             ("max_alert_send_window_seconds", "Max send+retry window before giving up.", "float", 0.5, 60.0, 0.5),
+            ("twitch_send_failures_for_pause", "Consecutive send failures before pausing alerts.", "int", 1, 20, 1),
+            ("twitch_send_pause_seconds", "Pause duration when circuit breaker opens.", "float", 1.0, 600.0, 1.0),
         )
 
     def threshold_schema(self):

@@ -99,6 +99,21 @@ QPushButton:disabled, QToolButton:disabled {
 QTabWidget::pane {
     border: 1px solid #565656;
 }
+QTabBar::tab {
+    background: #4c4c4c;
+    color: #ececec;
+    border: 1px solid #5f5f5f;
+    border-bottom: none;
+    padding: 6px 14px;
+    min-width: 72px;
+}
+QTabBar::tab:selected {
+    background: #2a82da;
+    color: #ffffff;
+}
+QTabBar::tab:hover:!selected {
+    background: #5b5b5b;
+}
 QCheckBox {
     spacing: 6px;
 }

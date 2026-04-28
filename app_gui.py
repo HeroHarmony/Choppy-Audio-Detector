@@ -277,6 +277,9 @@ class MainWindow(QMainWindow):
         self._meter_preview_peak_dbfs = -120.0
         self._meter_preview_rms_dbfs = -120.0
         self._meter_preview_last_update = datetime.min
+        self._display_peak_dbfs = -120.0
+        self._display_rms_dbfs = -120.0
+        self._display_level_last_update_at = time.monotonic()
 
         self.auto_restart_timer = QTimer(self)
         self.auto_restart_timer.timeout.connect(self.auto_restart)
@@ -285,7 +288,7 @@ class MainWindow(QMainWindow):
         self.audio_watchdog_timer.start(1000)
         self.meter_preview_timer = QTimer(self)
         self.meter_preview_timer.timeout.connect(self.refresh_meter_preview_ui)
-        self.meter_preview_timer.start(80)
+        self.update_meter_refresh_timer()
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -514,6 +517,11 @@ class MainWindow(QMainWindow):
         general_form.addRow("Preview mode", self.keep_preview_while_monitoring)
         self.dark_mode_enabled = QCheckBox("Enable dark mode")
         general_form.addRow("Theme", self.dark_mode_enabled)
+        self.smooth_preview_meter = QCheckBox("Smooth preview meter animation")
+        general_form.addRow("Meter smoothing", self.smooth_preview_meter)
+        self.preview_meter_fps = QSpinBox()
+        self.preview_meter_fps.setRange(5, 60)
+        general_form.addRow("Preview meter FPS", self.preview_meter_fps)
 
         self.log_directory = QLineEdit()
         self.log_directory.setPlaceholderText("Leave blank for ./Log")
@@ -789,16 +797,24 @@ class MainWindow(QMainWindow):
         self.send_command_responses.setChecked(commands.send_command_responses)
         self.logs_enabled.setChecked(self.settings.log_settings.logs_enabled)
         self.keep_preview_while_monitoring.setChecked(self.settings.keep_preview_while_monitoring)
+        self.smooth_preview_meter.setChecked(self.settings.smooth_preview_meter)
+        self.preview_meter_fps.setValue(self.settings.preview_meter_fps)
         self.dark_mode_enabled.setChecked(self.settings.dark_mode_enabled)
         self.log_directory.setText(self.settings.log_settings.log_directory)
         self.apply_advanced_to_controls()
         self.refresh_channel_options()
+        self.update_meter_refresh_timer()
 
     def apply_theme(self) -> None:
         app = QApplication.instance()
         if app is None:
             return
         app.setStyleSheet(DARK_THEME_STYLESHEET if self.settings.dark_mode_enabled else "")
+
+    def update_meter_refresh_timer(self) -> None:
+        fps = max(5, min(60, int(self.settings.preview_meter_fps)))
+        interval_ms = max(10, int(round(1000.0 / fps)))
+        self.meter_preview_timer.start(interval_ms)
 
     def refresh_devices(self) -> None:
         self._loading_devices = True
@@ -1026,12 +1042,15 @@ class MainWindow(QMainWindow):
         commands.send_command_responses = self.send_command_responses.isChecked()
         self.settings.log_settings.logs_enabled = self.logs_enabled.isChecked()
         self.settings.keep_preview_while_monitoring = self.keep_preview_while_monitoring.isChecked()
+        self.settings.smooth_preview_meter = self.smooth_preview_meter.isChecked()
+        self.settings.preview_meter_fps = self.preview_meter_fps.value()
         self.settings.dark_mode_enabled = self.dark_mode_enabled.isChecked()
         self.settings.log_settings.log_directory = self.log_directory.text().strip()
         self.collect_advanced_from_controls()
         self.file_logger.settings = self.settings.log_settings
         save_settings(self.settings)
         self.apply_theme()
+        self.update_meter_refresh_timer()
         self.update_auto_restart_timer()
         self.update_command_service()
         self.restart_meter_preview()
@@ -1137,8 +1156,9 @@ class MainWindow(QMainWindow):
             rms = float(data.get("rms", 0.0))
             peak_dbfs = float(data.get("peak_dbfs", data.get("dbfs", -120.0)))
             rms_dbfs = float(data.get("rms_dbfs", data.get("dbfs", -120.0)))
-            self.peak_meter.set_level_dbfs(peak_dbfs, peak_source=True)
-            self.rms_meter.set_level_dbfs(rms_dbfs, peak_source=False)
+            smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(peak_dbfs, rms_dbfs)
+            self.peak_meter.set_level_dbfs(smooth_peak_dbfs, peak_source=True)
+            self.rms_meter.set_level_dbfs(smooth_rms_dbfs, peak_source=False)
             self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS | RMS={rms:.6f}")
             return
 
@@ -1298,6 +1318,31 @@ class MainWindow(QMainWindow):
         except Exception:
             return
 
+    def _smooth_display_levels(self, peak_dbfs: float, rms_dbfs: float) -> tuple[float, float]:
+        if not self.settings.smooth_preview_meter:
+            self._display_peak_dbfs = max(-120.0, min(0.0, float(peak_dbfs)))
+            self._display_rms_dbfs = max(-120.0, min(0.0, float(rms_dbfs)))
+            self._display_level_last_update_at = time.monotonic()
+            return self._display_peak_dbfs, self._display_rms_dbfs
+
+        now = time.monotonic()
+        dt = max(0.001, now - self._display_level_last_update_at)
+        self._display_level_last_update_at = now
+
+        # Ballistics tuned for smoother motion: quick attack, slower release.
+        attack_tau = 0.07
+        release_tau = 0.24
+
+        def step(current: float, target: float) -> float:
+            tau = attack_tau if target >= current else release_tau
+            alpha = 1.0 - np.exp(-dt / tau)
+            next_value = current + (target - current) * float(alpha)
+            return max(-120.0, min(0.0, float(next_value)))
+
+        self._display_peak_dbfs = step(self._display_peak_dbfs, peak_dbfs)
+        self._display_rms_dbfs = step(self._display_rms_dbfs, rms_dbfs)
+        return self._display_peak_dbfs, self._display_rms_dbfs
+
     def refresh_meter_preview_ui(self) -> None:
         if self.runtime.is_running and not self.settings.keep_preview_while_monitoring:
             self.update_meter_display_mode()
@@ -1314,8 +1359,9 @@ class MainWindow(QMainWindow):
         if seen_at == datetime.min:
             return
         self.update_meter_display_mode()
-        self.peak_meter.set_level_dbfs(peak_dbfs, peak_source=True)
-        self.rms_meter.set_level_dbfs(rms_dbfs, peak_source=False)
+        smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(peak_dbfs, rms_dbfs)
+        self.peak_meter.set_level_dbfs(smooth_peak_dbfs, peak_source=True)
+        self.rms_meter.set_level_dbfs(smooth_rms_dbfs, peak_source=False)
         suffix = "preview + monitoring" if self.runtime.is_running else "preview"
         self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS | {suffix}")
 

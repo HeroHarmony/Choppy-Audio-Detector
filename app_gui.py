@@ -288,7 +288,7 @@ class MainWindow(QMainWindow):
             self.template_first_severe,
             self.template_ongoing,
         ):
-            editor.setFixedHeight(88)
+            editor.setFixedHeight(76)
 
         content_row = QHBoxLayout()
         left_col = QVBoxLayout()
@@ -319,7 +319,7 @@ class MainWindow(QMainWindow):
         content_row.addLayout(left_col, 5)
         content_row.addLayout(guide_col, 2)
         layout.addLayout(content_row, 1)
-        self.tabs.addTab(tab, "Response Templates")
+        self.tabs.addTab(tab, "Responses")
 
     def _template_reference_guide(self) -> QWidget:
         panel = QFrame()

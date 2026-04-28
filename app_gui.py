@@ -149,8 +149,12 @@ class ObsLevelMeter(QWidget):
         self._scale_max_db = 0.0
         self._yellow_start_db = -20.0
         self._red_start_db = -9.0
-        self.setMinimumHeight(30)
-        self.setMaximumHeight(30)
+        if self._show_ruler:
+            self.setMinimumHeight(44)
+            self.setMaximumHeight(44)
+        else:
+            self.setMinimumHeight(30)
+            self.setMaximumHeight(30)
 
     def set_level_dbfs(self, dbfs: float, peak_source: bool = False) -> None:
         self._dbfs = max(-120.0, min(0.0, float(dbfs)))

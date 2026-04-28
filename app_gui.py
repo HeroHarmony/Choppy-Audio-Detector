@@ -664,7 +664,15 @@ class MainWindow(QMainWindow):
         alert_layout = QVBoxLayout(alert_group)
         alert_layout.setSpacing(8)
         for key, desc, value_type, min_v, max_v, step in self.alert_config_schema():
-            row = self._advanced_row(key, desc, value_type, min_v, max_v, step)
+            row = self._advanced_row(
+                key,
+                desc,
+                value_type,
+                min_v,
+                max_v,
+                step,
+                DEFAULT_ALERT_CONFIG.get(key),
+            )
             alert_layout.addWidget(row)
 
         threshold_group = QGroupBox("Thresholds")
@@ -672,7 +680,15 @@ class MainWindow(QMainWindow):
         threshold_layout = QVBoxLayout(threshold_group)
         threshold_layout.setSpacing(8)
         for key, desc, value_type, min_v, max_v, step in self.threshold_schema():
-            row = self._advanced_row(key, desc, value_type, min_v, max_v, step)
+            row = self._advanced_row(
+                key,
+                desc,
+                value_type,
+                min_v,
+                max_v,
+                step,
+                DEFAULT_THRESHOLDS.get(key),
+            )
             threshold_layout.addWidget(row)
 
         methods_group = QGroupBox("Detection Methods")
@@ -683,18 +699,25 @@ class MainWindow(QMainWindow):
             checkbox = QCheckBox()
             self.advanced_widgets[f"method:{key}"] = checkbox
             row_widget = QWidget()
-            row_layout = QVBoxLayout(row_widget)
+            row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(2)
-
+            row_layout.setSpacing(8)
+            left = QWidget()
+            left_layout = QHBoxLayout(left)
+            left_layout.setContentsMargins(0, 0, 0, 0)
+            left_layout.setSpacing(8)
             title = QLabel(key)
             title.setStyleSheet("font-weight: 600;")
-            desc_label = QLabel(desc)
+            left_layout.addWidget(title)
+            left_layout.addWidget(checkbox)
+            left_layout.addStretch(1)
+
+            default_value = bool(DEFAULT_APPROACHES.get(key, False))
+            desc_label = QLabel(f"{desc} (Default: {self._format_default_value(default_value)})")
             desc_label.setStyleSheet("color: #bdbdbd;")
             desc_label.setWordWrap(True)
-            row_layout.addWidget(title)
-            row_layout.addWidget(checkbox)
-            row_layout.addWidget(desc_label)
+            row_layout.addWidget(left, 3)
+            row_layout.addWidget(desc_label, 5)
             methods_layout.addWidget(row_widget)
 
         content_layout.addWidget(alert_group)
@@ -725,14 +748,27 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
         self.tabs.addTab(tab, "Advanced")
 
-    def _advanced_row(self, key: str, desc: str, value_type: str, min_v: float, max_v: float, step: float) -> QWidget:
+    def _advanced_row(
+        self,
+        key: str,
+        desc: str,
+        value_type: str,
+        min_v: float,
+        max_v: float,
+        step: float,
+        default_value,
+    ) -> QWidget:
         row_widget = QWidget()
-        row_layout = QVBoxLayout(row_widget)
+        row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(2)
+        row_layout.setSpacing(8)
+        left = QWidget()
+        left_layout = QHBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
         title = QLabel(key)
         title.setStyleSheet("font-weight: 600;")
-        row_layout.addWidget(title)
+        left_layout.addWidget(title)
 
         if value_type == "int":
             input_widget = QSpinBox()
@@ -747,13 +783,22 @@ class MainWindow(QMainWindow):
             input_widget = QCheckBox()
         input_widget.setMinimumWidth(180)
         self.advanced_widgets[f"value:{key}"] = input_widget
-        row_layout.addWidget(input_widget)
+        left_layout.addWidget(input_widget)
+        left_layout.addStretch(1)
 
-        desc_label = QLabel(desc)
+        desc_label = QLabel(f"{desc} (Default: {self._format_default_value(default_value)})")
         desc_label.setWordWrap(True)
         desc_label.setStyleSheet("color: #bdbdbd;")
-        row_layout.addWidget(desc_label)
+        row_layout.addWidget(left, 3)
+        row_layout.addWidget(desc_label, 5)
         return row_widget
+
+    def _format_default_value(self, value) -> str:
+        if isinstance(value, bool):
+            return "On" if value else "Off"
+        if isinstance(value, float):
+            return f"{value:g}"
+        return str(value)
 
     def alert_config_schema(self):
         return (

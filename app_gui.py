@@ -16,6 +16,7 @@ try:
         QCheckBox,
         QComboBox,
         QFrame,
+        QDoubleSpinBox,
         QFormLayout,
         QGroupBox,
         QGridLayout,
@@ -26,6 +27,7 @@ try:
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QScrollArea,
         QSpinBox,
         QTabWidget,
         QTextEdit,
@@ -41,7 +43,14 @@ except ImportError as exc:
 from choppy_detector_gui.alert_templates import AlertTemplates
 from choppy_detector_gui.file_logging import AppFileLogger
 from choppy_detector_gui.runtime import DetectorRuntime
-from choppy_detector_gui.settings import AppSettings, load_settings, save_settings
+from choppy_detector_gui.settings import (
+    AppSettings,
+    DEFAULT_ALERT_CONFIG,
+    DEFAULT_APPROACHES,
+    DEFAULT_THRESHOLDS,
+    load_settings,
+    save_settings,
+)
 from choppy_detector_gui.twitch_command_service import TwitchCommandService
 
 try:
@@ -187,6 +196,7 @@ class MainWindow(QMainWindow):
         self.build_main_tab()
         self.build_templates_tab()
         self.build_settings_tab()
+        self.build_advanced_tab()
         self.build_console_tab()
         self.refresh_devices()
         self.apply_settings_to_controls()
@@ -380,8 +390,10 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         columns = QHBoxLayout()
+        group_title_style = "QGroupBox { font-size: 19px; font-weight: 600; }"
 
         general_group = QGroupBox("General")
+        general_group.setStyleSheet(group_title_style)
         general_form = QFormLayout(general_group)
         self.auto_restart_minutes = QSpinBox()
         self.auto_restart_minutes.setRange(5, 1440)
@@ -403,6 +415,7 @@ class MainWindow(QMainWindow):
         general_form.addRow("Log directory", self.log_directory)
 
         twitch_group = QGroupBox("Twitch Connection")
+        twitch_group.setStyleSheet(group_title_style)
         twitch_layout = QVBoxLayout(twitch_group)
         twitch_layout.setSpacing(8)
         self.twitch_channel = QLineEdit()
@@ -425,6 +438,7 @@ class MainWindow(QMainWindow):
         twitch_layout.addWidget(self.twitch_oauth_token)
 
         commands_group = QGroupBox("Chat Commands and Permissions")
+        commands_group.setStyleSheet(group_title_style)
         commands_form = QFormLayout(commands_group)
         self.start_command = QLineEdit()
         self.stop_command = QLineEdit()
@@ -492,6 +506,160 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.clear_console_button)
         self.tabs.addTab(tab, "Console")
 
+    def build_advanced_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(8, 8, 8, 8)
+        group_title_style = "QGroupBox { font-size: 19px; font-weight: 600; }"
+
+        self.advanced_widgets: dict[str, QWidget] = {}
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        alert_group = QGroupBox("Alert Config")
+        alert_group.setStyleSheet(group_title_style)
+        alert_layout = QVBoxLayout(alert_group)
+        alert_layout.setSpacing(8)
+        for key, desc, value_type, min_v, max_v, step in self.alert_config_schema():
+            row = self._advanced_row(key, desc, value_type, min_v, max_v, step)
+            alert_layout.addWidget(row)
+
+        threshold_group = QGroupBox("Thresholds")
+        threshold_group.setStyleSheet(group_title_style)
+        threshold_layout = QVBoxLayout(threshold_group)
+        threshold_layout.setSpacing(8)
+        for key, desc, value_type, min_v, max_v, step in self.threshold_schema():
+            row = self._advanced_row(key, desc, value_type, min_v, max_v, step)
+            threshold_layout.addWidget(row)
+
+        methods_group = QGroupBox("Detection Methods")
+        methods_group.setStyleSheet(group_title_style)
+        methods_layout = QVBoxLayout(methods_group)
+        methods_layout.setSpacing(8)
+        for key, desc in self.methods_schema():
+            checkbox = QCheckBox()
+            self.advanced_widgets[f"method:{key}"] = checkbox
+            row_widget = QWidget()
+            row_layout = QVBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(2)
+
+            title = QLabel(key)
+            title.setStyleSheet("font-weight: 600;")
+            desc_label = QLabel(desc)
+            desc_label.setStyleSheet("color: #bdbdbd;")
+            desc_label.setWordWrap(True)
+            row_layout.addWidget(title)
+            row_layout.addWidget(checkbox)
+            row_layout.addWidget(desc_label)
+            methods_layout.addWidget(row_widget)
+
+        content_layout.addWidget(alert_group)
+        content_layout.addSpacing(12)
+        content_layout.addWidget(threshold_group)
+        content_layout.addSpacing(12)
+        content_layout.addWidget(methods_group)
+        content_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+
+        actions = QHBoxLayout()
+        self.reset_advanced_defaults_btn = QPushButton("Reset Defaults")
+        self.reset_advanced_defaults_btn.clicked.connect(self.reset_advanced_defaults)
+        self.save_advanced_btn = QPushButton("Save Advanced Settings")
+        self.save_advanced_btn.clicked.connect(self.save_advanced_settings)
+        actions.addWidget(self.reset_advanced_defaults_btn)
+        actions.addWidget(self.save_advanced_btn)
+        layout.addLayout(actions)
+        self.tabs.addTab(tab, "Advanced")
+
+    def _advanced_row(self, key: str, desc: str, value_type: str, min_v: float, max_v: float, step: float) -> QWidget:
+        row_widget = QWidget()
+        row_layout = QVBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(2)
+        title = QLabel(key)
+        title.setStyleSheet("font-weight: 600;")
+        row_layout.addWidget(title)
+
+        if value_type == "int":
+            input_widget = QSpinBox()
+            input_widget.setRange(int(min_v), int(max_v))
+            input_widget.setSingleStep(int(step))
+        elif value_type == "float":
+            input_widget = QDoubleSpinBox()
+            input_widget.setRange(float(min_v), float(max_v))
+            input_widget.setSingleStep(float(step))
+            input_widget.setDecimals(4 if step < 0.01 else 2)
+        else:
+            input_widget = QCheckBox()
+        input_widget.setMinimumWidth(180)
+        self.advanced_widgets[f"value:{key}"] = input_widget
+        row_layout.addWidget(input_widget)
+
+        desc_label = QLabel(desc)
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("color: #bdbdbd;")
+        row_layout.addWidget(desc_label)
+        return row_widget
+
+    def alert_config_schema(self):
+        return (
+            ("detections_for_alert", "Detections required before an alert can fire.", "int", 1, 100, 1),
+            ("alert_cooldown_ms", "Minimum time between alerts in milliseconds.", "int", 1000, 3600000, 1000),
+            ("detection_window_seconds", "Window for counting detections toward an alert.", "int", 5, 600, 1),
+            ("confidence_threshold", "Minimum confidence percent to count a detection.", "int", 1, 100, 1),
+            ("clean_audio_reset_seconds", "Seconds of clean audio before episode resets.", "int", 5, 600, 1),
+            ("event_dedup_seconds", "Suppress duplicate events from one burst.", "float", 0.0, 10.0, 0.1),
+            ("fast_alert_burst_detections", "Fast alert count in short window.", "int", 1, 50, 1),
+            ("fast_alert_window_seconds", "Short window for fast alert path.", "int", 1, 300, 1),
+            ("fast_alert_min_confidence", "Minimum confidence for fast alert path.", "int", 1, 100, 1),
+            ("log_possible_glitches", "Log lower-confidence possible glitches.", "bool", 0, 1, 1),
+            ("possible_log_min_confidence", "Minimum confidence for possible glitch logging.", "float", 0.0, 1.0, 0.01),
+            ("possible_log_interval_seconds", "Minimum seconds between possible glitch logs.", "float", 0.0, 60.0, 0.5),
+        )
+
+    def threshold_schema(self):
+        return (
+            ("silence_ratio", "Silence ratio needed to consider silence-gaps suspicious.", "float", 0.0, 1.0, 0.01),
+            ("amplitude_jump", "Relative jump threshold for amplitude jump detector.", "float", 0.0, 20.0, 0.1),
+            ("envelope_discontinuity", "Envelope discontinuity threshold.", "float", 0.0, 20.0, 0.1),
+            ("modulation_freq_min_hz", "Lower envelope modulation frequency bound.", "float", 0.0, 200.0, 0.5),
+            ("modulation_freq_max_hz", "Upper envelope modulation frequency bound.", "float", 0.0, 200.0, 0.5),
+            ("modulation_strength", "Peak-versus-floor modulation strength threshold.", "float", 0.0, 50.0, 0.1),
+            ("modulation_depth", "Required envelope modulation depth.", "float", 0.0, 1.0, 0.01),
+            ("modulation_peak_concentration", "Required concentration of modulation peak energy.", "float", 0.0, 1.0, 0.01),
+            ("gap_duration_ms", "Minimum silence gap duration in ms.", "int", 1, 2000, 1),
+            ("min_audio_level", "Minimum RMS needed before analysis runs.", "float", 0.0, 1.0, 0.0005),
+            ("max_normal_gaps", "Normal gaps allowed before suspicious.", "int", 0, 20, 1),
+            ("suspicious_gap_count", "Significant gap count considered suspicious.", "int", 1, 30, 1),
+        )
+
+    def methods_schema(self):
+        return (
+            ("silence_gaps", "Detects dropouts and long silence breaks."),
+            ("amplitude_jumps", "Detects abrupt amplitude swings."),
+            ("envelope_discontinuity", "Detects sudden envelope breaks."),
+            ("amplitude_modulation", "Detects rapid robotic/flutter modulation texture."),
+            ("temporal_consistency", "Detects unstable temporal loudness consistency."),
+            ("energy_variance", "Detects unusual energy variance."),
+            ("zero_crossings", "Detects zero-crossing pattern anomalies."),
+            ("spectral_rolloff", "Detects spectral rolloff instability."),
+            ("spectral_centroid", "Detects spectral centroid instability."),
+        )
+
     def apply_settings_to_controls(self) -> None:
         templates = self.settings.alert_templates
         self.template_first_minor.setPlainText(templates.first_minor)
@@ -516,6 +684,7 @@ class MainWindow(QMainWindow):
         self.logs_enabled.setChecked(self.settings.log_settings.logs_enabled)
         self.keep_preview_while_monitoring.setChecked(self.settings.keep_preview_while_monitoring)
         self.log_directory.setText(self.settings.log_settings.log_directory)
+        self.apply_advanced_to_controls()
         self.refresh_channel_options()
 
     def refresh_devices(self) -> None:
@@ -745,6 +914,7 @@ class MainWindow(QMainWindow):
         self.settings.log_settings.logs_enabled = self.logs_enabled.isChecked()
         self.settings.keep_preview_while_monitoring = self.keep_preview_while_monitoring.isChecked()
         self.settings.log_settings.log_directory = self.log_directory.text().strip()
+        self.collect_advanced_from_controls()
         self.file_logger.settings = self.settings.log_settings
         save_settings(self.settings)
         self.update_auto_restart_timer()
@@ -752,6 +922,81 @@ class MainWindow(QMainWindow):
         self.restart_meter_preview()
         self.update_meter_display_mode()
         self.append_console("Settings saved.")
+
+    def apply_advanced_to_controls(self) -> None:
+        for key, *_ in self.alert_config_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            value = self.settings.advanced_alert_config.get(key, DEFAULT_ALERT_CONFIG[key])
+            self._set_advanced_widget_value(widget, value)
+        for key, *_ in self.threshold_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            value = self.settings.advanced_thresholds.get(key, DEFAULT_THRESHOLDS[key])
+            self._set_advanced_widget_value(widget, value)
+        for key, _ in self.methods_schema():
+            widget = self.advanced_widgets.get(f"method:{key}")
+            if widget is None:
+                continue
+            widget.setChecked(bool(self.settings.detection_methods.get(key, DEFAULT_APPROACHES[key])))
+
+    def collect_advanced_from_controls(self) -> None:
+        alert_config = dict(DEFAULT_ALERT_CONFIG)
+        for key, *_ in self.alert_config_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            alert_config[key] = self._get_advanced_widget_value(widget, DEFAULT_ALERT_CONFIG[key])
+        thresholds = dict(DEFAULT_THRESHOLDS)
+        for key, *_ in self.threshold_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            thresholds[key] = self._get_advanced_widget_value(widget, DEFAULT_THRESHOLDS[key])
+        methods = dict(DEFAULT_APPROACHES)
+        for key, _ in self.methods_schema():
+            widget = self.advanced_widgets.get(f"method:{key}")
+            if widget is None:
+                continue
+            methods[key] = bool(widget.isChecked())
+
+        self.settings.advanced_alert_config = alert_config
+        self.settings.advanced_thresholds = thresholds
+        self.settings.detection_methods = methods
+        self.settings.alert_cooldown_ms = int(alert_config.get("alert_cooldown_ms", self.settings.alert_cooldown_ms))
+
+    def save_advanced_settings(self) -> None:
+        self.collect_advanced_from_controls()
+        save_settings(self.settings)
+        self.append_console("Advanced settings saved.")
+
+    def reset_advanced_defaults(self) -> None:
+        self.settings.advanced_alert_config = dict(DEFAULT_ALERT_CONFIG)
+        self.settings.advanced_thresholds = dict(DEFAULT_THRESHOLDS)
+        self.settings.detection_methods = dict(DEFAULT_APPROACHES)
+        self.settings.alert_cooldown_ms = int(DEFAULT_ALERT_CONFIG["alert_cooldown_ms"])
+        self.apply_advanced_to_controls()
+        save_settings(self.settings)
+        self.append_console("Advanced settings reset to defaults.")
+
+    def _set_advanced_widget_value(self, widget: QWidget, value) -> None:
+        if isinstance(widget, QSpinBox):
+            widget.setValue(int(value))
+        elif isinstance(widget, QDoubleSpinBox):
+            widget.setValue(float(value))
+        elif isinstance(widget, QCheckBox):
+            widget.setChecked(bool(value))
+
+    def _get_advanced_widget_value(self, widget: QWidget, default_value):
+        if isinstance(widget, QSpinBox):
+            return int(widget.value())
+        if isinstance(widget, QDoubleSpinBox):
+            return float(widget.value())
+        if isinstance(widget, QCheckBox):
+            return bool(widget.isChecked())
+        return default_value
 
     def update_auto_restart_timer(self) -> None:
         self.auto_restart_timer.stop()

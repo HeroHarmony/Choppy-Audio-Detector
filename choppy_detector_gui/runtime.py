@@ -48,6 +48,9 @@ class DetectorRuntime:
 
             import live_analysis
 
+            live_analysis.APPROACHES.update(self.settings.detection_methods)
+            live_analysis.THRESHOLDS.update(self.settings.advanced_thresholds)
+            live_analysis.ALERT_CONFIG.update(self.settings.advanced_alert_config)
             live_analysis.ALERT_CONFIG["alert_cooldown_ms"] = self.settings.alert_cooldown_ms
 
             device = self.selected_device()

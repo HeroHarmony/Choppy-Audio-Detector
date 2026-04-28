@@ -13,6 +13,48 @@ from .alert_templates import AlertTemplates
 
 APP_NAME = "ChoppyAudioDetector"
 
+DEFAULT_APPROACHES = {
+    "silence_gaps": True,
+    "amplitude_jumps": False,
+    "envelope_discontinuity": True,
+    "amplitude_modulation": True,
+    "temporal_consistency": False,
+    "energy_variance": False,
+    "zero_crossings": False,
+    "spectral_rolloff": False,
+    "spectral_centroid": False,
+}
+
+DEFAULT_ALERT_CONFIG = {
+    "detections_for_alert": 6,
+    "alert_cooldown_ms": 60000,
+    "detection_window_seconds": 90,
+    "confidence_threshold": 70,
+    "clean_audio_reset_seconds": 60,
+    "event_dedup_seconds": 0.9,
+    "fast_alert_burst_detections": 3,
+    "fast_alert_window_seconds": 15,
+    "fast_alert_min_confidence": 75,
+    "log_possible_glitches": True,
+    "possible_log_min_confidence": 0.70,
+    "possible_log_interval_seconds": 10.0,
+}
+
+DEFAULT_THRESHOLDS = {
+    "silence_ratio": 0.60,
+    "amplitude_jump": 2.5,
+    "envelope_discontinuity": 2.0,
+    "modulation_freq_min_hz": 15.0,
+    "modulation_freq_max_hz": 36.0,
+    "modulation_strength": 8.5,
+    "modulation_depth": 0.42,
+    "modulation_peak_concentration": 0.20,
+    "gap_duration_ms": 100,
+    "min_audio_level": 0.005,
+    "max_normal_gaps": 2,
+    "suspicious_gap_count": 4,
+}
+
 
 @dataclass
 class ChatCommandSettings:
@@ -81,6 +123,9 @@ class AppSettings:
     auto_restart_minutes: int = 60
     alert_cooldown_ms: int = 60000
     keep_preview_while_monitoring: bool = False
+    advanced_alert_config: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_ALERT_CONFIG))
+    advanced_thresholds: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_THRESHOLDS))
+    detection_methods: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_APPROACHES))
     chat_commands: ChatCommandSettings = field(default_factory=ChatCommandSettings)
     log_settings: LogSettings = field(default_factory=LogSettings)
     alert_templates: AlertTemplates = field(default_factory=AlertTemplates)
@@ -97,6 +142,10 @@ class AppSettings:
         self.selected_channel_index = max(0, int(self.selected_channel_index or 0))
         self.auto_restart_minutes = min(1440, max(5, int(self.auto_restart_minutes or 60)))
         self.alert_cooldown_ms = max(1000, int(self.alert_cooldown_ms or 60000))
+        self.advanced_alert_config = _merge_numeric_dict(DEFAULT_ALERT_CONFIG, self.advanced_alert_config)
+        self.advanced_thresholds = _merge_numeric_dict(DEFAULT_THRESHOLDS, self.advanced_thresholds)
+        self.detection_methods = _merge_bool_dict(DEFAULT_APPROACHES, self.detection_methods)
+        self.alert_cooldown_ms = int(self.advanced_alert_config.get("alert_cooldown_ms", self.alert_cooldown_ms))
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,10 +172,38 @@ class AppSettings:
             auto_restart_minutes=int(data.get("auto_restart_minutes") or 60),
             alert_cooldown_ms=int(data.get("alert_cooldown_ms") or 60000),
             keep_preview_while_monitoring=bool(data.get("keep_preview_while_monitoring", False)),
+            advanced_alert_config=dict(data.get("advanced_alert_config") or DEFAULT_ALERT_CONFIG),
+            advanced_thresholds=dict(data.get("advanced_thresholds") or DEFAULT_THRESHOLDS),
+            detection_methods=dict(data.get("detection_methods") or DEFAULT_APPROACHES),
             chat_commands=ChatCommandSettings.from_dict(data.get("chat_commands")),
             log_settings=LogSettings.from_dict(data.get("log_settings")),
             alert_templates=AlertTemplates.from_dict(data.get("alert_templates")),
         ).normalize()
+
+
+def _merge_numeric_dict(defaults: dict[str, Any], provided: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(defaults)
+    for key, default_value in defaults.items():
+        value = provided.get(key, default_value) if isinstance(provided, dict) else default_value
+        try:
+            if isinstance(default_value, bool):
+                merged[key] = bool(value)
+            elif isinstance(default_value, int):
+                merged[key] = int(value)
+            else:
+                merged[key] = float(value)
+        except (TypeError, ValueError):
+            merged[key] = default_value
+    return merged
+
+
+def _merge_bool_dict(defaults: dict[str, bool], provided: dict[str, Any]) -> dict[str, bool]:
+    merged = dict(defaults)
+    if not isinstance(provided, dict):
+        return merged
+    for key, default_value in defaults.items():
+        merged[key] = bool(provided.get(key, default_value))
+    return merged
 
 
 def default_settings_path() -> Path:

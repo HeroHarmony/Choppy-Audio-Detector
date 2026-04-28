@@ -410,9 +410,6 @@ class MainWindow(QMainWindow):
         status_right_col = QVBoxLayout()
         status_right_col.setContentsMargins(0, 0, 0, 0)
         status_right_col.addStretch(1)
-        self.twitch_status_badge = QLabel("")
-        self.twitch_status_badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        status_right_col.addWidget(self.twitch_status_badge, 0, Qt.AlignRight)
         self.level_text = QLabel("Peak -inf dBFS | RMS -inf dBFS")
         status_right_col.addWidget(self.level_text, 0, Qt.AlignRight)
         status_row.addLayout(status_right_col, 0)
@@ -1067,11 +1064,6 @@ class MainWindow(QMainWindow):
         self.meter_preview_timer.start(interval_ms)
 
     def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
-        self.twitch_status_badge.setText(f"Twitch: {label}")
-        self.twitch_status_badge.setStyleSheet(
-            f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"
-            " border-radius: 8px; padding: 2px 8px;"
-        )
         self.global_twitch_status_badge.setText(f"Twitch: {label}")
         self.global_twitch_status_badge.setStyleSheet(
             f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"

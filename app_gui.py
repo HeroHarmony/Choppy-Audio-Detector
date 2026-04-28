@@ -276,6 +276,7 @@ class MainWindow(QMainWindow):
         self._last_audio_level_seen_at: datetime | None = None
         self._monitoring_started_at: datetime | None = None
         self._audio_watchdog_warned = False
+        self._monitoring_ui_active = False
         self._meter_preview_stream = None
         self._meter_preview_lock = threading.Lock()
         self._meter_preview_peak_dbfs = -120.0
@@ -915,12 +916,21 @@ class MainWindow(QMainWindow):
         self._last_audio_level_seen_at = None
         self._monitoring_started_at = datetime.now()
         self._audio_watchdog_warned = False
+        self._monitoring_ui_active = True
+        self.update_device_controls()
         self.status_label.setText("Starting")
-        self.runtime.start(source="gui")
+        started = self.runtime.start(source="gui")
+        if not started:
+            self._monitoring_ui_active = False
+            self.update_device_controls()
+            self.status_label.setText("Stopped")
+            return
         if self.settings.keep_preview_while_monitoring:
             QTimer.singleShot(700, self.ensure_meter_preview_stream)
 
     def stop_monitoring(self) -> None:
+        self._monitoring_ui_active = False
+        self.update_device_controls()
         self.runtime.stop(source="gui")
         self.status_label.setText("Stopped")
         self._monitoring_started_at = None
@@ -943,8 +953,15 @@ class MainWindow(QMainWindow):
         self._last_audio_level_seen_at = None
         self._monitoring_started_at = datetime.now()
         self._audio_watchdog_warned = False
+        self._monitoring_ui_active = True
+        self.update_device_controls()
         self.status_label.setText("Restarting")
-        self.runtime.restart(source="gui")
+        restarted = self.runtime.restart(source="gui")
+        if not restarted:
+            self._monitoring_ui_active = False
+            self.update_device_controls()
+            self.status_label.setText("Stopped")
+            return
         if self.settings.keep_preview_while_monitoring:
             QTimer.singleShot(700, self.ensure_meter_preview_stream)
 
@@ -960,8 +977,10 @@ class MainWindow(QMainWindow):
     def update_device_controls(self) -> None:
         device = self.selected_combo_device()
         is_monitorable = bool(device and device.is_monitorable)
-        self.start_button.setEnabled(is_monitorable)
+        monitoring_active = self._monitoring_ui_active or self.runtime.is_running
+        self.start_button.setEnabled(is_monitorable and not monitoring_active)
         self.restart_button.setEnabled(is_monitorable)
+        self.stop_button.setEnabled(monitoring_active)
         if device and not device.is_monitorable:
             self.device_hint_label.setText(
                 "⚠ Selected device is output-only. On macOS, route output through BlackHole/Loopback and select the matching input/capture endpoint."
@@ -1190,16 +1209,22 @@ class MainWindow(QMainWindow):
             return
 
         if event_type in {"monitoring.started", "audio.stream_opened"}:
+            self._monitoring_ui_active = True
             self.status_label.setText(f"Running - {self.runtime.device_summary()}")
             self.update_meter_display_mode()
+            self.update_device_controls()
         elif event_type in {"monitoring.stopped", "monitoring.stopped_by_request"}:
+            self._monitoring_ui_active = False
             self.status_label.setText("Stopped")
             self._audio_watchdog_warned = False
             self._monitoring_started_at = None
             self.restart_meter_preview()
             self.update_meter_display_mode()
+            self.update_device_controls()
         elif event_type in {"monitoring.error", "audio.stream_error", "detector.error"}:
+            self._monitoring_ui_active = False
             self.status_label.setText("Error")
+            self.update_device_controls()
 
         message = self.format_event(event_type, data)
         self.append_event(message)

@@ -43,7 +43,7 @@ To get started we need a few things. Be prepared to setup the following:
    ```
    Follow the terminal prompts to enable Twitch alerts and select your audio input device.
 
-   Skip the interactive prompts by using command line arguments. [See Advanced Usage section below for details.](#advanced-usage)
+   Skip the interactive prompts by using command line arguments. See the [Technical Reference](docs/technical-reference.md) for details.
 5. **That's it!** The script should now be running and monitoring your audio input for glitches.
 
 ## GUI
@@ -117,6 +117,12 @@ python app_gui.py --no-twitch
 - `--twitch-channel NAME`: Sets Twitch channel (without `#`).
 - `--twitch-bot-username USER`: Sets Twitch bot username.
 - `--twitch-oauth-token TOKEN`: Sets Twitch OAuth token.
+
+Compared to `live_analysis.py`, the GUI supports all shared flags (`--list-devices`, `--audio-device`, `--twitch`, `--no-twitch`) plus:
+- `--channel N`
+- `--twitch-channel NAME`
+- `--twitch-bot-username USER`
+- `--twitch-oauth-token TOKEN`
 
 # Audio Input Device
 Audio is different for everyone, so I'll explain my setup. I'm using voicemeeter to manage my audio devices. I've configured Open Broadcaster Software (OBS) to use one of voicemeeter's virtual inputs, namely Cable Input, as the monitoring device. For this, on OBS go to:

@@ -397,11 +397,13 @@ class MainWindow(QMainWindow):
         status_right_col = QVBoxLayout()
         status_right_col.setContentsMargins(0, 0, 0, 0)
         status_right_col.addStretch(1)
+        self.twitch_status_badge = QLabel("")
+        self.twitch_status_badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        status_right_col.addWidget(self.twitch_status_badge, 0, Qt.AlignRight)
         self.level_text = QLabel("Peak -inf dBFS | RMS -inf dBFS")
         status_right_col.addWidget(self.level_text, 0, Qt.AlignRight)
         status_row.addLayout(status_right_col, 0)
         layout.addLayout(status_row)
-        layout.addWidget(self.device_hint_label)
 
         meter_stack = QWidget()
         meter_stack_layout = QVBoxLayout(meter_stack)
@@ -910,6 +912,7 @@ class MainWindow(QMainWindow):
         self.apply_advanced_to_controls()
         self.refresh_channel_options()
         self.update_meter_refresh_timer()
+        self.update_twitch_status_from_settings()
 
     def apply_theme(self) -> None:
         app = QApplication.instance()
@@ -921,6 +924,19 @@ class MainWindow(QMainWindow):
         fps = max(5, min(60, int(self.settings.preview_meter_fps)))
         interval_ms = max(10, int(round(1000.0 / fps)))
         self.meter_preview_timer.start(interval_ms)
+
+    def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
+        self.twitch_status_badge.setText(f"Twitch: {label}")
+        self.twitch_status_badge.setStyleSheet(
+            f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"
+            " border-radius: 8px; padding: 2px 8px;"
+        )
+
+    def update_twitch_status_from_settings(self) -> None:
+        if not self.settings.twitch_enabled and not self.settings.chat_commands.chat_commands_enabled:
+            self.set_twitch_status_badge("Disabled", "#8f8f8f")
+        else:
+            self.set_twitch_status_badge("Idle", "#bdbdbd")
 
     def refresh_devices(self) -> None:
         self._loading_devices = True
@@ -1094,6 +1110,7 @@ class MainWindow(QMainWindow):
             self.settings.selected_channel_index = int(channel_index)
         save_settings(self.settings)
         self.update_command_service()
+        self.update_twitch_status_from_settings()
 
     def save_templates(self) -> None:
         templates = self.collect_templates()
@@ -1194,6 +1211,7 @@ class MainWindow(QMainWindow):
         self.update_command_service()
         self.restart_meter_preview()
         self.update_meter_display_mode()
+        self.update_twitch_status_from_settings()
         self.append_console("Settings saved.")
 
     def is_settings_dirty(self) -> bool:
@@ -1380,6 +1398,25 @@ class MainWindow(QMainWindow):
 
     def handle_runtime_event(self, event_type: str, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
+        if event_type in {"twitch.connected", "chat_commands.connected"}:
+            self.set_twitch_status_badge("Connected", "#3fcf5e")
+        elif event_type in {"twitch.connecting", "chat_commands.connecting"}:
+            self.set_twitch_status_badge("Connecting", "#4aa3ff")
+        elif event_type in {"chat_commands.reconnecting", "chat_commands.reconnect_scheduled"}:
+            self.set_twitch_status_badge("Reconnecting", "#f0c04a")
+        elif event_type in {"twitch.connection_failed", "chat_commands.connection_failed"}:
+            error_text = str(data.get("error", "")).lower()
+            if "auth" in error_text or "login" in error_text or "token" in error_text:
+                self.set_twitch_status_badge("Auth failed", "#ff6a6a")
+            else:
+                self.set_twitch_status_badge("Disconnected", "#ff9c4a")
+        elif event_type == "twitch.send_circuit_open":
+            self.set_twitch_status_badge("Paused", "#ff9c4a")
+        elif event_type == "twitch.send_resumed":
+            self.set_twitch_status_badge("Connected", "#3fcf5e")
+        elif event_type == "chat_commands.disconnected":
+            self.set_twitch_status_badge("Disconnected", "#ff9c4a")
+
         if event_type == "audio.level":
             self._last_audio_level_seen_at = datetime.now()
             self._audio_watchdog_warned = False

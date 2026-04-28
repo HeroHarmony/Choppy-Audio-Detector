@@ -1646,6 +1646,9 @@ class MainWindow(QMainWindow):
 
     def update_obs_controls_enabled(self) -> None:
         enabled = self.obs_enabled.isChecked()
+        if not enabled and self.obs_service.is_connected:
+            self.obs_service.disconnect()
+            self.append_console("OBS WebSocket integration disabled: disconnected existing OBS session.")
         widgets = (
             self.obs_host,
             self.obs_port,
@@ -1864,7 +1867,7 @@ class MainWindow(QMainWindow):
 
         if event_type == "chat_commands.fix_requested":
             user = str(data.get("user", "")).strip() or "unknown"
-            if not self.settings.obs_websocket.enabled:
+            if not self.obs_enabled.isChecked():
                 self.append_console(f"Chat fix by {user} skipped: OBS WebSocket integration disabled.")
                 return
             if not self.obs_service.is_connected:

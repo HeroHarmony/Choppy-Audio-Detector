@@ -136,9 +136,10 @@ class RuntimeSignals(QObject):
 class ObsLevelMeter(QWidget):
     """Simple OBS-style horizontal meter with green/yellow/red zones."""
 
-    def __init__(self, show_ruler: bool = True, parent=None):
+    def __init__(self, show_ruler: bool = True, overlay_label: str = "", parent=None):
         super().__init__(parent)
         self._show_ruler = show_ruler
+        self._overlay_label = overlay_label
         self._dbfs = -120.0
         self._peak_hold_dbfs = -120.0
         self._peak_hold_seen_at = 0.0
@@ -212,6 +213,9 @@ class ObsLevelMeter(QWidget):
         self._draw_zone_lines(painter, meter_rect)
         if self._show_ruler:
             self._draw_db_ruler(painter, full_rect, meter_rect)
+        if self._overlay_label:
+            painter.setPen(QColor("#000000"))
+            painter.drawText(int(meter_rect.x() + 6), int(meter_rect.y() + 14), self._overlay_label)
 
     def _fill_segment(self, painter: QPainter, rect, start: float, end: float, color: QColor) -> None:
         width = max(0.0, end - start)
@@ -335,7 +339,17 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         self.device_combo = QComboBox()
         self.device_combo.currentIndexChanged.connect(self.device_selection_changed)
-        form.addRow("Audio input", self.device_combo)
+        device_col = QWidget()
+        device_col_layout = QVBoxLayout(device_col)
+        device_col_layout.setContentsMargins(0, 0, 0, 0)
+        device_col_layout.setSpacing(4)
+        device_col_layout.addWidget(self.device_combo)
+        self.device_hint_label = QLabel("")
+        self.device_hint_label.setWordWrap(True)
+        self.device_hint_label.setStyleSheet("color: #bdbdbd;")
+        self.device_hint_label.hide()
+        device_col_layout.addWidget(self.device_hint_label)
+        form.addRow("Audio input", device_col)
         self.channel_combo = QComboBox()
         self.channel_combo.currentIndexChanged.connect(self.channel_selection_changed)
         form.addRow("Channel", self.channel_combo)
@@ -368,23 +382,28 @@ class MainWindow(QMainWindow):
             button_row.addWidget(button)
         layout.addLayout(button_row)
 
+        status_row = QHBoxLayout()
         self.status_label = QLabel("Stopped")
-        layout.addWidget(self.status_label)
-        self.device_hint_label = QLabel("")
-        self.device_hint_label.setWordWrap(True)
+        status_row.addWidget(self.status_label, 1)
+
+        status_right_col = QVBoxLayout()
+        status_right_col.setContentsMargins(0, 0, 0, 0)
+        status_right_col.addStretch(1)
+        self.level_text = QLabel("Peak -inf dBFS | RMS -inf dBFS")
+        status_right_col.addWidget(self.level_text, 0, Qt.AlignRight)
+        status_row.addLayout(status_right_col, 0)
+        layout.addLayout(status_row)
         layout.addWidget(self.device_hint_label)
 
         meter_stack = QWidget()
         meter_stack_layout = QVBoxLayout(meter_stack)
         meter_stack_layout.setContentsMargins(0, 0, 0, 0)
         meter_stack_layout.setSpacing(0)
-        self.peak_meter = ObsLevelMeter(show_ruler=False)
-        self.rms_meter = ObsLevelMeter(show_ruler=True)
+        self.peak_meter = ObsLevelMeter(show_ruler=False, overlay_label="Peak")
+        self.rms_meter = ObsLevelMeter(show_ruler=True, overlay_label="RMS")
         meter_stack_layout.addWidget(self.peak_meter)
         meter_stack_layout.addWidget(self.rms_meter)
-        self.level_text = QLabel("Peak -inf dBFS | RMS -inf dBFS")
         layout.addWidget(meter_stack)
-        layout.addWidget(self.level_text)
 
         layout.addWidget(QLabel("Recent events"))
         self.recent_events = QPlainTextEdit()
@@ -945,12 +964,14 @@ class MainWindow(QMainWindow):
         self.restart_button.setEnabled(is_monitorable)
         if device and not device.is_monitorable:
             self.device_hint_label.setText(
-                "Selected device is output-only. On macOS, route output through BlackHole/Loopback and select the matching input/capture endpoint."
+                "⚠ Selected device is output-only. On macOS, route output through BlackHole/Loopback and select the matching input/capture endpoint."
             )
-        elif device:
-            self.device_hint_label.setText("Selected device can be monitored.")
+            self.device_hint_label.setStyleSheet("color: #f0c04a; font-weight: 600;")
+            self.device_hint_label.show()
         else:
-            self.device_hint_label.setText("No audio device selected.")
+            self.device_hint_label.clear()
+            self.device_hint_label.setStyleSheet("color: #bdbdbd;")
+            self.device_hint_label.hide()
 
     def auto_restart(self) -> None:
         if self.runtime.is_running:
@@ -1153,13 +1174,12 @@ class MainWindow(QMainWindow):
             self._audio_watchdog_warned = False
             if self.runtime.is_running and not self.settings.keep_preview_while_monitoring:
                 return
-            rms = float(data.get("rms", 0.0))
             peak_dbfs = float(data.get("peak_dbfs", data.get("dbfs", -120.0)))
             rms_dbfs = float(data.get("rms_dbfs", data.get("dbfs", -120.0)))
             smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(peak_dbfs, rms_dbfs)
             self.peak_meter.set_level_dbfs(smooth_peak_dbfs, peak_source=True)
             self.rms_meter.set_level_dbfs(smooth_rms_dbfs, peak_source=False)
-            self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS | RMS={rms:.6f}")
+            self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS")
             return
 
         if event_type == "runtime.console":
@@ -1362,8 +1382,7 @@ class MainWindow(QMainWindow):
         smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(peak_dbfs, rms_dbfs)
         self.peak_meter.set_level_dbfs(smooth_peak_dbfs, peak_source=True)
         self.rms_meter.set_level_dbfs(smooth_rms_dbfs, peak_source=False)
-        suffix = "preview + monitoring" if self.runtime.is_running else "preview"
-        self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS | {suffix}")
+        self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS")
 
     def update_meter_display_mode(self) -> None:
         preview_disabled = self.runtime.is_running and not self.settings.keep_preview_while_monitoring

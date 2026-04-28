@@ -1,5 +1,10 @@
 config.py
-__pycache__/
-*.pyc
 .env
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
 .vscode/
+Log/
+settings.json
+*.local.settings.json

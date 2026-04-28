@@ -8,12 +8,13 @@ from config import TWITCH_CHANNEL, TWITCH_BOT_USERNAME, TWITCH_OAUTH_TOKEN
 logger = logging.getLogger(__name__)
 
 class TwitchBot:
-    def __init__(self):
+    def __init__(self, channel=None, username=None, token=None):
         self.server = 'irc.chat.twitch.tv'
         self.port = 6667
-        self.channel = f'#{TWITCH_CHANNEL}'
-        self.username = TWITCH_BOT_USERNAME
-        self.token = TWITCH_OAUTH_TOKEN
+        channel_name = (channel or TWITCH_CHANNEL or "").strip().lstrip("#")
+        self.channel = f'#{channel_name}'
+        self.username = username or TWITCH_BOT_USERNAME
+        self.token = token or TWITCH_OAUTH_TOKEN
         self.sock = None
         self.connected = False
         self.connection_lock = Lock()
@@ -21,6 +22,8 @@ class TwitchBot:
         self.max_reconnect_attempts = 5
         self.last_connection_attempt = 0
         self.connection_timeout = 10
+        self.last_error = ""
+        self.last_response = ""
         
     def connect(self):
         """Connect to Twitch IRC with retry logic"""
@@ -32,7 +35,8 @@ class TwitchBot:
             
             # Rate limit connection attempts
             if current_time - self.last_connection_attempt < 30:
-                logger.warning("Connection attempt rate limited")
+                self.last_error = "Connection attempt rate limited"
+                logger.warning(self.last_error)
                 return False
                 
             self.last_connection_attempt = current_time
@@ -54,37 +58,79 @@ class TwitchBot:
                 self.sock.connect((self.server, self.port))
                 
                 # Authentication sequence
+                self.sock.send(b"CAP REQ :twitch.tv/tags twitch.tv/commands\r\n")
                 self.sock.send(f"PASS {self.token}\r\n".encode('utf-8'))
                 self.sock.send(f"NICK {self.username}\r\n".encode('utf-8'))
                 self.sock.send(f"JOIN {self.channel}\r\n".encode('utf-8'))
                 
-                # Wait for connection confirmation
-                response = self.sock.recv(2048).decode('utf-8', errors='ignore')
-                
-                if "Welcome" in response or "001" in response or "353" in response:
+                # Wait for connection confirmation. Twitch may send CAP ACK before
+                # the numeric welcome/join messages, so keep reading briefly.
+                response_parts = []
+                deadline = time.time() + self.connection_timeout
+                connected_response = ""
+                auth_failed_response = ""
+
+                while time.time() < deadline:
+                    response = self.sock.recv(2048).decode('utf-8', errors='ignore')
+                    if not response:
+                        break
+                    response_parts.append(response)
+                    combined_response = "".join(response_parts)
+                    self.last_response = combined_response
+
+                    if (
+                        "Login authentication failed" in combined_response
+                        or "Improperly formatted auth" in combined_response
+                        or "Error logging in" in combined_response
+                        or "NOTICE * :Login" in combined_response
+                    ):
+                        auth_failed_response = combined_response
+                        break
+
+                    if (
+                        "Welcome" in combined_response
+                        or " 001 " in combined_response
+                        or " 353 " in combined_response
+                        or " JOIN " in combined_response
+                    ):
+                        connected_response = combined_response
+                        break
+
+                if connected_response:
                     self.connected = True
                     self.reconnect_attempts = 0
                     logger.info(f"Successfully connected to Twitch as {self.username} in {self.channel}")
                     return True
+                elif auth_failed_response:
+                    self.last_error = f"Twitch authentication failed: {auth_failed_response.strip()}"
+                    logger.warning(self.last_error)
+                    self.connected = False
+                    return False
                 else:
-                    logger.warning(f"Unexpected connection response: {response}")
+                    response_text = self.last_response.strip() or "No response before timeout"
+                    self.last_error = f"Unexpected connection response: {response_text}"
+                    logger.warning(self.last_error)
                     self.connected = False
                     return False
                     
             except socket.timeout:
-                logger.error("Connection timeout")
+                self.last_error = "Connection timeout"
+                logger.error(self.last_error)
                 self.connected = False
                 return False
             except socket.gaierror as e:
-                logger.error(f"DNS resolution failed: {e}")
+                self.last_error = f"DNS resolution failed: {e}"
+                logger.error(self.last_error)
                 self.connected = False
                 return False
             except ConnectionRefusedError:
-                logger.error("Connection refused by Twitch")
+                self.last_error = "Connection refused by Twitch"
+                logger.error(self.last_error)
                 self.connected = False
                 return False
             except Exception as e:
-                logger.error(f"Connection error: {e}")
+                self.last_error = f"Connection error: {e}"
+                logger.error(self.last_error)
                 self.connected = False
                 return False
             finally:
@@ -178,14 +224,14 @@ class TwitchBot:
         logger.error("Failed to send message after all attempts")
         return False
 
-    def listen(self, callback=None):
+    def listen(self, callback=None, should_continue=None):
         """Listen for incoming messages (optional feature)"""
         if not self.is_connected():
             return
             
         try:
             self.sock.settimeout(1)
-            while self.connected:
+            while self.connected and (should_continue is None or should_continue()):
                 try:
                     data = self.sock.recv(2048)
                     if not data:

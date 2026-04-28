@@ -46,6 +46,42 @@ To get started we need a few things. Be prepared to setup the following:
    Skip the interactive prompts by using command line arguments. [See Advanced Usage section below for details.](#advanced-usage)
 5. **That's it!** The script should now be running and monitoring your audio input for glitches.
 
+## GUI
+
+A desktop GUI entry point is available:
+
+```bash
+python app_gui.py
+```
+
+Install the GUI dependencies first:
+
+```bash
+pip install -r requirements.txt
+```
+
+The original `live_analysis.py` script remains supported. The GUI uses the same detector runtime and adds tabs for monitoring controls, response templates, settings, and console-style runtime output.
+
+### GUI Command Line Options
+
+You can launch the GUI with command line options similar to `live_analysis.py`:
+
+```bash
+python app_gui.py --list-devices
+python app_gui.py --audio-device 2 --twitch
+python app_gui.py --audio-device 2 --channel 1
+python app_gui.py --no-twitch
+```
+
+- `--list-devices`: Lists available audio input devices and exits.
+- `--audio-device N`: Selects audio input device by GUI index.
+- `--channel N`: Selects input channel index and auto-starts monitoring.
+- `--twitch`: Enables Twitch alerts.
+- `--no-twitch`: Disables Twitch alerts.
+- `--twitch-channel NAME`: Sets Twitch channel (without `#`).
+- `--twitch-bot-username USER`: Sets Twitch bot username.
+- `--twitch-oauth-token TOKEN`: Sets Twitch OAuth token.
+
 # Audio Input Device
 Audio is different for everyone, so I'll explain my setup. I'm using voicemeeter to manage my audio devices. I've configured Open Broadcaster Software (OBS) to use one of voicemeeter's virtual inputs, namely Cable Input, as the monitoring device. For this, on OBS go to:
 `Settings > Audio > Advanced > Monitoring Device > Cable Input (VB-Audio Virtual Cable)`

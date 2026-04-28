@@ -48,19 +48,44 @@ To get started we need a few things. Be prepared to setup the following:
 
 ## GUI
 
-A desktop GUI entry point is available:
+A desktop GUI entry point is available.
+
+Quick start (recommended):
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 python app_gui.py
 ```
 
-Install the GUI dependencies first:
+The original `live_analysis.py` script remains supported. The GUI uses the same detector runtime and adds tabs for monitoring controls, response templates, settings, and console-style runtime output.
+
+If your virtual environment is already created, you can just run:
 
 ```bash
-pip install -r requirements.txt
+source .venv/bin/activate
+python app_gui.py
 ```
 
-The original `live_analysis.py` script remains supported. The GUI uses the same detector runtime and adds tabs for monitoring controls, response templates, settings, and console-style runtime output.
+### One-Click Launchers
+
+You can also use launcher scripts that auto-create `.venv`, install requirements, and run the GUI:
+
+- Windows: double-click `run_gui.bat`
+- macOS: double-click `run_gui.command`
+
+From terminal:
+
+```bash
+./run_gui.command
+```
+
+Windows command prompt:
+
+```bat
+run_gui.bat
+```
 
 ### GUI Command Line Options
 

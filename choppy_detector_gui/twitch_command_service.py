@@ -26,6 +26,11 @@ class TwitchChatMessage:
 
 
 class TwitchCommandService:
+    CHOPPY_INFO_COMMAND = "!choppy"
+    CHOPPY_PROMO_MESSAGE = (
+        "Choppy-Audio-Detector is developed by @HeroHarmony! Find the repository on GitHub."
+    )
+
     def __init__(
         self,
         settings: AppSettings,
@@ -134,6 +139,17 @@ class TwitchCommandService:
 
     def _handle_raw_message(self, raw_message: str) -> None:
         for message in parse_twitch_messages(raw_message):
+            if message.message.strip() == self.CHOPPY_INFO_COMMAND:
+                self.emit("chat_commands.accepted", user=message.username, action="promo")
+                self.file_logger.log(
+                    "info",
+                    "chat_commands.accepted",
+                    user=message.username,
+                    action="promo",
+                )
+                self.send_response(self.CHOPPY_PROMO_MESSAGE)
+                continue
+
             command = parse_chat_command(message.message, self.settings.chat_commands)
             if command is None:
                 continue

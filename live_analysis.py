@@ -264,6 +264,8 @@ class BalancedChoppyDetector:
         self.alert_sender_thread = None
         self.twitch_connection_thread = None
         self.alert_queue_drops = 0
+        self.max_alert_age_seconds = 15.0
+        self.max_alert_send_window_seconds = 8.0
 
     def emit_event(self, event_type, **payload):
         if self.event_callback:
@@ -366,6 +368,7 @@ class BalancedChoppyDetector:
                 'detection_count': detection_count,
                 'time_span_minutes': time_span_minutes,
                 'is_first_alert': is_first_alert,
+                'queued_at': time_module.time(),
             })
             return True
         except Full:
@@ -385,10 +388,30 @@ class BalancedChoppyDetector:
                 continue
 
             try:
+                queued_at = float(payload.get('queued_at', time_module.time()))
+                age_seconds = max(0.0, time_module.time() - queued_at)
+                if age_seconds > self.max_alert_age_seconds:
+                    print(
+                        f"[{self._timestamp()}] [WARN] Dropping stale Twitch alert "
+                        f"(age={age_seconds:.1f}s > {self.max_alert_age_seconds:.1f}s)"
+                    )
+                    self.emit_event(
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=self.max_alert_age_seconds,
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=self.max_alert_age_seconds,
+                    )
+                    continue
                 self.send_twitch_alert(
                     payload['detection_count'],
                     payload['time_span_minutes'],
                     payload['is_first_alert'],
+                    queued_at=queued_at,
                 )
             except Exception as e:
                 print(f"[{self._timestamp()}] [ERROR] Alert sender failure: {e}")
@@ -808,7 +831,7 @@ class BalancedChoppyDetector:
             self.log_file_event("error", "twitch.connection_error", error=str(e))
             return False
 
-    def send_twitch_alert(self, detection_count, time_span_minutes, is_first_alert):
+    def send_twitch_alert(self, detection_count, time_span_minutes, is_first_alert, queued_at=None):
         """Send alert to Twitch chat"""
         if not self.twitch_enabled or not self.twitch_bot:
             return False
@@ -827,8 +850,31 @@ class BalancedChoppyDetector:
                 device_name=device_name,
             )
 
-            # Send to chat
-            success = self.twitch_bot.send_message(message)
+            if queued_at is not None:
+                age_seconds = max(0.0, time_module.time() - float(queued_at))
+                if age_seconds > self.max_alert_age_seconds:
+                    print(
+                        f"[{self._timestamp()}] [WARN] Skipping stale Twitch alert before send "
+                        f"(age={age_seconds:.1f}s > {self.max_alert_age_seconds:.1f}s)"
+                    )
+                    self.emit_event(
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=self.max_alert_age_seconds,
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "alert.dropped_stale",
+                        age_seconds=round(age_seconds, 2),
+                        max_age_seconds=self.max_alert_age_seconds,
+                    )
+                    return False
+
+            # Send to chat with a hard cutoff so stale alerts do not linger in retries.
+            success = self.twitch_bot.send_message(
+                message,
+                max_total_seconds=self.max_alert_send_window_seconds,
+            )
             if success:
                 self.total_alerts_sent += 1
                 print(f"Twitch alert sent: {message}")

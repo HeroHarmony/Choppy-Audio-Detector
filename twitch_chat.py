@@ -25,11 +25,15 @@ class TwitchBot:
         self.last_error = ""
         self.last_response = ""
         
-    def connect(self):
+    def connect(self, deadline_monotonic=None):
         """Connect to Twitch IRC with retry logic"""
         with self.connection_lock:
             if self.connected and self.sock:
                 return True
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                self.last_error = "Connection attempt skipped: send window expired"
+                logger.warning(self.last_error)
+                return False
                 
             current_time = time.time()
             
@@ -51,7 +55,16 @@ class TwitchBot:
                         
                 # Create new socket
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(self.connection_timeout)
+                timeout_seconds = self.connection_timeout
+                if deadline_monotonic is not None:
+                    remaining = deadline_monotonic - time.monotonic()
+                    if remaining <= 0:
+                        self.last_error = "Connection timeout window expired"
+                        logger.warning(self.last_error)
+                        self.connected = False
+                        return False
+                    timeout_seconds = max(0.5, min(timeout_seconds, remaining))
+                self.sock.settimeout(timeout_seconds)
                 
                 # Connect to Twitch IRC
                 logger.info(f"Connecting to {self.server}:{self.port}...")
@@ -66,11 +79,13 @@ class TwitchBot:
                 # Wait for connection confirmation. Twitch may send CAP ACK before
                 # the numeric welcome/join messages, so keep reading briefly.
                 response_parts = []
-                deadline = time.time() + self.connection_timeout
+                deadline = time.time() + timeout_seconds
                 connected_response = ""
                 auth_failed_response = ""
 
                 while time.time() < deadline:
+                    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                        break
                     response = self.sock.recv(2048).decode('utf-8', errors='ignore')
                     if not response:
                         break
@@ -141,7 +156,7 @@ class TwitchBot:
                         pass
                     self.sock = None
 
-    def reconnect(self):
+    def reconnect(self, deadline_monotonic=None):
         """Attempt to reconnect with exponential backoff"""
         if self.reconnect_attempts >= self.max_reconnect_attempts:
             logger.error("Max reconnection attempts reached")
@@ -149,11 +164,17 @@ class TwitchBot:
             
         self.reconnect_attempts += 1
         backoff_time = min(60, 2 ** self.reconnect_attempts)
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                logger.warning("Reconnect skipped: send window expired")
+                return False
+            backoff_time = min(backoff_time, remaining)
         
         logger.info(f"Reconnection attempt {self.reconnect_attempts}/{self.max_reconnect_attempts} in {backoff_time}s")
         time.sleep(backoff_time)
         
-        return self.connect()
+        return self.connect(deadline_monotonic=deadline_monotonic)
 
     def is_connected(self):
         """Check if bot is currently connected"""
@@ -175,7 +196,7 @@ class TwitchBot:
                 except:
                     pass
 
-    def send_message(self, message):
+    def send_message(self, message, max_total_seconds=None):
         """Send message with automatic reconnection on failure"""
         if not message or len(message.strip()) == 0:
             logger.warning("Attempted to send empty message")
@@ -184,13 +205,22 @@ class TwitchBot:
         # Truncate long messages
         if len(message) > 500:
             message = message[:497] + "..."
+        deadline_monotonic = None
+        if max_total_seconds is not None:
+            try:
+                deadline_monotonic = time.monotonic() + max(0.1, float(max_total_seconds))
+            except Exception:
+                deadline_monotonic = None
             
         max_attempts = 2
         
         for attempt in range(max_attempts):
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                logger.warning("Send window expired before message could be delivered")
+                return False
             if not self.is_connected():
                 logger.warning("Not connected, attempting to reconnect...")
-                if not self.reconnect():
+                if not self.reconnect(deadline_monotonic=deadline_monotonic):
                     continue
                     
             try:
@@ -198,7 +228,14 @@ class TwitchBot:
                     if not self.sock:
                         continue
                         
-                    self.sock.settimeout(5)
+                    timeout_seconds = 5
+                    if deadline_monotonic is not None:
+                        remaining = deadline_monotonic - time.monotonic()
+                        if remaining <= 0:
+                            logger.warning("Send window expired before socket send")
+                            return False
+                        timeout_seconds = max(0.2, min(timeout_seconds, remaining))
+                    self.sock.settimeout(timeout_seconds)
                     message_bytes = f"PRIVMSG {self.channel} :{message}\r\n".encode('utf-8')
                     self.sock.send(message_bytes)
                     

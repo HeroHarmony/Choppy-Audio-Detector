@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import threading
 import time
@@ -41,7 +42,7 @@ except ImportError as exc:
         "PySide6 is required for the GUI. Install dependencies with: pip install -r requirements.txt"
     ) from exc
 
-from choppy_detector_gui.alert_templates import AlertTemplates
+from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_detection_count
 from choppy_detector_gui.file_logging import AppFileLogger
 from choppy_detector_gui.obs_websocket_service import ObsConnectionConfig, ObsWebSocketService
 from choppy_detector_gui.runtime import DetectorRuntime
@@ -293,6 +294,7 @@ class MainWindow(QMainWindow):
         self._display_peak_dbfs = -120.0
         self._display_rms_dbfs = -120.0
         self._display_level_last_update_at = time.monotonic()
+        self._obs_last_auto_refresh_at = 0.0
 
         self.auto_restart_timer = QTimer(self)
         self.auto_restart_timer.timeout.connect(self.auto_restart)
@@ -1654,6 +1656,18 @@ class MainWindow(QMainWindow):
             self.update_obs_controls_enabled()
             return
 
+        if action == "auto_refresh":
+            if ok:
+                self.set_obs_status("Connected", "#3fcf5e")
+                self.append_console(f"OBS auto-refresh succeeded: {message}")
+                self.append_event(f"OBS auto-refresh: {message}")
+            else:
+                self.set_obs_status("Error", "#ff6a6a")
+                self.append_console(f"OBS auto-refresh failed: {message}")
+                self.append_event(f"OBS auto-refresh failed: {message}")
+            self.update_obs_controls_enabled()
+            return
+
     def apply_advanced_to_controls(self) -> None:
         for key, *_ in self.alert_config_schema():
             widget = self.advanced_widgets.get(f"value:{key}")
@@ -1777,6 +1791,9 @@ class MainWindow(QMainWindow):
             self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS")
             return
 
+        if event_type == "glitch.detected":
+            self.maybe_trigger_obs_auto_refresh(data)
+
         if event_type == "runtime.console":
             line = str(data.get("line", "")).rstrip()
             if line:
@@ -1805,6 +1822,80 @@ class MainWindow(QMainWindow):
         message = self.format_event(event_type, data)
         self.append_event(message)
         self.append_console(message)
+
+    def maybe_trigger_obs_auto_refresh(self, glitch_data: dict[str, object]) -> None:
+        obs_settings = self.settings.obs_websocket
+        if not obs_settings.enabled or not obs_settings.auto_refresh_enabled:
+            return
+        if not self.obs_service.is_connected:
+            self.append_console("OBS auto-refresh skipped: OBS is not connected.")
+            return
+
+        source = self.obs_target_source.currentText().strip() or obs_settings.target_source.strip()
+        if not source:
+            self.append_console("OBS auto-refresh skipped: no target source selected.")
+            return
+
+        event_severity = self.derive_glitch_severity(glitch_data)
+        required_severity = (obs_settings.auto_refresh_min_severity or "severe").strip().lower()
+        if not self.severity_meets_threshold(event_severity, required_severity):
+            self.append_console(
+                f"OBS auto-refresh skipped: event severity {event_severity} below threshold {required_severity}."
+            )
+            return
+
+        now = time.monotonic()
+        cooldown_sec = max(0, int(obs_settings.auto_refresh_cooldown_sec))
+        elapsed = now - self._obs_last_auto_refresh_at
+        if self._obs_last_auto_refresh_at > 0 and elapsed < cooldown_sec:
+            remaining = max(0.0, cooldown_sec - elapsed)
+            self.append_console(f"OBS auto-refresh skipped: cooldown active ({remaining:.1f}s remaining).")
+            return
+
+        self._obs_last_auto_refresh_at = now
+        self.append_console(
+            f"OBS auto-refresh triggered: severity {event_severity} met threshold {required_severity}."
+        )
+        self.set_obs_status("Auto Refreshing", "#4aa3ff")
+        self.set_obs_busy(True)
+        self._run_obs_task(
+            "auto_refresh",
+            lambda: self.obs_service.refresh_source(
+                source_name=source,
+                off_on_delay_ms=obs_settings.refresh_off_on_delay_ms,
+            ),
+        )
+
+    def derive_glitch_severity(self, glitch_data: dict[str, object]) -> str:
+        raw = str(glitch_data.get("severity", "")).strip().lower()
+        if raw in {"minor", "moderate", "severe"}:
+            return raw
+        detection_count = glitch_data.get("detection_count")
+        try:
+            count = int(detection_count)
+            if count >= 0:
+                template_severity = severity_for_detection_count(count).strip("[]").lower()
+                if template_severity in {"minor", "moderate", "severe"}:
+                    return template_severity
+        except Exception:
+            pass
+        confidence = glitch_data.get("confidence")
+        try:
+            score = float(confidence)
+            if not math.isfinite(score):
+                raise ValueError("non-finite confidence")
+        except Exception:
+            return "minor"
+
+        if score >= 90.0:
+            return "severe"
+        if score >= 75.0:
+            return "moderate"
+        return "minor"
+
+    def severity_meets_threshold(self, event_severity: str, threshold: str) -> bool:
+        rank = {"minor": 1, "moderate": 2, "severe": 3}
+        return rank.get(event_severity, 1) >= rank.get(threshold, 3)
 
     def format_event(self, event_type: str, data: dict[str, object]) -> str:
         if event_type == "glitch.detected":

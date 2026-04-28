@@ -121,6 +121,7 @@ class AppSettings:
     twitch_bot_username: str = ""
     twitch_oauth_token: str = ""
     auto_restart_minutes: int = 60
+    auto_start_monitoring: bool = False
     alert_cooldown_ms: int = 60000
     keep_preview_while_monitoring: bool = False
     smooth_preview_meter: bool = True
@@ -144,6 +145,7 @@ class AppSettings:
     def normalize(self) -> "AppSettings":
         self.selected_channel_index = max(0, int(self.selected_channel_index or 0))
         self.auto_restart_minutes = min(1440, max(5, int(self.auto_restart_minutes or 60)))
+        self.auto_start_monitoring = bool(self.auto_start_monitoring)
         self.alert_cooldown_ms = max(1000, int(self.alert_cooldown_ms or 60000))
         self.smooth_preview_meter = bool(self.smooth_preview_meter)
         self.preview_meter_fps = min(60, max(5, int(self.preview_meter_fps or 20)))
@@ -176,6 +178,7 @@ class AppSettings:
             twitch_bot_username=str(data.get("twitch_bot_username") or default_twitch_bot_username()),
             twitch_oauth_token=str(data.get("twitch_oauth_token") or default_twitch_oauth_token()),
             auto_restart_minutes=int(data.get("auto_restart_minutes") or 60),
+            auto_start_monitoring=bool(data.get("auto_start_monitoring", False)),
             alert_cooldown_ms=int(data.get("alert_cooldown_ms") or 60000),
             keep_preview_while_monitoring=bool(data.get("keep_preview_while_monitoring", False)),
             smooth_preview_meter=bool(data.get("smooth_preview_meter", True)),

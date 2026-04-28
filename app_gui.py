@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
         self.update_command_service()
         self.restart_meter_preview()
         self.append_console("GUI started.")
-        if self.auto_start_requested:
+        if self.auto_start_requested or self.settings.auto_start_monitoring:
             QTimer.singleShot(120, self.start_monitoring)
 
     def apply_launch_options(self, options: argparse.Namespace | None) -> None:
@@ -529,6 +529,8 @@ class MainWindow(QMainWindow):
         self.auto_restart_minutes = QSpinBox()
         self.auto_restart_minutes.setRange(5, 1440)
         general_form.addRow("Auto-restart minutes", self.auto_restart_minutes)
+        self.auto_start_monitoring = QCheckBox("Start monitoring on app launch")
+        general_form.addRow("Auto-start monitoring", self.auto_start_monitoring)
 
         self.alert_cooldown_ms = QSpinBox()
         self.alert_cooldown_ms.setRange(1000, 3600000)
@@ -806,6 +808,7 @@ class MainWindow(QMainWindow):
         self.template_ongoing.setPlainText(templates.ongoing)
 
         self.auto_restart_minutes.setValue(self.settings.auto_restart_minutes)
+        self.auto_start_monitoring.setChecked(self.settings.auto_start_monitoring)
         self.alert_cooldown_ms.setValue(self.settings.alert_cooldown_ms)
         self.twitch_channel.setText(self.settings.twitch_channel)
         self.twitch_bot_username.setText(self.settings.twitch_bot_username)
@@ -1066,6 +1069,7 @@ class MainWindow(QMainWindow):
 
     def save_all_settings(self) -> None:
         self.settings.auto_restart_minutes = self.auto_restart_minutes.value()
+        self.settings.auto_start_monitoring = self.auto_start_monitoring.isChecked()
         self.settings.alert_cooldown_ms = self.alert_cooldown_ms.value()
         self.settings.twitch_channel = self.twitch_channel.text().strip().lstrip("#")
         self.settings.twitch_bot_username = self.twitch_bot_username.text().strip()

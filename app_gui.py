@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
 from datetime import datetime
 
 try:
@@ -135,18 +136,37 @@ class RuntimeSignals(QObject):
 class ObsLevelMeter(QWidget):
     """Simple OBS-style horizontal meter with green/yellow/red zones."""
 
-    def __init__(self, parent=None):
+    def __init__(self, show_ruler: bool = True, parent=None):
         super().__init__(parent)
+        self._show_ruler = show_ruler
         self._dbfs = -120.0
+        self._peak_hold_dbfs = -120.0
+        self._peak_hold_seen_at = 0.0
+        self._peak_hold_seconds = 1.2
+        self._peak_hold_decay_db_per_sec = 18.0
         self._scale_min_db = -60.0
         self._scale_max_db = 0.0
         self._yellow_start_db = -20.0
         self._red_start_db = -9.0
-        self.setMinimumHeight(44)
-        self.setMaximumHeight(44)
+        self.setMinimumHeight(30)
+        self.setMaximumHeight(30)
 
-    def set_level_dbfs(self, dbfs: float) -> None:
+    def set_level_dbfs(self, dbfs: float, peak_source: bool = False) -> None:
         self._dbfs = max(-120.0, min(0.0, float(dbfs)))
+        if peak_source:
+            now = time.monotonic()
+            if self._dbfs >= self._peak_hold_dbfs:
+                self._peak_hold_dbfs = self._dbfs
+                self._peak_hold_seen_at = now
+            else:
+                elapsed = now - self._peak_hold_seen_at
+                if elapsed > self._peak_hold_seconds:
+                    decay_elapsed = elapsed - self._peak_hold_seconds
+                    decayed = self._peak_hold_dbfs - (decay_elapsed * self._peak_hold_decay_db_per_sec)
+                    self._peak_hold_dbfs = max(self._dbfs, decayed, self._scale_min_db)
+                    if self._peak_hold_dbfs <= self._dbfs + 0.25:
+                        self._peak_hold_dbfs = self._dbfs
+                        self._peak_hold_seen_at = now
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -168,7 +188,8 @@ class ObsLevelMeter(QWidget):
         fill_width = meter_rect.width() * fill_ratio
         if fill_width <= 0:
             self._draw_zone_lines(painter, meter_rect)
-            self._draw_db_ruler(painter, full_rect, meter_rect)
+            if self._show_ruler:
+                self._draw_db_ruler(painter, full_rect, meter_rect)
             return
 
         self._fill_segment(painter, meter_rect, 0.0, min(fill_width, green_end), QColor("#28c840"))
@@ -182,8 +203,15 @@ class ObsLevelMeter(QWidget):
         painter.setPen(QColor("#f5f5f5"))
         painter.drawLine(int(marker_x), int(meter_rect.y()), int(marker_x), int(meter_rect.y() + meter_rect.height()))
 
+        if self._peak_hold_dbfs > self._scale_min_db:
+            hold_ratio = self._db_to_ratio(self._peak_hold_dbfs)
+            hold_x = meter_rect.x() + meter_rect.width() * hold_ratio
+            painter.setPen(QColor("#ffffff"))
+            painter.drawLine(int(hold_x), int(meter_rect.y() - 1), int(hold_x), int(meter_rect.y() + meter_rect.height() + 1))
+
         self._draw_zone_lines(painter, meter_rect)
-        self._draw_db_ruler(painter, full_rect, meter_rect)
+        if self._show_ruler:
+            self._draw_db_ruler(painter, full_rect, meter_rect)
 
     def _fill_segment(self, painter: QPainter, rect, start: float, end: float, color: QColor) -> None:
         width = max(0.0, end - start)
@@ -246,7 +274,8 @@ class MainWindow(QMainWindow):
         self._audio_watchdog_warned = False
         self._meter_preview_stream = None
         self._meter_preview_lock = threading.Lock()
-        self._meter_preview_dbfs = -120.0
+        self._meter_preview_peak_dbfs = -120.0
+        self._meter_preview_rms_dbfs = -120.0
         self._meter_preview_last_update = datetime.min
 
         self.auto_restart_timer = QTimer(self)
@@ -342,9 +371,16 @@ class MainWindow(QMainWindow):
         self.device_hint_label.setWordWrap(True)
         layout.addWidget(self.device_hint_label)
 
-        self.level_meter = ObsLevelMeter()
-        self.level_text = QLabel("-inf dBFS")
-        layout.addWidget(self.level_meter)
+        meter_stack = QWidget()
+        meter_stack_layout = QVBoxLayout(meter_stack)
+        meter_stack_layout.setContentsMargins(0, 0, 0, 0)
+        meter_stack_layout.setSpacing(0)
+        self.peak_meter = ObsLevelMeter(show_ruler=False)
+        self.rms_meter = ObsLevelMeter(show_ruler=True)
+        meter_stack_layout.addWidget(self.peak_meter)
+        meter_stack_layout.addWidget(self.rms_meter)
+        self.level_text = QLabel("Peak -inf dBFS | RMS -inf dBFS")
+        layout.addWidget(meter_stack)
         layout.addWidget(self.level_text)
 
         layout.addWidget(QLabel("Recent events"))
@@ -1099,9 +1135,11 @@ class MainWindow(QMainWindow):
             if self.runtime.is_running and not self.settings.keep_preview_while_monitoring:
                 return
             rms = float(data.get("rms", 0.0))
-            dbfs = float(data.get("dbfs", -120.0))
-            self.level_meter.set_level_dbfs(dbfs)
-            self.level_text.setText(f"{dbfs:.1f} dBFS | RMS={rms:.6f}")
+            peak_dbfs = float(data.get("peak_dbfs", data.get("dbfs", -120.0)))
+            rms_dbfs = float(data.get("rms_dbfs", data.get("dbfs", -120.0)))
+            self.peak_meter.set_level_dbfs(peak_dbfs, peak_source=True)
+            self.rms_meter.set_level_dbfs(rms_dbfs, peak_source=False)
+            self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS | RMS={rms:.6f}")
             return
 
         if event_type == "runtime.console":
@@ -1250,9 +1288,12 @@ class MainWindow(QMainWindow):
             else:
                 audio_data = indata
             rms = float(np.sqrt(np.mean(audio_data**2)))
-            dbfs = 20.0 * np.log10(rms + 1e-12)
+            peak = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
+            rms_dbfs = 20.0 * np.log10(rms + 1e-12)
+            peak_dbfs = 20.0 * np.log10(peak + 1e-12)
             with self._meter_preview_lock:
-                self._meter_preview_dbfs = max(-120.0, min(0.0, dbfs))
+                self._meter_preview_peak_dbfs = max(-120.0, min(0.0, peak_dbfs))
+                self._meter_preview_rms_dbfs = max(-120.0, min(0.0, rms_dbfs))
                 self._meter_preview_last_update = datetime.now()
         except Exception:
             return
@@ -1267,18 +1308,21 @@ class MainWindow(QMainWindow):
             self.update_meter_display_mode()
             return
         with self._meter_preview_lock:
-            dbfs = self._meter_preview_dbfs
+            peak_dbfs = self._meter_preview_peak_dbfs
+            rms_dbfs = self._meter_preview_rms_dbfs
             seen_at = self._meter_preview_last_update
         if seen_at == datetime.min:
             return
         self.update_meter_display_mode()
-        self.level_meter.set_level_dbfs(dbfs)
+        self.peak_meter.set_level_dbfs(peak_dbfs, peak_source=True)
+        self.rms_meter.set_level_dbfs(rms_dbfs, peak_source=False)
         suffix = "preview + monitoring" if self.runtime.is_running else "preview"
-        self.level_text.setText(f"{dbfs:.1f} dBFS | {suffix}")
+        self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS | {suffix}")
 
     def update_meter_display_mode(self) -> None:
         preview_disabled = self.runtime.is_running and not self.settings.keep_preview_while_monitoring
-        self.level_meter.setEnabled(not preview_disabled)
+        self.peak_meter.setEnabled(not preview_disabled)
+        self.rms_meter.setEnabled(not preview_disabled)
         if preview_disabled:
             self.level_text.setText("Preview disabled while monitoring")
 

@@ -939,8 +939,17 @@ class BalancedChoppyDetector:
                 self.log_file_event("info", "audio.callback_started", device=self.audio_device)
             if current_time - self._last_audio_level_event_time >= 0.05:
                 rms_level = float(np.sqrt(np.mean(audio_data**2)))
-                dbfs = 20.0 * math.log10(rms_level + 1e-12)
-                self.emit_event("audio.level", rms=rms_level, dbfs=dbfs)
+                peak_level = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
+                rms_dbfs = 20.0 * math.log10(rms_level + 1e-12)
+                peak_dbfs = 20.0 * math.log10(peak_level + 1e-12)
+                self.emit_event(
+                    "audio.level",
+                    rms=rms_level,
+                    peak=peak_level,
+                    rms_dbfs=rms_dbfs,
+                    peak_dbfs=peak_dbfs,
+                    dbfs=rms_dbfs,
+                )
                 self._last_audio_level_event_time = current_time
         except Exception as e:
             self.audio_callback_errors += 1

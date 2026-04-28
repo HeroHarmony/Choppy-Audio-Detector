@@ -68,6 +68,7 @@ class ChatCommandSettings:
     restart_command: str = "!choppy restart"
     status_command: str = "!choppy status"
     list_devices_command: str = "!choppy devices"
+    fix_command: str = "!choppy fix"
     switch_device_command_prefix: str = "!choppy device"
     allowed_chat_users: list[str] = field(default_factory=list)
     allow_broadcaster: bool = True
@@ -88,6 +89,7 @@ class ChatCommandSettings:
             restart_command=str(data.get("restart_command") or cls.restart_command),
             status_command=str(data.get("status_command") or cls.status_command),
             list_devices_command=str(data.get("list_devices_command") or cls.list_devices_command),
+            fix_command=str(data.get("fix_command") or cls.fix_command),
             switch_device_command_prefix=str(
                 data.get("switch_device_command_prefix") or cls.switch_device_command_prefix
             ),

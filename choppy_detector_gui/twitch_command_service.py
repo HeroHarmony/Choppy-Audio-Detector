@@ -200,6 +200,10 @@ class TwitchCommandService:
                 for device in self.runtime.list_devices()
             ]
             return "Available devices: " + "; ".join(labels)
+        if action == "fix":
+            self.emit("chat_commands.fix_requested", user=username)
+            self.file_logger.log("info", "chat_commands.fix_requested", user=username)
+            return "OBS refresh requested."
         if action == "switch_device":
             if device_number is None:
                 return "Could not switch device: invalid device number."

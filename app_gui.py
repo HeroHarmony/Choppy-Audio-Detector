@@ -604,6 +604,7 @@ class MainWindow(QMainWindow):
         self.restart_command = QLineEdit()
         self.status_command = QLineEdit()
         self.list_devices_command = QLineEdit()
+        self.fix_command = QLineEdit()
         self.switch_device_command_prefix = QLineEdit()
         for cmd_input in (
             self.start_command,
@@ -611,6 +612,7 @@ class MainWindow(QMainWindow):
             self.restart_command,
             self.status_command,
             self.list_devices_command,
+            self.fix_command,
             self.switch_device_command_prefix,
         ):
             cmd_input.setMinimumWidth(250)
@@ -619,6 +621,7 @@ class MainWindow(QMainWindow):
         commands_form.addRow("Restart command", self.restart_command)
         commands_form.addRow("Status command", self.status_command)
         commands_form.addRow("List devices command", self.list_devices_command)
+        commands_form.addRow("Refresh OBS Source", self.fix_command)
         commands_form.addRow("Switch device prefix", self.switch_device_command_prefix)
 
         self.allowed_chat_users = QPlainTextEdit()
@@ -1035,6 +1038,7 @@ class MainWindow(QMainWindow):
         self.restart_command.setText(commands.restart_command)
         self.status_command.setText(commands.status_command)
         self.list_devices_command.setText(commands.list_devices_command)
+        self.fix_command.setText(commands.fix_command)
         self.switch_device_command_prefix.setText(commands.switch_device_command_prefix)
         self.allowed_chat_users.setPlainText("\n".join(commands.allowed_chat_users))
         self.send_command_responses.setChecked(commands.send_command_responses)
@@ -1327,6 +1331,7 @@ class MainWindow(QMainWindow):
         commands.restart_command = self.restart_command.text().strip()
         commands.status_command = self.status_command.text().strip()
         commands.list_devices_command = self.list_devices_command.text().strip()
+        commands.fix_command = self.fix_command.text().strip()
         commands.switch_device_command_prefix = self.switch_device_command_prefix.text().strip()
         commands.allowed_chat_users = [
             line.strip().lower()
@@ -1375,6 +1380,7 @@ class MainWindow(QMainWindow):
                 self.restart_command.text().strip() != commands.restart_command,
                 self.status_command.text().strip() != commands.status_command,
                 self.list_devices_command.text().strip() != commands.list_devices_command,
+                self.fix_command.text().strip() != commands.fix_command,
                 self.switch_device_command_prefix.text().strip() != commands.switch_device_command_prefix,
                 allowed_users != commands.allowed_chat_users,
                 self.send_command_responses.isChecked() != commands.send_command_responses,
@@ -1616,10 +1622,13 @@ class MainWindow(QMainWindow):
         if not source:
             QMessageBox.warning(self, "No Source Selected", "Choose an OBS source first.")
             return
+        self.queue_obs_refresh_request(source=source, action="refresh")
+
+    def queue_obs_refresh_request(self, source: str, action: str = "refresh") -> None:
         self.set_obs_status("Refreshing", "#4aa3ff")
         self.set_obs_busy(True)
         self._run_obs_task(
-            "refresh",
+            action,
             lambda: self.obs_service.refresh_source_in_scene(
                 source_name=source,
                 scene_name="" if self.obs_target_scene.currentText().strip() == "All Scenes" else self.obs_target_scene.currentText().strip(),
@@ -1716,6 +1725,18 @@ class MainWindow(QMainWindow):
                 self.set_obs_status("Error", "#ff6a6a")
                 QMessageBox.warning(self, "OBS Refresh Failed", message)
                 self.append_console(message)
+            self.update_obs_controls_enabled()
+            return
+
+        if action == "chat_refresh":
+            if ok:
+                self.set_obs_status("Connected", "#3fcf5e")
+                self.append_console(f"OBS chat refresh succeeded: {message}")
+                self.append_event(f"OBS chat refresh: {message}")
+            else:
+                self.set_obs_status("Error", "#ff6a6a")
+                self.append_console(f"OBS chat refresh failed: {message}")
+                self.append_event(f"OBS chat refresh failed: {message}")
             self.update_obs_controls_enabled()
             return
 
@@ -1840,6 +1861,22 @@ class MainWindow(QMainWindow):
             self.set_twitch_status_badge("Connected", "#3fcf5e")
         elif event_type == "chat_commands.disconnected":
             self.set_twitch_status_badge("Disconnected", "#ff9c4a")
+
+        if event_type == "chat_commands.fix_requested":
+            user = str(data.get("user", "")).strip() or "unknown"
+            if not self.settings.obs_websocket.enabled:
+                self.append_console(f"Chat fix by {user} skipped: OBS WebSocket integration disabled.")
+                return
+            if not self.obs_service.is_connected:
+                self.append_console(f"Chat fix by {user} skipped: OBS is not connected.")
+                return
+            source = self.obs_target_source.currentText().strip() or self.settings.obs_websocket.target_source.strip()
+            if not source:
+                self.append_console(f"Chat fix by {user} skipped: no OBS source selected.")
+                return
+            self.append_console(f"Chat fix requested by {user}: refreshing source '{source}'.")
+            self.queue_obs_refresh_request(source=source, action="chat_refresh")
+            return
 
         if event_type == "audio.level":
             self._last_audio_level_seen_at = datetime.now()

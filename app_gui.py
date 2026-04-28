@@ -327,6 +327,8 @@ class MainWindow(QMainWindow):
         self.update_command_service()
         self.restart_meter_preview()
         self.append_console("GUI started.")
+        if self.settings.obs_websocket.enabled and self.settings.obs_websocket.auto_connect_on_launch:
+            QTimer.singleShot(250, self.connect_obs)
         if self.auto_start_requested or self.settings.auto_start_monitoring:
             QTimer.singleShot(120, self.start_monitoring)
 
@@ -549,6 +551,8 @@ class MainWindow(QMainWindow):
         general_form.addRow("Auto-restart minutes", self.auto_restart_minutes)
         self.auto_start_monitoring = QCheckBox("Start monitoring on app launch")
         general_form.addRow("Auto-start monitoring", self.auto_start_monitoring)
+        self.obs_auto_connect_on_launch = QCheckBox("Start websocket on app start")
+        general_form.addRow("Auto-connect OBS", self.obs_auto_connect_on_launch)
 
         self.alert_cooldown_ms = QSpinBox()
         self.alert_cooldown_ms.setRange(1000, 3600000)
@@ -1042,6 +1046,7 @@ class MainWindow(QMainWindow):
         self.smooth_preview_meter.setChecked(self.settings.smooth_preview_meter)
         self.preview_meter_fps.setValue(self.settings.preview_meter_fps)
         self.dark_mode_enabled.setChecked(self.settings.dark_mode_enabled)
+        self.obs_auto_connect_on_launch.setChecked(self.settings.obs_websocket.auto_connect_on_launch)
         self.log_directory.setText(self.settings.log_settings.log_directory)
         self.apply_obs_settings_to_controls()
         self.apply_advanced_to_controls()
@@ -1342,6 +1347,7 @@ class MainWindow(QMainWindow):
         self.settings.smooth_preview_meter = self.smooth_preview_meter.isChecked()
         self.settings.preview_meter_fps = self.preview_meter_fps.value()
         self.settings.dark_mode_enabled = self.dark_mode_enabled.isChecked()
+        self.settings.obs_websocket.auto_connect_on_launch = self.obs_auto_connect_on_launch.isChecked()
         self.settings.log_settings.log_directory = self.log_directory.text().strip()
         self.collect_obs_from_controls()
         self.collect_advanced_from_controls()
@@ -1385,6 +1391,7 @@ class MainWindow(QMainWindow):
                 self.smooth_preview_meter.isChecked() != self.settings.smooth_preview_meter,
                 self.preview_meter_fps.value() != self.settings.preview_meter_fps,
                 self.dark_mode_enabled.isChecked() != self.settings.dark_mode_enabled,
+                self.obs_auto_connect_on_launch.isChecked() != self.settings.obs_websocket.auto_connect_on_launch,
                 self.log_directory.text().strip() != self.settings.log_settings.log_directory,
             )
         )

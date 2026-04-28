@@ -119,6 +119,7 @@ class LogSettings:
 @dataclass
 class ObsWebSocketSettings:
     enabled: bool = False
+    auto_connect_on_launch: bool = False
     host: str = "127.0.0.1"
     port: int = 4455
     password: str = ""
@@ -135,6 +136,7 @@ class ObsWebSocketSettings:
             return cls()
         return cls(
             enabled=bool(data.get("enabled", False)),
+            auto_connect_on_launch=bool(data.get("auto_connect_on_launch", False)),
             host=str(data.get("host") or "127.0.0.1").strip() or "127.0.0.1",
             port=int(data.get("port") or 4455),
             password=str(data.get("password") or ""),

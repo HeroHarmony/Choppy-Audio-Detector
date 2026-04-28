@@ -306,6 +306,7 @@ class MainWindow(QMainWindow):
         self.build_settings_tab()
         self.build_advanced_tab()
         self.build_console_tab()
+        self.build_support_tab()
         self._last_tab_index = self.tabs.currentIndex()
         self.tabs.currentChanged.connect(self.handle_tab_changed)
         self.refresh_devices()
@@ -638,6 +639,30 @@ class MainWindow(QMainWindow):
         self.save_settings_button.clicked.connect(self.save_all_settings)
         layout.addWidget(self.save_settings_button)
         self.tabs.addTab(tab, "Settings")
+
+    def build_support_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(10)
+
+        title = QLabel("Support and Links")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(title)
+
+        github_link = QLabel('<a href="https://github.com/HeroHarmony/Choppy-Audio-Detector">GitHub Repository</a>')
+        github_link.setOpenExternalLinks(True)
+        layout.addWidget(github_link)
+
+        twitch_link = QLabel('<a href="https://www.twitch.tv/heroharmony">HeroHarmony on Twitch</a>')
+        twitch_link.setOpenExternalLinks(True)
+        layout.addWidget(twitch_link)
+
+        support_link = QLabel('<a href="https://streamelements.com/heroharmony/tip">Buy Me a Coffee / Support</a>')
+        support_link.setOpenExternalLinks(True)
+        layout.addWidget(support_link)
+
+        layout.addStretch(1)
+        self.tabs.addTab(tab, "Support")
 
     def build_console_tab(self) -> None:
         tab = QWidget()

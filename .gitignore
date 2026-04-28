@@ -8,3 +8,6 @@ __pycache__/
 Log/
 settings.json
 *.local.settings.json
+build/
+dist/
+*.spec

@@ -87,6 +87,33 @@ Windows command prompt:
 run_gui.bat
 ```
 
+### Packaged Builds (No Terminal Window)
+
+You can build desktop app packages that launch directly without opening Terminal/Command Prompt.
+
+#### Windows build
+
+```bat
+build_windows.bat
+```
+
+Output:
+- `dist\ChoppyAudioDetector\ChoppyAudioDetector.exe`
+
+#### macOS build
+
+```bash
+./build_macos.command
+```
+
+Output:
+- `dist/ChoppyAudioDetector.app`
+
+These packaged builds are standalone for normal use (no `.py` files required beside them).  
+Settings are stored in the OS user config location:
+- Windows: `%APPDATA%\ChoppyAudioDetector\settings.json`
+- macOS: `~/Library/Application Support/ChoppyAudioDetector/settings.json`
+
 ### GUI Command Line Options
 
 You can launch the GUI with command line options similar to `live_analysis.py`:

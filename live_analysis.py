@@ -8,12 +8,15 @@ import numpy as np
 import sounddevice as sd
 import threading
 import time
+import time as time_module
 import argparse
 from collections import deque
 from datetime import datetime
+from queue import Empty, Full, Queue
 import warnings
 import logging
 import math
+import traceback
 warnings.filterwarnings('ignore')
 
 # Import Twitch bot (assuming it's in the same directory)
@@ -107,6 +110,30 @@ THRESHOLDS = {
     'suspicious_gap_count': 4,     # Number of gaps that suggests real problems
 }
 
+def get_hostapi_name(hostapi_index):
+    """Return a readable host API name for a PortAudio device."""
+    try:
+        return sd.query_hostapis(hostapi_index)['name']
+    except Exception:
+        return "Unknown"
+
+def infer_obs_monitoring_device(device_name):
+    """Best-effort hint for the OBS monitoring-device name that feeds this input."""
+    normalized = " ".join(str(device_name).split())
+
+    replacements = (
+        ("CABLE Output", "CABLE Input"),
+        ("Voicemeeter Output", "Voicemeeter Input"),
+        ("Voicemeeter AUX Output", "Voicemeeter AUX Input"),
+        ("Voicemeeter VAIO3 Output", "Voicemeeter VAIO3 Input"),
+    )
+
+    for source, target in replacements:
+        if source in normalized:
+            return normalized.replace(source, target)
+
+    return None
+
 def list_audio_devices():
     """List available audio input devices"""
     devices = sd.query_devices()
@@ -114,13 +141,23 @@ def list_audio_devices():
     
     print("\nAvailable audio input devices:")
     print("-" * 50)
+    print("OBS Monitoring Device is an output/render device.")
+    print("This script records from input/capture devices, so virtual cables often look inverted:")
+    print("  OBS 'CABLE Input' -> script 'CABLE Output'")
+    print()
     
     for i, device in enumerate(devices):
         if device['max_input_channels'] > 0:
             input_devices.append((i, device))
             status = " (default)" if i == sd.default.device[0] else ""
-            print(f"  {len(input_devices)-1}: {device['name']}{status}")
+            hostapi_name = get_hostapi_name(device.get('hostapi'))
+            selection_index = len(input_devices) - 1
+            print(f"  {selection_index}: {device['name']}{status}")
+            print(f"     PortAudio Index: {i}, Host API: {hostapi_name}")
             print(f"     Channels: {device['max_input_channels']}, Sample Rate: {device['default_samplerate']}")
+            obs_hint = infer_obs_monitoring_device(device['name'])
+            if obs_hint:
+                print(f"     OBS Monitoring Device likely appears as: {obs_hint}")
     
     return input_devices
 
@@ -167,7 +204,10 @@ class BalancedChoppyDetector:
         self.volume_report_interval_sec = 10
         self._volume_report_started = False
         self._last_volume_report_time = 0.0
-        self.audio_buffer = deque(maxlen=BUFFER_SIZE)
+        self.sample_rate = int(SAMPLE_RATE)
+        self.stream_channels = 1
+        self.device_info = None
+        self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
         self.running = False
         self.lock = threading.Lock()
         self.audio_device = audio_device
@@ -196,6 +236,118 @@ class BalancedChoppyDetector:
         self.last_possible_glitch_log_reason = ""
         self.recent_analysis_windows = 0
         self.recent_low_conf_hits = 0
+        self.last_audio_callback_time = 0.0
+        self.last_audio_callback_status = ""
+        self.audio_callback_errors = 0
+        self.last_stale_audio_warning_time = 0.0
+        self.detection_loop_errors = 0
+        self.last_detection_error_time = 0.0
+        self.last_detection_traceback = ""
+        self.detection_thread = None
+        self.alert_queue = Queue(maxsize=32)
+        self.alert_sender_thread = None
+        self.alert_queue_drops = 0
+
+    def _timestamp(self):
+        return datetime.now().strftime("%H:%M:%S")
+
+    def configure_audio_stream(self):
+        """Use the selected device's native defaults when possible."""
+        self.sample_rate = int(SAMPLE_RATE)
+        self.stream_channels = 1
+        self.device_info = None
+
+        if self.audio_device is None:
+            self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+            return
+
+        try:
+            device_info = sd.query_devices(self.audio_device)
+            self.device_info = device_info
+
+            default_samplerate = device_info.get('default_samplerate')
+            if default_samplerate:
+                self.sample_rate = int(round(float(default_samplerate)))
+
+            max_input_channels = int(device_info.get('max_input_channels', 0) or 0)
+            if max_input_channels <= 0:
+                raise ValueError("Selected device reports no input channels")
+
+            self.stream_channels = 1
+            self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+        except Exception as e:
+            print(
+                f"[{self._timestamp()}] [WARN] Could not load selected device defaults: {e}. "
+                f"Falling back to {SAMPLE_RATE} Hz mono."
+            )
+            self.sample_rate = int(SAMPLE_RATE)
+            self.stream_channels = 1
+            self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+
+    def _start_detection_thread(self):
+        if self.detection_thread and self.detection_thread.is_alive():
+            return
+
+        self.detection_thread = threading.Thread(
+            target=self.detection_loop,
+            name="detection-loop",
+            daemon=True,
+        )
+        self.detection_thread.start()
+
+    def _start_alert_sender(self):
+        if not self.twitch_enabled or not self.twitch_bot:
+            return
+
+        if self.alert_sender_thread and self.alert_sender_thread.is_alive():
+            return
+
+        self.alert_sender_thread = threading.Thread(
+            target=self.alert_sender_loop,
+            name="twitch-alert-sender",
+            daemon=True,
+        )
+        self.alert_sender_thread.start()
+
+    def queue_twitch_alert(self, detection_count, time_span_minutes, is_first_alert):
+        """Queue alert delivery so network work never blocks detection."""
+        if not self.twitch_enabled or not self.twitch_bot:
+            return False
+
+        try:
+            self.alert_queue.put_nowait({
+                'detection_count': detection_count,
+                'time_span_minutes': time_span_minutes,
+                'is_first_alert': is_first_alert,
+            })
+            return True
+        except Full:
+            self.alert_queue_drops += 1
+            print(
+                f"[{self._timestamp()}] [WARN] Twitch alert queue full; "
+                f"dropping alert #{self.alert_queue_drops}"
+            )
+            return False
+
+    def alert_sender_loop(self):
+        """Deliver queued Twitch alerts in the background."""
+        while self.running or not self.alert_queue.empty():
+            try:
+                payload = self.alert_queue.get(timeout=0.5)
+            except Empty:
+                continue
+
+            try:
+                self.send_twitch_alert(
+                    payload['detection_count'],
+                    payload['time_span_minutes'],
+                    payload['is_first_alert'],
+                )
+            except Exception as e:
+                print(f"[{self._timestamp()}] [ERROR] Alert sender failure: {e}")
+                print(traceback.format_exc().rstrip())
+            finally:
+                self.alert_queue.task_done()
         
     def establish_baseline(self, audio):
         """Learn what normal audio levels look like"""
@@ -260,7 +412,7 @@ class BalancedChoppyDetector:
         gaps = []
         for start, end in zip(gap_starts, gap_ends):
             duration_samples = end - start
-            duration_ms = (duration_samples / SAMPLE_RATE) * 1000
+            duration_ms = (duration_samples / self.sample_rate) * 1000
             gaps.append({
                 'start': start,
                 'end': end,
@@ -398,7 +550,7 @@ class BalancedChoppyDetector:
         if np.max(np.abs(centered)) < 1e-8:
             return False, 0.0, 0.0, modulation_depth, 0.0
 
-        env_sr = SAMPLE_RATE / hop
+        env_sr = self.sample_rate / hop
         spectrum = np.abs(np.fft.rfft(centered))
         freqs = np.fft.rfftfreq(len(centered), d=1.0 / env_sr)
 
@@ -694,12 +846,20 @@ class BalancedChoppyDetector:
 
     def audio_callback(self, indata, frames, time, status):
         """Callback for audio input"""
-        if status:
-            print(f"Audio callback status: {status}")
-            
-        with self.lock:
-            audio_data = indata[:, 0] if indata.ndim > 1 else indata
-            self.audio_buffer.extend(audio_data)
+        try:
+            if status:
+                self.last_audio_callback_status = str(status)
+                print(f"[{self._timestamp()}] Audio callback status: {status}")
+
+            with self.lock:
+                audio_data = indata[:, 0] if indata.ndim > 1 else indata
+                self.audio_buffer.extend(audio_data)
+
+            self.last_audio_callback_time = time_module.time()
+        except Exception as e:
+            self.audio_callback_errors += 1
+            print(f"[{self._timestamp()}] [ERROR] Audio callback failure #{self.audio_callback_errors}: {e}")
+            print(traceback.format_exc().rstrip())
 
     def detection_loop(self):
         """Main detection loop with reasonable timing"""
@@ -710,126 +870,161 @@ class BalancedChoppyDetector:
         print("Building baseline audio profile...")
         
         while self.running:
-            time.sleep(0.2)  # 5Hz analysis rate
-            
-            current_time = time.time()
-            if current_time - last_detection_time < detection_cooldown:
-                continue
-            
-            with self.lock:
-                if len(self.audio_buffer) < SAMPLE_RATE:  # Need at least 1 second
+            try:
+                time.sleep(0.2)  # 5Hz analysis rate
+
+                current_time = time_module.time()
+                if current_time - last_detection_time < detection_cooldown:
                     continue
-                    
-                audio = np.array(list(self.audio_buffer))
 
-            # --- Volume heartbeat (prints once at start, then every 30 seconds) ---
-            rms_level = float(np.sqrt(np.mean(audio**2)))
+                with self.lock:
+                    if len(self.audio_buffer) < self.sample_rate:  # Need at least 1 second
+                        continue
 
-            if not self._volume_report_started:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Detection running. "
-                      f"{self._format_volume(rms_level)} | min_analyze={THRESHOLDS['min_audio_level']} "
-                      f"| high_conf_total={self.total_detections}")
-                self._volume_report_started = True
-                self._last_volume_report_time = current_time
+                    audio = np.array(list(self.audio_buffer), dtype=np.float32)
 
-            elif (current_time - self._last_volume_report_time) >= self.volume_report_interval_sec:
-                status = "OK" if rms_level >= THRESHOLDS['min_audio_level'] else "quiet"
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Audio level: "
-                      f"{self._format_volume(rms_level)} [{status}] "
-                      f"| windows={self.recent_analysis_windows} "
-                      f"| low_conf={self.recent_low_conf_hits} "
-                      f"| high_conf_total={self.total_detections}")
-                self._last_volume_report_time = current_time
-                self.recent_analysis_windows = 0
-                self.recent_low_conf_hits = 0
-                
-            # Analyze audio
-            results = self.analyze_audio(audio)
-            
-            # Assess confidence
-            confidence, reasons = self.assess_glitch_confidence(results)
-            self.recent_analysis_windows += 1
-            if results and 0 < confidence < 0.75:
-                self.recent_low_conf_hits += 1
+                time_since_callback = (
+                    current_time - self.last_audio_callback_time
+                    if self.last_audio_callback_time > 0
+                    else None
+                )
 
-            if not results or confidence < 0.75:
-                if (
-                    results and
-                    confidence > 0 and
-                    ALERT_CONFIG['log_possible_glitches'] and
-                    confidence >= ALERT_CONFIG['possible_log_min_confidence']
-                ):
-                    reason_key = reasons
-                    should_log = (
-                        reason_key != self.last_possible_glitch_log_reason or
-                        (current_time - self.last_possible_glitch_log_time) >= ALERT_CONFIG['possible_log_interval_seconds']
+                # --- Volume heartbeat ---
+                rms_level = float(np.sqrt(np.mean(audio**2)))
+
+                if not self._volume_report_started:
+                    print(
+                        f"[{self._timestamp()}] Detection running. "
+                        f"{self._format_volume(rms_level)} | min_analyze={THRESHOLDS['min_audio_level']} "
+                        f"| high_conf_total={self.total_detections}"
                     )
-                    if should_log:
-                        timestamp = datetime.now().strftime("%H:%M:%S")
-                        print(f"[{timestamp}] Possible glitch (confidence: {confidence:.1%}) - {reasons}")
-                        self.last_possible_glitch_log_time = current_time
-                        self.last_possible_glitch_log_reason = reason_key
-                continue
+                    self._volume_report_started = True
+                    self._last_volume_report_time = current_time
 
-            # De-duplicate repeated windows from the same glitch burst.
-            active_methods = tuple(sorted(method for method, result in results.items() if result.get('choppy')))
-            current_signature = "|".join(active_methods)
-            time_since_event = current_time - self.last_detection_event_time
-            if (
-                time_since_event < ALERT_CONFIG['event_dedup_seconds'] and
-                current_signature == self.last_detection_signature
-            ):
-                if current_time - self.last_dedup_log_time >= 5:
-                    remaining = ALERT_CONFIG['event_dedup_seconds'] - time_since_event
-                    print(f"    Duplicate glitch window suppressed ({remaining:.1f}s dedup remaining)")
-                    self.last_dedup_log_time = current_time
-                last_detection_time = current_time
-                continue
-            self.last_detection_event_time = current_time
-            self.last_detection_signature = current_signature
+                elif (current_time - self._last_volume_report_time) >= self.volume_report_interval_sec:
+                    status = "OK" if rms_level >= THRESHOLDS['min_audio_level'] else "quiet"
+                    freshness = (
+                        f"live={time_since_callback:.1f}s"
+                        if time_since_callback is not None
+                        else "live=unknown"
+                    )
+                    print(
+                        f"[{self._timestamp()}] Audio level: "
+                        f"{self._format_volume(rms_level)} [{status}] "
+                        f"| {freshness} "
+                        f"| windows={self.recent_analysis_windows} "
+                        f"| low_conf={self.recent_low_conf_hits} "
+                        f"| high_conf_total={self.total_detections}"
+                    )
+                    self._last_volume_report_time = current_time
+                    self.recent_analysis_windows = 0
+                    self.recent_low_conf_hits = 0
 
-            # FIXED: Check for episode reset BEFORE recording the new detection
-            self.check_episode_reset(current_time)
-            
-            # High confidence detection found
-            primary_hit = any(
-                results.get(name, {}).get('choppy', False)
-                for name in ('silence_gaps', 'envelope_discontinuity')
-            )
-            self.record_detection(confidence * 100, reasons, primary_hit)
-            
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            print(f"\n[{timestamp}] STREAMING GLITCH DETECTED!")
-            print(f"  Confidence: {confidence:.1%}")
-            print(f"  Reasons: {reasons}")
-            
-            # Show details for debugging
-            for method, result in results.items():
-                if result['choppy']:
-                    print(f"    {method}: {result.get('description', result['score'])}")
-            
-            # Check if we should send Twitch alert
-            should_alert, detection_count, time_span, cooldown_remaining = self.should_send_alert()
-            
-            if should_alert:
-                # Check if this is a new episode or continuation
-                is_first_alert = not self.current_episode_started
-                
-                # Send alert
-                success = self.send_twitch_alert(detection_count, time_span, is_first_alert)
-                if success:
-                    self.last_alert_time = current_time
-                    self.current_episode_started = True
-                
-            else:
-                # Show why alert wasn't sent
-                if cooldown_remaining > 0:
-                    cooldown_minutes = cooldown_remaining / 60.0
-                    print(f"    Alert cooldown active (~{cooldown_minutes:.1f} min remaining)")
+                if (
+                    time_since_callback is not None and
+                    time_since_callback >= 5.0 and
+                    (current_time - self.last_stale_audio_warning_time) >= 10.0
+                ):
+                    device_label = (
+                        self.device_info.get('name')
+                        if isinstance(self.device_info, dict)
+                        else self.audio_device
+                    )
+                    print(
+                        f"[{self._timestamp()}] [WARN] No fresh audio callback data for "
+                        f"{time_since_callback:.1f}s; stream may be stalled. "
+                        f"Device={device_label!r}, format={self.sample_rate}Hz/{self.stream_channels}ch"
+                    )
+                    self.last_stale_audio_warning_time = current_time
+
+                # Analyze audio
+                results = self.analyze_audio(audio)
+
+                # Assess confidence
+                confidence, reasons = self.assess_glitch_confidence(results)
+                self.recent_analysis_windows += 1
+                if results and 0 < confidence < 0.75:
+                    self.recent_low_conf_hits += 1
+
+                if not results or confidence < 0.75:
+                    if (
+                        results and
+                        confidence > 0 and
+                        ALERT_CONFIG['log_possible_glitches'] and
+                        confidence >= ALERT_CONFIG['possible_log_min_confidence']
+                    ):
+                        reason_key = reasons
+                        should_log = (
+                            reason_key != self.last_possible_glitch_log_reason or
+                            (current_time - self.last_possible_glitch_log_time) >= ALERT_CONFIG['possible_log_interval_seconds']
+                        )
+                        if should_log:
+                            print(f"[{self._timestamp()}] Possible glitch (confidence: {confidence:.1%}) - {reasons}")
+                            self.last_possible_glitch_log_time = current_time
+                            self.last_possible_glitch_log_reason = reason_key
+                    continue
+
+                # De-duplicate repeated windows from the same glitch burst.
+                active_methods = tuple(sorted(method for method, result in results.items() if result.get('choppy')))
+                current_signature = "|".join(active_methods)
+                time_since_event = current_time - self.last_detection_event_time
+                if (
+                    time_since_event < ALERT_CONFIG['event_dedup_seconds'] and
+                    current_signature == self.last_detection_signature
+                ):
+                    if current_time - self.last_dedup_log_time >= 5:
+                        remaining = ALERT_CONFIG['event_dedup_seconds'] - time_since_event
+                        print(f"    Duplicate glitch window suppressed ({remaining:.1f}s dedup remaining)")
+                        self.last_dedup_log_time = current_time
+                    last_detection_time = current_time
+                    continue
+                self.last_detection_event_time = current_time
+                self.last_detection_signature = current_signature
+
+                # Check for episode reset before recording the new detection
+                self.check_episode_reset(current_time)
+
+                primary_hit = any(
+                    results.get(name, {}).get('choppy', False)
+                    for name in ('silence_gaps', 'envelope_discontinuity')
+                )
+                self.record_detection(confidence * 100, reasons, primary_hit)
+
+                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                print(f"\n[{timestamp}] STREAMING GLITCH DETECTED!")
+                print(f"  Confidence: {confidence:.1%}")
+                print(f"  Reasons: {reasons}")
+
+                for method, result in results.items():
+                    if result['choppy']:
+                        print(f"    {method}: {result.get('description', result['score'])}")
+
+                should_alert, detection_count, time_span, cooldown_remaining = self.should_send_alert()
+
+                if should_alert:
+                    is_first_alert = not self.current_episode_started
+                    if self.queue_twitch_alert(detection_count, time_span, is_first_alert):
+                        self.last_alert_time = current_time
+                        self.current_episode_started = True
+                        print("    Twitch alert queued")
                 else:
-                    print(f"    Recent detections: {detection_count}/{ALERT_CONFIG['detections_for_alert']} (need {ALERT_CONFIG['detections_for_alert']} for alert)")
-            
-            last_detection_time = current_time
+                    if cooldown_remaining > 0:
+                        cooldown_minutes = cooldown_remaining / 60.0
+                        print(f"    Alert cooldown active (~{cooldown_minutes:.1f} min remaining)")
+                    else:
+                        print(
+                            f"    Recent detections: {detection_count}/{ALERT_CONFIG['detections_for_alert']} "
+                            f"(need {ALERT_CONFIG['detections_for_alert']} for alert)"
+                        )
+
+                last_detection_time = current_time
+            except Exception as e:
+                self.detection_loop_errors += 1
+                self.last_detection_error_time = time_module.time()
+                self.last_detection_traceback = traceback.format_exc()
+                print(f"[{self._timestamp()}] [ERROR] Detection loop failure #{self.detection_loop_errors}: {e}")
+                print(self.last_detection_traceback.rstrip())
+                time.sleep(1.0)
 
     def start_detection(self):
         """Start balanced detection with optional Twitch integration"""
@@ -863,34 +1058,65 @@ class BalancedChoppyDetector:
         print(f"  Episode reset after: {ALERT_CONFIG['clean_audio_reset_seconds']}s clean audio")
         print(f"  Log low-confidence possible glitches: {ALERT_CONFIG['log_possible_glitches']}")
         print()
+
+        self.configure_audio_stream()
+        if self.device_info is not None:
+            hostapi_name = get_hostapi_name(self.device_info.get('hostapi'))
+            print("Selected Audio Device:")
+            print(f"  Name: {self.device_info.get('name')}")
+            print(f"  Host API: {hostapi_name}")
+            print(f"  Stream Format: {self.sample_rate} Hz, {self.stream_channels} channel")
+            print(
+                f"  Device Capabilities: {self.device_info.get('max_input_channels')} input channels, "
+                f"default {self.device_info.get('default_samplerate')} Hz"
+            )
+            print()
         
         self.running = True
-        
-        detection_thread = threading.Thread(target=self.detection_loop)
-        detection_thread.daemon = True
-        detection_thread.start()
-        
+        self.last_audio_callback_time = time_module.time()
+
+        self._start_detection_thread()
+        self._start_alert_sender()
+
         try:
-            with sd.InputStream(
-                device=self.audio_device,
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                blocksize=CHUNK_SIZE,
-                callback=self.audio_callback
-            ):
-                while self.running:
-                    time.sleep(0.1)
-                    
-        except KeyboardInterrupt:
-            print("\n\nStopping detection...")
+            while self.running:
+                try:
+                    with sd.InputStream(
+                        device=self.audio_device,
+                        samplerate=self.sample_rate,
+                        channels=self.stream_channels,
+                        blocksize=CHUNK_SIZE,
+                        callback=self.audio_callback
+                    ):
+                        print(f"[{self._timestamp()}] Audio input stream opened")
+                        while self.running:
+                            if self.detection_thread and not self.detection_thread.is_alive():
+                                print(f"[{self._timestamp()}] [WARN] Detection loop thread stopped; restarting")
+                                self._start_detection_thread()
+                            time.sleep(0.5)
+                except KeyboardInterrupt:
+                    print("\n\nStopping detection...")
+                    self.running = False
+                except Exception as e:
+                    print(f"[{self._timestamp()}] [ERROR] Audio input stream failure: {e}")
+                    print(traceback.format_exc().rstrip())
+                    if not self.running:
+                        break
+                    print(f"[{self._timestamp()}] Restarting audio input stream in 2 seconds...")
+                    time.sleep(2.0)
+        finally:
             self.running = False
-            
-            # Show final stats
+            if self.alert_sender_thread and self.alert_sender_thread.is_alive():
+                self.alert_sender_thread.join(timeout=3.0)
+            if self.detection_thread and self.detection_thread.is_alive():
+                self.detection_thread.join(timeout=3.0)
+
             print("\nFinal Statistics:")
             print(f"  Total detections: {self.total_detections}")
             print(f"  Alerts sent: {self.total_alerts_sent}")
-            
-            # Disconnect from Twitch
+            print(f"  Detection loop errors: {self.detection_loop_errors}")
+            print(f"  Audio callback errors: {self.audio_callback_errors}")
+
             if self.twitch_bot:
                 self.twitch_bot.disconnect()
 

@@ -60,6 +60,58 @@ try:
 except Exception:
     SOUNDDEVICE_AVAILABLE = False
 
+DARK_THEME_STYLESHEET = """
+QMainWindow, QWidget {
+    background-color: #3f3f3f;
+    color: #ececec;
+}
+QGroupBox {
+    border: 1px solid #5a5a5a;
+    border-radius: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+}
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    background-color: #161616;
+    color: #ededed;
+    border: 1px solid #505050;
+    selection-background-color: #2a82da;
+}
+QPushButton, QToolButton {
+    background-color: #666;
+    color: #eee;
+    border: 1px solid #7a7a7a;
+    border-radius: 5px;
+    padding: 4px 8px;
+}
+QPushButton:hover, QToolButton:hover {
+    background-color: #757575;
+}
+QPushButton:disabled, QToolButton:disabled {
+    color: #a0a0a0;
+    background-color: #535353;
+}
+QTabWidget::pane {
+    border: 1px solid #565656;
+}
+QCheckBox {
+    spacing: 6px;
+}
+QScrollBar:vertical {
+    background: #2d2d2d;
+    width: 12px;
+}
+QScrollBar::handle:vertical {
+    background: #6a6a6a;
+    min-height: 20px;
+}
+"""
+
 
 class RuntimeSignals(QObject):
     event = Signal(str, object)
@@ -200,6 +252,7 @@ class MainWindow(QMainWindow):
         self.build_console_tab()
         self.refresh_devices()
         self.apply_settings_to_controls()
+        self.apply_theme()
         self.update_auto_restart_timer()
         self.update_command_service()
         self.restart_meter_preview()
@@ -408,6 +461,8 @@ class MainWindow(QMainWindow):
         general_form.addRow("Logs", self.logs_enabled)
         self.keep_preview_while_monitoring = QCheckBox("Keep Preview Running (Experimental)")
         general_form.addRow("Preview mode", self.keep_preview_while_monitoring)
+        self.dark_mode_enabled = QCheckBox("Enable dark mode")
+        general_form.addRow("Theme", self.dark_mode_enabled)
 
         self.log_directory = QLineEdit()
         self.log_directory.setPlaceholderText("Leave blank for ./Log")
@@ -683,9 +738,16 @@ class MainWindow(QMainWindow):
         self.send_command_responses.setChecked(commands.send_command_responses)
         self.logs_enabled.setChecked(self.settings.log_settings.logs_enabled)
         self.keep_preview_while_monitoring.setChecked(self.settings.keep_preview_while_monitoring)
+        self.dark_mode_enabled.setChecked(self.settings.dark_mode_enabled)
         self.log_directory.setText(self.settings.log_settings.log_directory)
         self.apply_advanced_to_controls()
         self.refresh_channel_options()
+
+    def apply_theme(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.setStyleSheet(DARK_THEME_STYLESHEET if self.settings.dark_mode_enabled else "")
 
     def refresh_devices(self) -> None:
         self._loading_devices = True
@@ -913,10 +975,12 @@ class MainWindow(QMainWindow):
         commands.send_command_responses = self.send_command_responses.isChecked()
         self.settings.log_settings.logs_enabled = self.logs_enabled.isChecked()
         self.settings.keep_preview_while_monitoring = self.keep_preview_while_monitoring.isChecked()
+        self.settings.dark_mode_enabled = self.dark_mode_enabled.isChecked()
         self.settings.log_settings.log_directory = self.log_directory.text().strip()
         self.collect_advanced_from_controls()
         self.file_logger.settings = self.settings.log_settings
         save_settings(self.settings)
+        self.apply_theme()
         self.update_auto_restart_timer()
         self.update_command_service()
         self.restart_meter_preview()

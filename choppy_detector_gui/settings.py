@@ -123,6 +123,7 @@ class AppSettings:
     auto_restart_minutes: int = 60
     alert_cooldown_ms: int = 60000
     keep_preview_while_monitoring: bool = False
+    dark_mode_enabled: bool = True
     advanced_alert_config: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_ALERT_CONFIG))
     advanced_thresholds: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_THRESHOLDS))
     detection_methods: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_APPROACHES))
@@ -142,6 +143,7 @@ class AppSettings:
         self.selected_channel_index = max(0, int(self.selected_channel_index or 0))
         self.auto_restart_minutes = min(1440, max(5, int(self.auto_restart_minutes or 60)))
         self.alert_cooldown_ms = max(1000, int(self.alert_cooldown_ms or 60000))
+        self.dark_mode_enabled = bool(self.dark_mode_enabled)
         self.advanced_alert_config = _merge_numeric_dict(DEFAULT_ALERT_CONFIG, self.advanced_alert_config)
         self.advanced_thresholds = _merge_numeric_dict(DEFAULT_THRESHOLDS, self.advanced_thresholds)
         self.detection_methods = _merge_bool_dict(DEFAULT_APPROACHES, self.detection_methods)
@@ -172,6 +174,7 @@ class AppSettings:
             auto_restart_minutes=int(data.get("auto_restart_minutes") or 60),
             alert_cooldown_ms=int(data.get("alert_cooldown_ms") or 60000),
             keep_preview_while_monitoring=bool(data.get("keep_preview_while_monitoring", False)),
+            dark_mode_enabled=bool(data.get("dark_mode_enabled", True)),
             advanced_alert_config=dict(data.get("advanced_alert_config") or DEFAULT_ALERT_CONFIG),
             advanced_thresholds=dict(data.get("advanced_thresholds") or DEFAULT_THRESHOLDS),
             detection_methods=dict(data.get("detection_methods") or DEFAULT_APPROACHES),

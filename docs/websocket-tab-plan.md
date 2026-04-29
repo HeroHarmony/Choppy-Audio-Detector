@@ -1,5 +1,26 @@
 # OBS WebSocket Tab Plan
 
+## Implementation Status (Current)
+
+Implemented:
+
+- WebSocket tab UI with `OBS Connection`, `Target Source`, `Automation`, and `Actions`.
+- OBS connect/disconnect/test flow.
+- Source refresh action with configurable off/on delay.
+- Scene-aware targeting with `All Scenes` (scene-agnostic) option.
+- Automatic refresh on detector events with severity threshold and cooldown gating.
+- Severity alignment with alert-template tiering.
+- Async OBS operations (no UI freeze during refresh delay).
+- Global bottom status badges for Twitch and OBS state.
+- Auto-connect OBS on app launch setting (`Settings > General`).
+- Twitch chat command for refresh (`!choppy fix`, UI label `Refresh OBS Source`).
+- Guardrails and logging for disabled/disconnected/no-source/cooldown/stale selection cases.
+
+Remaining/Optional:
+
+- Optional helper to auto-detect scenes containing a selected source.
+- Optional credential hardening (OS keychain) instead of plain settings storage.
+
 ## Goal
 
 Add a new `WebSocket` tab to the GUI so users can connect to OBS via OBS WebSocket and refresh a selected media source (toggle off then on) to force reconnect to SRTLA/RTMP when audio desync is detected.
@@ -40,11 +61,11 @@ Reasoning:
 - In OBS WebSocket v5, input enable/disable can be handled with input-centric methods, which usually do not require the scene to be selected by user.
 - For sources duplicated across scenes or scene-item-specific control, scene context may be needed.
 
-Plan:
+Current state:
 
-- V1 default: source-only selection.
-- If OBS API call fails because scene-item context is required, show a clear error and prompt scene selection.
-- Optional enhancement: add `Auto-detect scene containing source` helper.
+- Scene selection is optional and implemented.
+- Default `All Scenes` mode works scene-agnostically.
+- Specific scene targeting is available for scene-context edge cases.
 
 ## Functional Requirements
 
@@ -174,6 +195,6 @@ Plan:
 ## Open Questions
 
 - Should OBS password be stored plaintext in current settings, or moved to OS keychain/credential manager?
-- Which detector severity signal should be authoritative for auto-refresh (`minor/moderate/severe` currently expected)?
+- Detector severity for auto-refresh is now aligned to alert-template severity tiering.
 - Should first auto-refresh after app start ignore cooldown, or respect persisted last-run timestamp?
 - For duplicated source names across scenes, should we store OBS UUID/reference instead of display name?

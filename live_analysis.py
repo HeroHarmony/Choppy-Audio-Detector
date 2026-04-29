@@ -19,7 +19,7 @@ import math
 import traceback
 warnings.filterwarnings('ignore')
 
-from choppy_detector_gui.alert_templates import AlertTemplates
+from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_detection_count
 from choppy_detector_gui.audio_devices import (
     get_hostapi_name,
     infer_obs_monitoring_device,
@@ -1229,12 +1229,15 @@ class BalancedChoppyDetector:
                 active_methods = [
                     method for method, result in results.items() if result.get('choppy')
                 ]
+                should_alert, detection_count, time_span, cooldown_remaining = self.should_send_alert()
                 self.emit_event(
                     "glitch.detected",
                     confidence=round(confidence * 100, 1),
                     reasons=reasons,
                     methods=active_methods,
                     device=device_name,
+                    detection_count=detection_count,
+                    severity=severity_for_detection_count(int(detection_count)).strip("[]").lower(),
                 )
                 self.log_file_event(
                     "warn",
@@ -1248,8 +1251,6 @@ class BalancedChoppyDetector:
                 for method, result in results.items():
                     if result['choppy']:
                         print(f"    {method}: {result.get('description', result['score'])}")
-
-                should_alert, detection_count, time_span, cooldown_remaining = self.should_send_alert()
 
                 if should_alert:
                     is_first_alert = not self.current_episode_started

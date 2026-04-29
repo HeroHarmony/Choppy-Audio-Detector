@@ -68,6 +68,7 @@ class ChatCommandSettings:
     restart_command: str = "!choppy restart"
     status_command: str = "!choppy status"
     list_devices_command: str = "!choppy devices"
+    fix_command: str = "!choppy fix"
     switch_device_command_prefix: str = "!choppy device"
     allowed_chat_users: list[str] = field(default_factory=list)
     allow_broadcaster: bool = True
@@ -88,6 +89,7 @@ class ChatCommandSettings:
             restart_command=str(data.get("restart_command") or cls.restart_command),
             status_command=str(data.get("status_command") or cls.status_command),
             list_devices_command=str(data.get("list_devices_command") or cls.list_devices_command),
+            fix_command=str(data.get("fix_command") or cls.fix_command),
             switch_device_command_prefix=str(
                 data.get("switch_device_command_prefix") or cls.switch_device_command_prefix
             ),
@@ -117,6 +119,39 @@ class LogSettings:
 
 
 @dataclass
+class ObsWebSocketSettings:
+    enabled: bool = False
+    auto_connect_on_launch: bool = False
+    host: str = "127.0.0.1"
+    port: int = 4455
+    password: str = ""
+    target_source: str = ""
+    target_scene: str = ""
+    auto_refresh_enabled: bool = False
+    auto_refresh_min_severity: str = "severe"
+    auto_refresh_cooldown_sec: int = 300
+    refresh_off_on_delay_ms: int = 500
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ObsWebSocketSettings":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            auto_connect_on_launch=bool(data.get("auto_connect_on_launch", False)),
+            host=str(data.get("host") or "127.0.0.1").strip() or "127.0.0.1",
+            port=int(data.get("port") or 4455),
+            password=str(data.get("password") or ""),
+            target_source=str(data.get("target_source") or ""),
+            target_scene=str(data.get("target_scene") or ""),
+            auto_refresh_enabled=bool(data.get("auto_refresh_enabled", False)),
+            auto_refresh_min_severity=str(data.get("auto_refresh_min_severity") or "severe").strip().lower(),
+            auto_refresh_cooldown_sec=int(data.get("auto_refresh_cooldown_sec") or 300),
+            refresh_off_on_delay_ms=int(data.get("refresh_off_on_delay_ms") or 500),
+        )
+
+
+@dataclass
 class AppSettings:
     selected_device_id: int | None = None
     selected_channel_index: int = 0
@@ -137,6 +172,7 @@ class AppSettings:
     chat_commands: ChatCommandSettings = field(default_factory=ChatCommandSettings)
     log_settings: LogSettings = field(default_factory=LogSettings)
     alert_templates: AlertTemplates = field(default_factory=AlertTemplates)
+    obs_websocket: ObsWebSocketSettings = field(default_factory=ObsWebSocketSettings)
 
     def __post_init__(self) -> None:
         if not self.twitch_channel:
@@ -158,6 +194,18 @@ class AppSettings:
         self.advanced_thresholds = _merge_numeric_dict(DEFAULT_THRESHOLDS, self.advanced_thresholds)
         self.detection_methods = _merge_bool_dict(DEFAULT_APPROACHES, self.detection_methods)
         self.alert_cooldown_ms = int(self.advanced_alert_config.get("alert_cooldown_ms", self.alert_cooldown_ms))
+        self.obs_websocket.host = self.obs_websocket.host.strip() or "127.0.0.1"
+        self.obs_websocket.port = min(65535, max(1, int(self.obs_websocket.port or 4455)))
+        self.obs_websocket.auto_refresh_min_severity = (
+            self.obs_websocket.auto_refresh_min_severity
+            if self.obs_websocket.auto_refresh_min_severity in {"minor", "moderate", "severe"}
+            else "severe"
+        )
+        self.obs_websocket.auto_refresh_cooldown_sec = max(0, int(self.obs_websocket.auto_refresh_cooldown_sec or 300))
+        self.obs_websocket.refresh_off_on_delay_ms = min(
+            10000,
+            max(0, int(self.obs_websocket.refresh_off_on_delay_ms or 500)),
+        )
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -194,6 +242,7 @@ class AppSettings:
             chat_commands=ChatCommandSettings.from_dict(data.get("chat_commands")),
             log_settings=LogSettings.from_dict(data.get("log_settings")),
             alert_templates=AlertTemplates.from_dict(data.get("alert_templates")),
+            obs_websocket=ObsWebSocketSettings.from_dict(data.get("obs_websocket")),
         ).normalize()
 
 

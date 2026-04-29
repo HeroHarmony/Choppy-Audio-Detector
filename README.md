@@ -11,6 +11,11 @@ Here's one such example: [Glitchy Twitch VOD Audio](https://www.twitch.tv/videos
 
 The script is largely developed with the help of AI. While I am a software engineer, I am not an expert in audio processing.
 
+## Quick Navigation
+
+- Use the GUI solution: [GUI](#gui)
+- Continue with CLI/setup flow: [Getting Started](#getting-started)
+
 # Getting Started
 ## Prerequisites
 
@@ -125,6 +130,54 @@ Compared to `live_analysis.py`, the GUI supports all shared flags (`--list-devic
 - `--twitch-oauth-token TOKEN`
 
 `live_analysis.py` now supports these same options for CLI/GUI parity.
+
+### OBS WebSocket Recovery
+
+This tool was originally designed to inform streamers when audio desync issues suggest a stream app restart may be needed. Some users also report success by refreshing an OBS media source instead. This is similar in intent to NOALBS's `!fix` command (implementation details may differ). When enabled, this feature can refresh the media source automatically when detections meet the configured minimum severity threshold, using off/on toggling with a configurable delay between states and a configurable cooldown.
+
+Setup flow:
+
+1. In OBS, enable WebSocket server (default host `127.0.0.1`, port `4455`) and set password if needed.
+2. In the app `WebSocket` tab:
+- Enable OBS WebSocket integration.
+- Enter host/port/password.
+- Click `Connect` (persistent session) or `Test OBS Connection` (connect test only).
+3. Under `Target Source`:
+- `Scene`: choose `All Scenes` for scene-agnostic mode, or pick a specific scene.
+- `Source`: choose the media/input source to refresh.
+4. Use `Refresh Source Now` to manually trigger refresh.
+
+Refresh behavior:
+
+- Preferred: scene-item toggle `off -> wait -> on` (honors configured `Off/on delay`).
+- Fallback: media restart action when scene-item toggle cannot be applied.
+
+Automation:
+
+- In `Automation`, enable auto refresh and configure:
+- `Min severity`
+- `Cooldown`
+- `Off/on delay`
+- Severity is aligned with alert-template severity tiers.
+
+Startup option:
+
+- In `Settings > General`, `Auto-connect OBS` (`Start websocket on app start`) attempts OBS connection on launch when OBS integration is enabled.
+
+Chat command:
+
+- In `Settings > Chat Commands and Permissions`, `Refresh OBS Source` defaults to `!choppy fix`.
+- Authorized users can trigger the same OBS refresh action from Twitch chat.
+
+Status indicators:
+
+- Twitch and OBS connection status are always visible at the bottom status row.
+
+Troubleshooting:
+
+- If refresh is skipped, check Console for reason (`disabled`, `not connected`, `no source`, or `cooldown active`).
+- If saved scene/source no longer exists in OBS, refresh lists and reselect.
+- `Test OBS Connection` verifies credentials/connectivity and closes test socket; `Connect` keeps an active session for control actions.
 
 # Audio Input Device
 Audio is different for everyone, so I'll explain my setup. I'm using voicemeeter to manage my audio devices. I've configured Open Broadcaster Software (OBS) to use one of voicemeeter's virtual inputs, namely Cable Input, as the monitoring device. For this, on OBS go to:

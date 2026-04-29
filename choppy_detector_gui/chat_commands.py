@@ -47,6 +47,7 @@ def parse_chat_command(message: str, settings: ChatCommandSettings) -> ParsedCom
         normalize_command(settings.restart_command): "restart",
         normalize_command(settings.status_command): "status",
         normalize_command(settings.list_devices_command): "list_devices",
+        normalize_command(settings.fix_command): "fix",
     }
     action = exact_matches.get(text)
     if action:
@@ -61,4 +62,3 @@ def parse_chat_command(message: str, settings: ChatCommandSettings) -> ParsedCom
             return ParsedCommand(action="switch_device")
 
     return None
-

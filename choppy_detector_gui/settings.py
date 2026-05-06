@@ -105,16 +105,19 @@ class LogSettings:
     logs_enabled: bool = True
     log_directory: str = ""
     log_retention_days: int = 30
+    log_window_retention_minutes: int = 60
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "LogSettings":
         if not isinstance(data, dict):
             return cls()
         retention = int(data.get("log_retention_days") or 30)
+        window_retention = int(data.get("log_window_retention_minutes") or 60)
         return cls(
             logs_enabled=bool(data.get("logs_enabled", True)),
             log_directory=str(data.get("log_directory") or ""),
             log_retention_days=max(1, retention),
+            log_window_retention_minutes=max(1, window_retention),
         )
 
 
@@ -208,6 +211,11 @@ class AppSettings:
         self.obs_websocket.refresh_off_on_delay_ms = min(
             10000,
             max(0, int(self.obs_websocket.refresh_off_on_delay_ms or 500)),
+        )
+        self.log_settings.log_retention_days = max(1, int(self.log_settings.log_retention_days or 30))
+        self.log_settings.log_window_retention_minutes = max(
+            1,
+            int(self.log_settings.log_window_retention_minutes or 60),
         )
         return self
 

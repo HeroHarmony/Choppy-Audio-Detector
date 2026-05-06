@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import math
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 try:
     from PySide6.QtCore import QObject, QTimer, Signal, Qt, QRectF
@@ -302,6 +303,11 @@ class MainWindow(QMainWindow):
         self._obs_auto_connect_retry_timer = QTimer(self)
         self._obs_auto_connect_retry_timer.setSingleShot(True)
         self._obs_auto_connect_retry_timer.timeout.connect(self.attempt_obs_auto_connect)
+        self._recent_event_entries: deque[tuple[datetime, str]] = deque()
+        self._console_entries: deque[tuple[datetime, str]] = deque()
+        self._log_window_cleanup_timer = QTimer(self)
+        self._log_window_cleanup_timer.timeout.connect(self.prune_log_windows)
+        self._log_window_cleanup_timer.start(60_000)
 
         self.auto_restart_timer = QTimer(self)
         self.auto_restart_timer.timeout.connect(self.auto_restart)
@@ -567,6 +573,10 @@ class MainWindow(QMainWindow):
 
         self.logs_enabled = QCheckBox("Write log files")
         general_form.addRow("Logs", self.logs_enabled)
+        self.log_window_retention_minutes = QSpinBox()
+        self.log_window_retention_minutes.setRange(1, 10080)
+        self.log_window_retention_minutes.setSuffix(" min")
+        general_form.addRow("Log window retention", self.log_window_retention_minutes)
         self.keep_preview_while_monitoring = QCheckBox("Keep Preview Running (Experimental)")
         general_form.addRow("Preview mode", self.keep_preview_while_monitoring)
         self.dark_mode_enabled = QCheckBox("Enable dark mode")
@@ -820,7 +830,7 @@ class MainWindow(QMainWindow):
         self.console_output.setReadOnly(True)
         layout.addWidget(self.console_output)
         self.clear_console_button = QPushButton("Clear Console")
-        self.clear_console_button.clicked.connect(self.console_output.clear)
+        self.clear_console_button.clicked.connect(self.clear_console_messages)
         layout.addWidget(self.clear_console_button)
         self.tabs.addTab(tab, "Console")
 
@@ -1052,6 +1062,7 @@ class MainWindow(QMainWindow):
         self.allowed_chat_users.setPlainText("\n".join(commands.allowed_chat_users))
         self.send_command_responses.setChecked(commands.send_command_responses)
         self.logs_enabled.setChecked(self.settings.log_settings.logs_enabled)
+        self.log_window_retention_minutes.setValue(self.settings.log_settings.log_window_retention_minutes)
         self.keep_preview_while_monitoring.setChecked(self.settings.keep_preview_while_monitoring)
         self.smooth_preview_meter.setChecked(self.settings.smooth_preview_meter)
         self.preview_meter_fps.setValue(self.settings.preview_meter_fps)
@@ -1350,6 +1361,7 @@ class MainWindow(QMainWindow):
         ]
         commands.send_command_responses = self.send_command_responses.isChecked()
         self.settings.log_settings.logs_enabled = self.logs_enabled.isChecked()
+        self.settings.log_settings.log_window_retention_minutes = self.log_window_retention_minutes.value()
         self.settings.keep_preview_while_monitoring = self.keep_preview_while_monitoring.isChecked()
         self.settings.smooth_preview_meter = self.smooth_preview_meter.isChecked()
         self.settings.preview_meter_fps = self.preview_meter_fps.value()
@@ -1368,6 +1380,7 @@ class MainWindow(QMainWindow):
         self.restart_meter_preview()
         self.update_meter_display_mode()
         self.update_twitch_status_from_settings()
+        self.prune_log_windows()
         self.append_console("Settings saved.")
 
     def is_settings_dirty(self) -> bool:
@@ -1396,6 +1409,7 @@ class MainWindow(QMainWindow):
                 allowed_users != commands.allowed_chat_users,
                 self.send_command_responses.isChecked() != commands.send_command_responses,
                 self.logs_enabled.isChecked() != self.settings.log_settings.logs_enabled,
+                self.log_window_retention_minutes.value() != self.settings.log_settings.log_window_retention_minutes,
                 self.keep_preview_while_monitoring.isChecked() != self.settings.keep_preview_while_monitoring,
                 self.smooth_preview_meter.isChecked() != self.settings.smooth_preview_meter,
                 self.preview_meter_fps.value() != self.settings.preview_meter_fps,
@@ -2129,13 +2143,57 @@ class MainWindow(QMainWindow):
             self._audio_watchdog_warned = True
 
     def append_event(self, message: str) -> None:
-        self.recent_events.appendPlainText(self.timestamped(message))
+        self._append_log_message(self.recent_events, self._recent_event_entries, message)
 
     def append_console(self, message: str) -> None:
-        self.console_output.appendPlainText(self.timestamped(message))
+        self._append_log_message(self.console_output, self._console_entries, message)
 
-    def timestamped(self, message: str) -> str:
-        return f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+    def clear_console_messages(self) -> None:
+        self._console_entries.clear()
+        self.console_output.clear()
+
+    def _append_log_message(
+        self,
+        widget: QPlainTextEdit,
+        entries: deque[tuple[datetime, str]],
+        message: str,
+    ) -> None:
+        now = datetime.now()
+        entries.append((now, message))
+        if self._prune_log_entries(entries, now=now):
+            self._render_log_entries(widget, entries)
+            return
+        widget.appendPlainText(self.timestamped(message, now=now))
+
+    def prune_log_windows(self) -> None:
+        now = datetime.now()
+        if self._prune_log_entries(self._recent_event_entries, now=now):
+            self._render_log_entries(self.recent_events, self._recent_event_entries)
+        if self._prune_log_entries(self._console_entries, now=now):
+            self._render_log_entries(self.console_output, self._console_entries)
+
+    def _prune_log_entries(self, entries: deque[tuple[datetime, str]], now: datetime) -> bool:
+        if not entries:
+            return False
+        retention_minutes = max(1, int(self.settings.log_settings.log_window_retention_minutes))
+        cutoff = now - timedelta(minutes=retention_minutes)
+        removed = False
+        while entries and entries[0][0] < cutoff:
+            entries.popleft()
+            removed = True
+        return removed
+
+    def _render_log_entries(self, widget: QPlainTextEdit, entries: deque[tuple[datetime, str]]) -> None:
+        if not entries:
+            widget.clear()
+            return
+        widget.setPlainText("\n".join(self.timestamped(message, now=entry_time) for entry_time, message in entries))
+        scrollbar = widget.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def timestamped(self, message: str, now: datetime | None = None) -> str:
+        at = now or datetime.now()
+        return f"[{at.strftime('%H:%M:%S')}] {message}"
 
     def closeEvent(self, event) -> None:
         self.stop_meter_preview()

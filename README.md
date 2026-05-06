@@ -53,7 +53,7 @@ To get started we need a few things. Be prepared to setup the following:
 
 ## GUI
 
-A desktop GUI entry point is available.
+<img width="860" height="652" alt="image" src="https://github.com/user-attachments/assets/9dcf7e60-247c-40f5-aef9-bff1942dec11" />
 
 Quick start (recommended):
 

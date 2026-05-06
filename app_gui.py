@@ -572,7 +572,7 @@ class MainWindow(QMainWindow):
         self.auto_restart_minutes = QSpinBox()
         self.auto_restart_minutes.setRange(5, 1440)
         general_form.addRow("Auto-restart minutes", self.auto_restart_minutes)
-        self.auto_start_monitoring = QCheckBox("Start monitoring on app launch")
+        self.auto_start_monitoring = QCheckBox("Start monitoring on app start")
         general_form.addRow("Auto-start monitoring", self.auto_start_monitoring)
         self.obs_auto_connect_on_launch = QCheckBox("Start websocket on app start")
         general_form.addRow("Auto-connect OBS", self.obs_auto_connect_on_launch)
@@ -590,11 +590,11 @@ class MainWindow(QMainWindow):
         self.log_window_retention_minutes.setRange(1, 10080)
         self.log_window_retention_minutes.setSuffix(" min")
         general_form.addRow("Log window retention", self.log_window_retention_minutes)
-        self.keep_preview_while_monitoring = QCheckBox("Keep Preview Running (Experimental)")
+        self.keep_preview_while_monitoring = QCheckBox("Keep Preview Running")
         general_form.addRow("Preview mode", self.keep_preview_while_monitoring)
         self.dark_mode_enabled = QCheckBox("Enable dark mode")
         general_form.addRow("Theme", self.dark_mode_enabled)
-        self.smooth_preview_meter = QCheckBox("Smooth preview meter animation")
+        self.smooth_preview_meter = QCheckBox("Smooth preview animation")
         general_form.addRow("Meter smoothing", self.smooth_preview_meter)
         self.preview_meter_fps = QSpinBox()
         self.preview_meter_fps.setRange(5, 60)
@@ -647,7 +647,7 @@ class MainWindow(QMainWindow):
             self.fix_command,
             self.switch_device_command_prefix,
         ):
-            cmd_input.setMinimumWidth(250)
+            cmd_input.setMinimumWidth(150)
         commands_form.addRow("Start command", self.start_command)
         commands_form.addRow("Stop command", self.stop_command)
         commands_form.addRow("Restart command", self.restart_command)
@@ -659,6 +659,7 @@ class MainWindow(QMainWindow):
         self.allowed_chat_users = QPlainTextEdit()
         self.allowed_chat_users.setPlaceholderText("One Twitch username per line")
         self.allowed_chat_users.setFixedHeight(120)
+        self.allowed_chat_users.setMinimumWidth(0)
         allowed_users_col = QWidget()
         allowed_users_col_layout = QVBoxLayout(allowed_users_col)
         allowed_users_col_layout.setContentsMargins(0, 0, 0, 0)
@@ -669,7 +670,7 @@ class MainWindow(QMainWindow):
         allowed_users_col_layout.addWidget(allowed_users_hint)
         commands_form.addRow("Allowed users", allowed_users_col)
 
-        self.send_command_responses = QCheckBox("Send command responses to Twitch chat")
+        self.send_command_responses = QCheckBox("Send to chat")
         commands_form.addRow("Command responses", self.send_command_responses)
 
         left_col = QVBoxLayout()

@@ -322,6 +322,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
         self.global_twitch_status_badge = QLabel("Twitch: Idle")
         self.global_obs_status_badge = QLabel("OBS: Disconnected")
+        self.statusBar().setStyleSheet("QStatusBar::item { border: none; }")
         self.statusBar().addPermanentWidget(self.global_twitch_status_badge)
         self.statusBar().addPermanentWidget(self.global_obs_status_badge)
         self.build_main_tab()

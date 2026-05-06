@@ -550,6 +550,19 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         self.settings_tab = tab
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout.addWidget(scroll, 1)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(8)
         columns = QHBoxLayout()
         group_title_style = "QGroupBox { font-size: 19px; font-weight: 600; }"
 
@@ -670,10 +683,10 @@ class MainWindow(QMainWindow):
 
         columns.addLayout(left_col, 1)
         columns.addLayout(right_col, 1)
-        layout.addLayout(columns, 1)
+        content_layout.addLayout(columns, 1)
         self.save_settings_button = QPushButton("Save Settings")
         self.save_settings_button.clicked.connect(self.save_all_settings)
-        layout.addWidget(self.save_settings_button)
+        content_layout.addWidget(self.save_settings_button)
         self.tabs.addTab(tab, "Settings")
 
     def build_support_tab(self) -> None:

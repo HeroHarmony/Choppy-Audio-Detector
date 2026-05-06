@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 try:
     from PySide6.QtCore import QObject, QTimer, Signal, Qt, QRectF
-    from PySide6.QtGui import QColor, QPainter
+    from PySide6.QtGui import QColor, QPainter, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -31,6 +31,7 @@ try:
         QPlainTextEdit,
         QPushButton,
         QScrollArea,
+        QSplashScreen,
         QSpinBox,
         QTabWidget,
         QTextEdit,
@@ -2369,8 +2370,19 @@ def main() -> int:
         print("[ERROR] Cannot specify both --twitch and --no-twitch")
         return 1
     app = QApplication(sys.argv)
+    splash_pixmap = QPixmap(420, 180)
+    splash_pixmap.fill(QColor("#1f1f1f"))
+    splash = QSplashScreen(splash_pixmap)
+    splash.showMessage(
+        "Choppy loading...\nDeveloped by HeroHarmony",
+        Qt.AlignCenter,
+        QColor("#f2f2f2"),
+    )
+    splash.show()
+    app.processEvents()
     window = MainWindow(launch_options=args)
     window.show()
+    splash.finish(window)
     return app.exec()
 
 

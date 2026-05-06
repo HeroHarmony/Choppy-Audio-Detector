@@ -130,6 +130,9 @@ QScrollBar::handle:vertical {
 }
 """
 
+OBS_AUTO_CONNECT_RETRY_DELAY_MS = 60_000
+OBS_AUTO_CONNECT_MAX_ATTEMPTS = 5
+
 
 class RuntimeSignals(QObject):
     event = Signal(str, object)
@@ -295,6 +298,10 @@ class MainWindow(QMainWindow):
         self._display_rms_dbfs = -120.0
         self._display_level_last_update_at = time.monotonic()
         self._obs_last_auto_refresh_at = 0.0
+        self._obs_auto_connect_attempt = 0
+        self._obs_auto_connect_retry_timer = QTimer(self)
+        self._obs_auto_connect_retry_timer.setSingleShot(True)
+        self._obs_auto_connect_retry_timer.timeout.connect(self.attempt_obs_auto_connect)
 
         self.auto_restart_timer = QTimer(self)
         self.auto_restart_timer.timeout.connect(self.auto_restart)
@@ -328,7 +335,7 @@ class MainWindow(QMainWindow):
         self.restart_meter_preview()
         self.append_console("GUI started.")
         if self.settings.obs_websocket.enabled and self.settings.obs_websocket.auto_connect_on_launch:
-            QTimer.singleShot(250, self.connect_obs)
+            QTimer.singleShot(250, self.start_obs_auto_connect)
         if self.auto_start_requested or self.settings.auto_start_monitoring:
             QTimer.singleShot(120, self.start_monitoring)
 
@@ -550,6 +557,8 @@ class MainWindow(QMainWindow):
         general_form.addRow("Auto-start monitoring", self.auto_start_monitoring)
         self.obs_auto_connect_on_launch = QCheckBox("Start websocket on app start")
         general_form.addRow("Auto-connect OBS", self.obs_auto_connect_on_launch)
+        self.obs_auto_connect_retry_enabled = QCheckBox("5 retries, 60 sec cooldown")
+        general_form.addRow("OBS auto-connect retry", self.obs_auto_connect_retry_enabled)
 
         self.alert_cooldown_ms = QSpinBox()
         self.alert_cooldown_ms.setRange(1000, 3600000)
@@ -1048,6 +1057,7 @@ class MainWindow(QMainWindow):
         self.preview_meter_fps.setValue(self.settings.preview_meter_fps)
         self.dark_mode_enabled.setChecked(self.settings.dark_mode_enabled)
         self.obs_auto_connect_on_launch.setChecked(self.settings.obs_websocket.auto_connect_on_launch)
+        self.obs_auto_connect_retry_enabled.setChecked(self.settings.obs_websocket.auto_connect_retry_enabled)
         self.log_directory.setText(self.settings.log_settings.log_directory)
         self.apply_obs_settings_to_controls()
         self.apply_advanced_to_controls()
@@ -1345,6 +1355,7 @@ class MainWindow(QMainWindow):
         self.settings.preview_meter_fps = self.preview_meter_fps.value()
         self.settings.dark_mode_enabled = self.dark_mode_enabled.isChecked()
         self.settings.obs_websocket.auto_connect_on_launch = self.obs_auto_connect_on_launch.isChecked()
+        self.settings.obs_websocket.auto_connect_retry_enabled = self.obs_auto_connect_retry_enabled.isChecked()
         self.settings.log_settings.log_directory = self.log_directory.text().strip()
         self.collect_obs_from_controls()
         self.collect_advanced_from_controls()
@@ -1390,6 +1401,8 @@ class MainWindow(QMainWindow):
                 self.preview_meter_fps.value() != self.settings.preview_meter_fps,
                 self.dark_mode_enabled.isChecked() != self.settings.dark_mode_enabled,
                 self.obs_auto_connect_on_launch.isChecked() != self.settings.obs_websocket.auto_connect_on_launch,
+                self.obs_auto_connect_retry_enabled.isChecked()
+                != self.settings.obs_websocket.auto_connect_retry_enabled,
                 self.log_directory.text().strip() != self.settings.log_settings.log_directory,
             )
         )
@@ -1534,7 +1547,40 @@ class MainWindow(QMainWindow):
             " border-radius: 8px; padding: 2px 8px;"
         )
 
+    def start_obs_auto_connect(self) -> None:
+        self._obs_auto_connect_attempt = 0
+        self.attempt_obs_auto_connect()
+
+    def attempt_obs_auto_connect(self) -> None:
+        if self.obs_service.is_connected:
+            return
+        max_attempts = OBS_AUTO_CONNECT_MAX_ATTEMPTS
+        if self._obs_auto_connect_attempt >= max_attempts:
+            self.append_console(f"OBS auto-connect failed after {max_attempts} attempts.")
+            self.update_obs_controls_enabled()
+            return
+        self._obs_auto_connect_attempt += 1
+        attempt = self._obs_auto_connect_attempt
+        self.append_console(f"OBS auto-connect attempt {attempt}/{max_attempts}...")
+        cfg = ObsConnectionConfig(
+            host=self.settings.obs_websocket.host,
+            port=self.settings.obs_websocket.port,
+            password=self.settings.obs_websocket.password,
+        )
+        self.set_obs_status("Connecting", "#4aa3ff")
+        self.set_obs_busy(True)
+        self._run_obs_task(
+            "connect_auto",
+            lambda: self.obs_service.connect(cfg),
+            {"attempt": attempt, "max_attempts": max_attempts},
+        )
+
+    def cancel_obs_auto_connect_retry(self) -> None:
+        self._obs_auto_connect_retry_timer.stop()
+        self._obs_auto_connect_attempt = 0
+
     def connect_obs(self) -> None:
+        self.cancel_obs_auto_connect_retry()
         if not self.obs_enabled.isChecked():
             QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
             return
@@ -1572,6 +1618,7 @@ class MainWindow(QMainWindow):
         self._run_obs_task("test", _test_once)
 
     def disconnect_obs(self) -> None:
+        self.cancel_obs_auto_connect_retry()
         self.obs_service.disconnect()
         self.set_obs_status("Disconnected", "#ff9c4a")
         self.append_console("Disconnected from OBS WebSocket.")
@@ -1646,6 +1693,8 @@ class MainWindow(QMainWindow):
 
     def update_obs_controls_enabled(self) -> None:
         enabled = self.obs_enabled.isChecked()
+        if not enabled:
+            self.cancel_obs_auto_connect_retry()
         if not enabled and self.obs_service.is_connected:
             self.obs_service.disconnect()
             self.append_console("OBS WebSocket integration disabled: disconnected existing OBS session.")
@@ -1680,13 +1729,16 @@ class MainWindow(QMainWindow):
         if enabled:
             self.obs_refresh_now_button.setEnabled(bool(self.obs_target_source.currentText().strip()))
 
-    def _run_obs_task(self, action: str, fn) -> None:
+    def _run_obs_task(self, action: str, fn, context: dict[str, object] | None = None) -> None:
         def worker() -> None:
             try:
                 ok, message = fn()
             except Exception as exc:
                 ok, message = False, str(exc)
-            self.signals.obs_event.emit(action, {"ok": ok, "message": message})
+            payload: dict[str, object] = {"ok": ok, "message": message}
+            if context:
+                payload.update(context)
+            self.signals.obs_event.emit(action, payload)
 
         threading.Thread(target=worker, name=f"obs-{action}-worker", daemon=True).start()
 
@@ -1698,6 +1750,7 @@ class MainWindow(QMainWindow):
 
         if action == "connect":
             if ok:
+                self.cancel_obs_auto_connect_retry()
                 self.set_obs_status("Connected", "#3fcf5e")
                 self.append_console(message)
                 self.refresh_obs_sources()
@@ -1705,6 +1758,34 @@ class MainWindow(QMainWindow):
                 self.set_obs_status("Error", "#ff6a6a")
                 QMessageBox.warning(self, "OBS Connection Failed", message)
                 self.append_console(message)
+            return
+
+        if action == "connect_auto":
+            attempt = int(data.get("attempt") or self._obs_auto_connect_attempt or 1)
+            max_attempts = int(data.get("max_attempts") or OBS_AUTO_CONNECT_MAX_ATTEMPTS)
+            if ok:
+                self.cancel_obs_auto_connect_retry()
+                self.set_obs_status("Connected", "#3fcf5e")
+                self.append_console(f"OBS auto-connect succeeded on attempt {attempt}/{max_attempts}.")
+                self.append_console(message)
+                self.refresh_obs_sources()
+            else:
+                self.set_obs_status("Error", "#ff6a6a")
+                self.append_console(f"OBS auto-connect attempt {attempt}/{max_attempts} failed: {message}")
+                retry_enabled = bool(self.settings.obs_websocket.auto_connect_retry_enabled)
+                if retry_enabled and attempt < max_attempts:
+                    retry_seconds = OBS_AUTO_CONNECT_RETRY_DELAY_MS // 1000
+                    self.append_console(f"Retrying OBS auto-connect in {retry_seconds} seconds.")
+                    self._obs_auto_connect_retry_timer.start(OBS_AUTO_CONNECT_RETRY_DELAY_MS)
+                else:
+                    if not retry_enabled and attempt == 1:
+                        self.append_console("OBS auto-connect retry is disabled; no further attempts will be made.")
+                    else:
+                        self.append_console(
+                            f"OBS auto-connect stopped after {attempt}/{max_attempts} attempts."
+                        )
+                    self.cancel_obs_auto_connect_retry()
+                self.update_obs_controls_enabled()
             return
 
         if action == "test":
@@ -2059,6 +2140,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self.stop_meter_preview()
         self.command_service.stop()
+        self.cancel_obs_auto_connect_retry()
         self.obs_service.disconnect()
         self.runtime.stop(source="gui-close")
         super().closeEvent(event)

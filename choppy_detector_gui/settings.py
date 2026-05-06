@@ -122,6 +122,7 @@ class LogSettings:
 class ObsWebSocketSettings:
     enabled: bool = False
     auto_connect_on_launch: bool = False
+    auto_connect_retry_enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 4455
     password: str = ""
@@ -139,6 +140,7 @@ class ObsWebSocketSettings:
         return cls(
             enabled=bool(data.get("enabled", False)),
             auto_connect_on_launch=bool(data.get("auto_connect_on_launch", False)),
+            auto_connect_retry_enabled=bool(data.get("auto_connect_retry_enabled", True)),
             host=str(data.get("host") or "127.0.0.1").strip() or "127.0.0.1",
             port=int(data.get("port") or 4455),
             password=str(data.get("password") or ""),
@@ -196,6 +198,7 @@ class AppSettings:
         self.alert_cooldown_ms = int(self.advanced_alert_config.get("alert_cooldown_ms", self.alert_cooldown_ms))
         self.obs_websocket.host = self.obs_websocket.host.strip() or "127.0.0.1"
         self.obs_websocket.port = min(65535, max(1, int(self.obs_websocket.port or 4455)))
+        self.obs_websocket.auto_connect_retry_enabled = bool(self.obs_websocket.auto_connect_retry_enabled)
         self.obs_websocket.auto_refresh_min_severity = (
             self.obs_websocket.auto_refresh_min_severity
             if self.obs_websocket.auto_refresh_min_severity in {"minor", "moderate", "severe"}

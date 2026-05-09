@@ -38,7 +38,6 @@ except ImportError as exc:
 
 from choppy_detector_gui.alert_templates import severity_for_detection_count
 from choppy_detector_gui.advanced_controller import (
-    advanced_dirty,
     apply_advanced_to_controls as apply_advanced_controls_controller,
     collect_advanced_from_controls as collect_advanced_from_controls_controller,
     reset_advanced_defaults as reset_advanced_defaults_controller,
@@ -60,13 +59,12 @@ from choppy_detector_gui.responses_controller import (
     build_preview_text,
     collect_templates_from_controls,
     reset_template_to_default as reset_template_to_default_controller,
-    templates_dirty,
 )
 from choppy_detector_gui.settings_controller import (
     apply_settings_to_controls as apply_settings_controls_controller,
-    settings_dirty,
 )
 from choppy_detector_gui.settings_save_service import save_all_settings as save_all_settings_service
+from choppy_detector_gui.tab_dirty_service import handle_tab_changed as handle_tab_changed_service
 from choppy_detector_gui.runtime_event_presenter import RuntimeEventPresenter
 from choppy_detector_gui.runtime_event_pipeline import RuntimeEventPipeline
 from choppy_detector_gui.runtime_event_router import RuntimeEventContext
@@ -83,7 +81,6 @@ from choppy_detector_gui.websocket_settings_controller import (
     apply_obs_settings_to_controls as apply_obs_settings_to_controls_controller,
     collect_obs_from_controls as collect_obs_from_controls_controller,
     update_obs_bundle_network_notice as update_obs_bundle_network_notice_controller,
-    websocket_dirty,
 )
 
 try:
@@ -644,49 +641,17 @@ class MainWindow(QMainWindow):
         self.update_obs_controls_enabled()
 
     def handle_tab_changed(self, new_index: int) -> None:
-        previous_index = self._last_tab_index
-        self._last_tab_index = new_index
-        previous_widget = self.tabs.widget(previous_index)
-        if previous_widget is self.settings_tab and settings_dirty(self):
-            answer = QMessageBox.question(
-                self,
-                "Unsaved Settings",
-                "You have unsaved changes in Settings. Save now?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer == QMessageBox.Yes:
-                self.save_all_settings()
-        elif previous_widget is self.templates_tab and templates_dirty(self):
-            answer = QMessageBox.question(
-                self,
-                "Unsaved Templates",
-                "You have unsaved changes in Responses. Save now?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer == QMessageBox.Yes:
-                self.save_templates()
-        elif previous_widget is self.advanced_tab and advanced_dirty(self):
-            answer = QMessageBox.question(
-                self,
-                "Unsaved Advanced Changes",
-                "You have unsaved changes in Advanced. Save now?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer == QMessageBox.Yes:
-                self.save_advanced_settings()
-        elif previous_widget is getattr(self, "websocket_tab", None) and websocket_dirty(self):
-            answer = QMessageBox.question(
-                self,
-                "Unsaved WebSocket Changes",
-                "You have unsaved changes in WebSocket. Save now?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer == QMessageBox.Yes:
-                self.save_obs_settings()
+        handle_tab_changed_service(self, new_index, self._confirm_save_prompt)
+
+    def _confirm_save_prompt(self, title: str, message: str) -> bool:
+        answer = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        return bool(answer == QMessageBox.Yes)
 
     def set_obs_status(self, label: str, color_hex: str) -> None:
         self.obs_status.setText(label)

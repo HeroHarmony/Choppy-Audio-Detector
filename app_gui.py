@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-import ipaddress
 import math
 import sys
 import threading
@@ -46,8 +45,18 @@ except ImportError as exc:
     ) from exc
 
 from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_detection_count
+from choppy_detector_gui.chat_command_controller import should_restart_listener_for_credentials
 from choppy_detector_gui.file_logging import AppFileLogger
-from choppy_detector_gui.obs_websocket_service import ObsConnectionConfig, ObsWebSocketService
+from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
+from choppy_detector_gui.obs_network_notice import should_show_unsigned_bundle_notice
+from choppy_detector_gui.obs_settings_binding import (
+    apply_form_values_to_settings,
+    is_form_dirty,
+    read_form_values,
+)
+from choppy_detector_gui.obs_websocket_service import ObsWebSocketService
+from choppy_detector_gui.status_badge_presenter import StatusBadgePresenter
+from choppy_detector_gui.twitch_status_coordinator import TwitchStatusCoordinator
 from choppy_detector_gui.runtime import DetectorRuntime
 from choppy_detector_gui.settings import (
     AppSettings,
@@ -286,8 +295,7 @@ class MainWindow(QMainWindow):
             event_handler=lambda event_type, payload: self.signals.event.emit(event_type, payload),
             file_logger=self.file_logger,
         )
-        self._twitch_alert_state = "idle"
-        self._twitch_chat_state = "idle"
+        self.twitch_status = TwitchStatusCoordinator()
         self.obs_service = ObsWebSocketService()
         self._loading_devices = False
         self._last_audio_level_seen_at: datetime | None = None
@@ -329,6 +337,8 @@ class MainWindow(QMainWindow):
         self.statusBar().setStyleSheet("QStatusBar::item { border: none; }")
         self.statusBar().addPermanentWidget(self.global_twitch_status_badge)
         self.statusBar().addPermanentWidget(self.global_obs_status_badge)
+        self.twitch_badge_presenter = StatusBadgePresenter(self.global_twitch_status_badge, prefix="Twitch")
+        self.obs_badge_presenter = StatusBadgePresenter(self.global_obs_status_badge, prefix="OBS")
         self.build_main_tab()
         self.build_templates_tab()
         self.build_settings_tab()
@@ -1119,47 +1129,7 @@ class MainWindow(QMainWindow):
         self.meter_preview_timer.start(interval_ms)
 
     def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
-        self.global_twitch_status_badge.setText(f"Twitch: {label}")
-        self.global_twitch_status_badge.setStyleSheet(
-            f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"
-            " border-radius: 8px; padding: 2px 8px;"
-        )
-
-    def _state_from_error_text(self, error_text: str) -> str:
-        lowered = str(error_text or "").lower()
-        if "auth" in lowered or "login" in lowered or "token" in lowered:
-            return "auth_failed"
-        return "disconnected"
-
-    def _resolve_twitch_badge(self) -> tuple[str, str]:
-        alerts_enabled = bool(self.settings.twitch_enabled)
-        chat_enabled = bool(self.settings.chat_commands.chat_commands_enabled)
-        if not alerts_enabled and not chat_enabled:
-            return "Disabled", "#8f8f8f"
-
-        states: list[str] = []
-        if alerts_enabled:
-            states.append(self._twitch_alert_state)
-        if chat_enabled:
-            states.append(self._twitch_chat_state)
-
-        if any(state == "connected" for state in states):
-            return "Connected", "#3fcf5e"
-        if any(state == "paused" for state in states):
-            return "Paused", "#ff9c4a"
-        if any(state == "auth_failed" for state in states):
-            return "Auth failed", "#ff6a6a"
-        if any(state == "reconnecting" for state in states):
-            return "Reconnecting", "#f0c04a"
-        if any(state == "connecting" for state in states):
-            return "Connecting", "#4aa3ff"
-        if any(state == "disconnected" for state in states):
-            return "Disconnected", "#ff9c4a"
-        return "Idle", "#bdbdbd"
-
-    def refresh_twitch_status_badge(self) -> None:
-        label, color = self._resolve_twitch_badge()
-        self.set_twitch_status_badge(label, color)
+        self.twitch_badge_presenter.apply(label, color_hex)
 
     def _is_chat_commands_connected(self) -> bool:
         bot = getattr(self.command_service, "bot", None)
@@ -1177,19 +1147,14 @@ class MainWindow(QMainWindow):
         return bool(getattr(detector, "twitch_enabled", False) and twitch_bot and getattr(twitch_bot, "connected", False))
 
     def update_twitch_status_from_settings(self) -> None:
-        self._twitch_chat_state = "disabled" if not self.settings.chat_commands.chat_commands_enabled else "idle"
-        self._twitch_alert_state = "disabled" if not self.settings.twitch_enabled else "idle"
-
-        if self.settings.chat_commands.chat_commands_enabled:
-            if self._is_chat_commands_connected():
-                self._twitch_chat_state = "connected"
-            elif self.command_service.running:
-                self._twitch_chat_state = "connecting"
-        if self.settings.twitch_enabled:
-            if self._is_alert_twitch_connected():
-                self._twitch_alert_state = "connected"
-
-        self.refresh_twitch_status_badge()
+        label, color = self.twitch_status.sync_from_settings(
+            alerts_enabled=bool(self.settings.twitch_enabled),
+            chat_enabled=bool(self.settings.chat_commands.chat_commands_enabled),
+            chat_connected=self._is_chat_commands_connected(),
+            chat_running=bool(self.command_service.running),
+            alert_connected=self._is_alert_twitch_connected(),
+        )
+        self.set_twitch_status_badge(label, color)
 
     def refresh_devices(self) -> None:
         self._loading_devices = True
@@ -1532,41 +1497,23 @@ class MainWindow(QMainWindow):
         self.update_obs_bundle_network_notice()
 
     def collect_obs_from_controls(self) -> None:
-        obs_settings = self.settings.obs_websocket
-        obs_settings.enabled = self.obs_enabled.isChecked()
-        obs_settings.host = self.obs_host.text().strip()
-        obs_settings.port = self.obs_port.value()
-        obs_settings.password = self.obs_password.text()
-        obs_settings.auto_refresh_enabled = self.obs_auto_refresh_enabled.isChecked()
-        obs_settings.auto_refresh_min_severity = self.obs_auto_refresh_min_severity.currentText().strip().lower()
-        obs_settings.auto_refresh_cooldown_sec = self.obs_auto_refresh_cooldown_sec.value()
-        obs_settings.refresh_off_on_delay_ms = self.obs_refresh_off_on_delay_ms.value()
-        scene_value = self.obs_target_scene.currentText().strip()
-        obs_settings.target_scene = "" if scene_value == "All Scenes" else scene_value
-        selected_source = self.obs_target_source.currentText().strip()
-        if selected_source:
-            obs_settings.target_source = selected_source
+        values = read_form_values(
+            enabled=self.obs_enabled.isChecked(),
+            host=self.obs_host.text(),
+            port=self.obs_port.value(),
+            password=self.obs_password.text(),
+            auto_refresh_enabled=self.obs_auto_refresh_enabled.isChecked(),
+            auto_refresh_min_severity=self.obs_auto_refresh_min_severity.currentText(),
+            auto_refresh_cooldown_sec=self.obs_auto_refresh_cooldown_sec.value(),
+            refresh_off_on_delay_ms=self.obs_refresh_off_on_delay_ms.value(),
+            scene_value=self.obs_target_scene.currentText(),
+            source_value=self.obs_target_source.currentText(),
+        )
+        apply_form_values_to_settings(values, self.settings.obs_websocket)
         self.update_obs_bundle_network_notice()
 
-    def _is_local_lan_host(self, host: str) -> bool:
-        host_text = str(host or "").strip().lower()
-        if not host_text or host_text == "localhost":
-            return False
-        try:
-            addr = ipaddress.ip_address(host_text)
-        except ValueError:
-            return False
-        return bool(addr.is_private and not addr.is_loopback)
-
-    def _should_show_obs_bundle_network_notice(self) -> bool:
-        if sys.platform != "darwin":
-            return False
-        if not bool(getattr(sys, "frozen", False)):
-            return False
-        return self._is_local_lan_host(self.obs_host.text())
-
     def update_obs_bundle_network_notice(self) -> None:
-        if self._should_show_obs_bundle_network_notice():
+        if should_show_unsigned_bundle_notice(self.obs_host.text()):
             self.obs_bundle_network_notice.show()
         else:
             self.obs_bundle_network_notice.hide()
@@ -1578,24 +1525,19 @@ class MainWindow(QMainWindow):
         self.update_obs_controls_enabled()
 
     def is_websocket_dirty(self) -> bool:
-        obs_settings = self.settings.obs_websocket
-        selected_source = self.obs_target_source.currentText().strip()
-        selected_scene = self.obs_target_scene.currentText().strip()
-        normalized_scene = "" if selected_scene == "All Scenes" else selected_scene
-        return any(
-            (
-                self.obs_enabled.isChecked() != obs_settings.enabled,
-                self.obs_host.text().strip() != obs_settings.host,
-                self.obs_port.value() != obs_settings.port,
-                self.obs_password.text() != obs_settings.password,
-                self.obs_auto_refresh_enabled.isChecked() != obs_settings.auto_refresh_enabled,
-                self.obs_auto_refresh_min_severity.currentText().strip().lower() != obs_settings.auto_refresh_min_severity,
-                self.obs_auto_refresh_cooldown_sec.value() != obs_settings.auto_refresh_cooldown_sec,
-                self.obs_refresh_off_on_delay_ms.value() != obs_settings.refresh_off_on_delay_ms,
-                normalized_scene != obs_settings.target_scene,
-                selected_source != obs_settings.target_source,
-            )
+        current = read_form_values(
+            enabled=self.obs_enabled.isChecked(),
+            host=self.obs_host.text(),
+            port=self.obs_port.value(),
+            password=self.obs_password.text(),
+            auto_refresh_enabled=self.obs_auto_refresh_enabled.isChecked(),
+            auto_refresh_min_severity=self.obs_auto_refresh_min_severity.currentText(),
+            auto_refresh_cooldown_sec=self.obs_auto_refresh_cooldown_sec.value(),
+            refresh_off_on_delay_ms=self.obs_refresh_off_on_delay_ms.value(),
+            scene_value=self.obs_target_scene.currentText(),
+            source_value=self.obs_target_source.currentText(),
         )
+        return is_form_dirty(self.settings.obs_websocket, current)
 
     def is_advanced_dirty(self) -> bool:
         for key, *_ in self.alert_config_schema():
@@ -1670,11 +1612,7 @@ class MainWindow(QMainWindow):
     def set_obs_status(self, label: str, color_hex: str) -> None:
         self.obs_status.setText(label)
         self.obs_status.setStyleSheet(f"color: {color_hex}; font-weight: 700;")
-        self.global_obs_status_badge.setText(f"OBS: {label}")
-        self.global_obs_status_badge.setStyleSheet(
-            f"color: {color_hex}; font-weight: 700; border: 1px solid {color_hex};"
-            " border-radius: 8px; padding: 2px 8px;"
-        )
+        self.obs_badge_presenter.apply(label, color_hex)
 
     def start_obs_auto_connect(self) -> None:
         self._obs_auto_connect_attempt = 0
@@ -1691,11 +1629,7 @@ class MainWindow(QMainWindow):
         self._obs_auto_connect_attempt += 1
         attempt = self._obs_auto_connect_attempt
         self.append_console(f"OBS auto-connect attempt {attempt}/{max_attempts}...")
-        cfg = ObsConnectionConfig(
-            host=self.settings.obs_websocket.host,
-            port=self.settings.obs_websocket.port,
-            password=self.settings.obs_websocket.password,
-        )
+        cfg = build_connection_config(self.settings)
         self.set_obs_status("Connecting", "#4aa3ff")
         self.set_obs_busy(True)
         self._run_obs_task(
@@ -1714,11 +1648,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
             return
         self.collect_obs_from_controls()
-        cfg = ObsConnectionConfig(
-            host=self.settings.obs_websocket.host,
-            port=self.settings.obs_websocket.port,
-            password=self.settings.obs_websocket.password,
-        )
+        cfg = build_connection_config(self.settings)
         self.set_obs_status("Connecting", "#4aa3ff")
         self.set_obs_busy(True)
         self._run_obs_task("connect", lambda: self.obs_service.connect(cfg))
@@ -1728,23 +1658,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
             return
         self.collect_obs_from_controls()
-        cfg = ObsConnectionConfig(
-            host=self.settings.obs_websocket.host,
-            port=self.settings.obs_websocket.port,
-            password=self.settings.obs_websocket.password,
-        )
         self.set_obs_status("Testing", "#4aa3ff")
         self.set_obs_busy(True)
-
-        def _test_once() -> tuple[bool, str]:
-            temp = ObsWebSocketService()
-            ok, message = temp.connect(cfg)
-            if ok:
-                temp.disconnect()
-                return True, f"Connection test successful to {cfg.host}:{cfg.port} (test socket closed)."
-            return False, message
-
-        self._run_obs_task("test", _test_once)
+        self._run_obs_task("test", lambda: test_connection_once(self.settings))
 
     def disconnect_obs(self) -> None:
         self.cancel_obs_auto_connect_retry()
@@ -2045,18 +1961,15 @@ class MainWindow(QMainWindow):
         interval_ms = self.settings.auto_restart_minutes * 60 * 1000
         self.auto_restart_timer.start(interval_ms)
 
-    def _chat_connection_credentials(self) -> tuple[str, str, str]:
-        channel = f"#{str(self.settings.twitch_channel or '').strip().lstrip('#')}"
-        username = str(self.settings.twitch_bot_username or "").strip()
-        token = str(self.settings.twitch_oauth_token or "").strip()
-        return channel, username, token
-
     def update_command_service(self) -> None:
         self.command_service.settings = self.settings
         if not self.settings.chat_commands.chat_commands_enabled:
-            self._twitch_chat_state = "disabled"
             self.command_service.stop()
-            self.refresh_twitch_status_badge()
+            label, color = self.twitch_status.mark_chat_disabled(
+                alerts_enabled=bool(self.settings.twitch_enabled),
+                chat_enabled=bool(self.settings.chat_commands.chat_commands_enabled),
+            )
+            self.set_twitch_status_badge(label, color)
             return
 
         if not self.command_service.running:
@@ -2070,61 +1983,21 @@ class MainWindow(QMainWindow):
             self.command_service.start()
             return
 
-        desired_channel, desired_username, desired_token = self._chat_connection_credentials()
-        current_channel = str(getattr(bot, "channel", "") or "").strip()
-        current_username = str(getattr(bot, "username", "") or "").strip()
-        current_token = str(getattr(bot, "token", "") or "").strip()
-        if (
-            current_channel != desired_channel
-            or current_username != desired_username
-            or current_token != desired_token
-        ):
+        if should_restart_listener_for_credentials(bot, self.settings):
             self.append_console("Twitch chat settings changed; reconnecting chat command listener.")
             self.command_service.stop()
             self.command_service.start()
 
     def handle_runtime_event(self, event_type: str, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
-        twitch_state_event = False
-        if event_type == "twitch.connecting":
-            self._twitch_alert_state = "connecting"
-            twitch_state_event = True
-        elif event_type == "twitch.connected":
-            self._twitch_alert_state = "connected"
-            twitch_state_event = True
-        elif event_type in {"twitch.connection_failed", "twitch.connection_error"}:
-            self._twitch_alert_state = self._state_from_error_text(str(data.get("error", "")))
-            twitch_state_event = True
-        elif event_type == "twitch.send_circuit_open":
-            self._twitch_alert_state = "paused"
-            twitch_state_event = True
-        elif event_type == "twitch.send_resumed":
-            self._twitch_alert_state = "connected"
-            twitch_state_event = True
-        elif event_type in {"monitoring.stopped", "monitoring.stopped_by_request", "monitoring.thread_exited"}:
-            self._twitch_alert_state = "idle" if self.settings.twitch_enabled else "disabled"
-            twitch_state_event = True
-
-        if event_type == "chat_commands.connecting":
-            self._twitch_chat_state = "connecting"
-            twitch_state_event = True
-        elif event_type in {"chat_commands.reconnecting", "chat_commands.reconnect_scheduled"}:
-            self._twitch_chat_state = "reconnecting"
-            twitch_state_event = True
-        elif event_type == "chat_commands.connected":
-            self._twitch_chat_state = "connected"
-            twitch_state_event = True
-        elif event_type == "chat_commands.connection_failed":
-            self._twitch_chat_state = self._state_from_error_text(str(data.get("error", "")))
-            twitch_state_event = True
-        elif event_type == "chat_commands.disconnected":
-            self._twitch_chat_state = (
-                "disconnected" if self.settings.chat_commands.chat_commands_enabled else "disabled"
-            )
-            twitch_state_event = True
-
+        twitch_state_event, badge = self.twitch_status.on_event(
+            event_type,
+            data,
+            alerts_enabled=bool(self.settings.twitch_enabled),
+            chat_enabled=bool(self.settings.chat_commands.chat_commands_enabled),
+        )
         if twitch_state_event:
-            self.refresh_twitch_status_badge()
+            self.set_twitch_status_badge(*badge)
 
         if event_type == "chat_commands.fix_requested":
             user = str(data.get("user", "")).strip() or "unknown"

@@ -71,8 +71,9 @@ from choppy_detector_gui.settings_controller import (
     collect_settings_from_controls,
     settings_dirty,
 )
-from choppy_detector_gui.runtime_event_router import RuntimeEventContext, route_runtime_event
 from choppy_detector_gui.runtime_event_presenter import RuntimeEventPresenter
+from choppy_detector_gui.runtime_event_pipeline import RuntimeEventPipeline
+from choppy_detector_gui.runtime_event_router import RuntimeEventContext
 from choppy_detector_gui.status_badge_presenter import StatusBadgePresenter
 from choppy_detector_gui.twitch_status_coordinator import TwitchStatusCoordinator
 from choppy_detector_gui.runtime import DetectorRuntime
@@ -199,6 +200,15 @@ class MainWindow(QMainWindow):
         )
         self.runtime_event_presenter = RuntimeEventPresenter(self)
         self.twitch_status = TwitchStatusCoordinator()
+        self.runtime_event_pipeline = RuntimeEventPipeline(
+            twitch_status=self.twitch_status,
+            set_twitch_status_badge=self.set_twitch_status_badge,
+            is_alerts_enabled=lambda: bool(self.settings.twitch_enabled),
+            is_chat_enabled=lambda: bool(self.settings.chat_commands.chat_commands_enabled),
+            context_provider=self._runtime_event_context,
+            presenter=self.runtime_event_presenter,
+            queue_obs_refresh_request=self.queue_obs_refresh_request,
+        )
         self.obs_service = ObsWebSocketService()
         self._loading_devices = False
         self._last_audio_level_seen_at: datetime | None = None
@@ -1003,41 +1013,17 @@ class MainWindow(QMainWindow):
         )
 
     def handle_runtime_event(self, event_type: str, payload: object) -> None:
-        data = payload if isinstance(payload, dict) else {}
-        twitch_state_event, badge = self.twitch_status.on_event(
-            event_type,
-            data,
-            alerts_enabled=bool(self.settings.twitch_enabled),
-            chat_enabled=bool(self.settings.chat_commands.chat_commands_enabled),
+        self.runtime_event_pipeline.handle(event_type, payload)
+
+    def _runtime_event_context(self) -> RuntimeEventContext:
+        return RuntimeEventContext(
+            obs_enabled=self.obs_enabled.isChecked(),
+            obs_connected=self.obs_service.is_connected,
+            selected_source=self.obs_target_source.currentText().strip(),
+            saved_source=self.settings.obs_websocket.target_source.strip(),
+            runtime_running=self.runtime.is_running,
+            keep_preview_while_monitoring=self.settings.keep_preview_while_monitoring,
         )
-        if twitch_state_event:
-            self.set_twitch_status_badge(*badge)
-
-        route = route_runtime_event(
-            event_type,
-            data,
-            RuntimeEventContext(
-                obs_enabled=self.obs_enabled.isChecked(),
-                obs_connected=self.obs_service.is_connected,
-                selected_source=self.obs_target_source.currentText().strip(),
-                saved_source=self.settings.obs_websocket.target_source.strip(),
-                runtime_running=self.runtime.is_running,
-                keep_preview_while_monitoring=self.settings.keep_preview_while_monitoring,
-            ),
-        )
-        self.runtime_event_presenter.apply_route(route, data)
-
-        if route.obs_refresh_request is not None:
-            self.queue_obs_refresh_request(
-                source=route.obs_refresh_request.source,
-                action=route.obs_refresh_request.action,
-            )
-
-        if route.consume_event:
-            return
-        if not route.append_formatted_event:
-            return
-        self.runtime_event_presenter.append_formatted_event(event_type, data)
 
     def maybe_trigger_obs_auto_refresh(self, glitch_data: dict[str, object]) -> None:
         obs_settings = self.settings.obs_websocket

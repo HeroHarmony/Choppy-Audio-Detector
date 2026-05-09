@@ -72,6 +72,7 @@ from choppy_detector_gui.settings_controller import (
     settings_dirty,
 )
 from choppy_detector_gui.runtime_event_router import RuntimeEventContext, route_runtime_event
+from choppy_detector_gui.runtime_event_presenter import RuntimeEventPresenter
 from choppy_detector_gui.status_badge_presenter import StatusBadgePresenter
 from choppy_detector_gui.twitch_status_coordinator import TwitchStatusCoordinator
 from choppy_detector_gui.runtime import DetectorRuntime
@@ -196,6 +197,7 @@ class MainWindow(QMainWindow):
             event_handler=lambda event_type, payload: self.signals.event.emit(event_type, payload),
             file_logger=self.file_logger,
         )
+        self.runtime_event_presenter = RuntimeEventPresenter(self)
         self.twitch_status = TwitchStatusCoordinator()
         self.obs_service = ObsWebSocketService()
         self._loading_devices = False
@@ -1023,15 +1025,7 @@ class MainWindow(QMainWindow):
                 keep_preview_while_monitoring=self.settings.keep_preview_while_monitoring,
             ),
         )
-
-        if route.mark_audio_level_received:
-            self._last_audio_level_seen_at = datetime.now()
-        if route.clear_audio_watchdog_warned:
-            self._audio_watchdog_warned = False
-        for line in route.append_console:
-            self.append_console(line)
-        for line in route.append_event:
-            self.append_event(line)
+        self.runtime_event_presenter.apply_route(route, data)
 
         if route.obs_refresh_request is not None:
             self.queue_obs_refresh_request(
@@ -1039,45 +1033,11 @@ class MainWindow(QMainWindow):
                 action=route.obs_refresh_request.action,
             )
 
-        if route.audio_level is not None and not route.audio_level.skip_display:
-            smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(
-                route.audio_level.peak_dbfs,
-                route.audio_level.rms_dbfs,
-            )
-            self.peak_meter.set_level_dbfs(smooth_peak_dbfs, peak_source=True)
-            self.rms_meter.set_level_dbfs(smooth_rms_dbfs, peak_source=False)
-            self.level_text.setText(
-                f"Peak {route.audio_level.peak_dbfs:.1f} dBFS | RMS {route.audio_level.rms_dbfs:.1f} dBFS"
-            )
-
-        if route.trigger_obs_auto_refresh:
-            self.maybe_trigger_obs_auto_refresh(data)
-
-        if route.monitoring_ui_update is not None:
-            self._monitoring_ui_active = route.monitoring_ui_update.active
-            if route.monitoring_ui_update.status_label == "running_device_summary":
-                self.status_label.setText(f"Running - {self.runtime.device_summary()}")
-            else:
-                self.status_label.setText(route.monitoring_ui_update.status_label)
-            if route.monitoring_ui_update.reset_audio_watchdog_warned:
-                self._audio_watchdog_warned = False
-            if route.monitoring_ui_update.clear_monitoring_started_at:
-                self._monitoring_started_at = None
-            if route.monitoring_ui_update.restart_meter_preview:
-                self.restart_meter_preview()
-            if route.monitoring_ui_update.update_meter_display_mode:
-                self.update_meter_display_mode()
-            if route.monitoring_ui_update.update_device_controls:
-                self.update_device_controls()
-
         if route.consume_event:
             return
         if not route.append_formatted_event:
             return
-
-        message = self.format_event(event_type, data)
-        self.append_event(message)
-        self.append_console(message)
+        self.runtime_event_presenter.append_formatted_event(event_type, data)
 
     def maybe_trigger_obs_auto_refresh(self, glitch_data: dict[str, object]) -> None:
         obs_settings = self.settings.obs_websocket

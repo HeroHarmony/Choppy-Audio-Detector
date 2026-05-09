@@ -47,6 +47,7 @@ except ImportError as exc:
 from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_detection_count
 from choppy_detector_gui.command_service_controller import sync_command_service
 from choppy_detector_gui.file_logging import AppFileLogger
+from choppy_detector_gui.gui.tabs.settings_tab import build_settings_tab as build_settings_tab_ui
 from choppy_detector_gui.gui.widgets.obs_level_meter import ObsLevelMeter
 from choppy_detector_gui.gui.tabs.websocket_tab import build_websocket_tab as build_websocket_tab_ui
 from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
@@ -446,148 +447,7 @@ class MainWindow(QMainWindow):
         return row_widget
 
     def build_settings_tab(self) -> None:
-        tab = QWidget()
-        self.settings_tab = tab
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        layout.addWidget(scroll, 1)
-
-        content = QWidget()
-        scroll.setWidget(content)
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(8, 8, 8, 8)
-        content_layout.setSpacing(8)
-        columns = QHBoxLayout()
-        group_title_style = "QGroupBox { font-size: 19px; font-weight: 600; }"
-
-        general_group = QGroupBox("General")
-        general_group.setStyleSheet(group_title_style)
-        general_form = QFormLayout(general_group)
-        self.auto_restart_minutes = QSpinBox()
-        self.auto_restart_minutes.setRange(5, 1440)
-        general_form.addRow("Auto-restart minutes", self.auto_restart_minutes)
-        self.auto_start_monitoring = QCheckBox("Start monitoring on app start")
-        general_form.addRow("Auto-start monitoring", self.auto_start_monitoring)
-        self.obs_auto_connect_on_launch = QCheckBox("Start websocket on app start")
-        general_form.addRow("Auto-connect OBS", self.obs_auto_connect_on_launch)
-        self.obs_auto_connect_retry_enabled = QCheckBox("5 retries, 60 sec cooldown")
-        general_form.addRow("OBS auto-connect retry", self.obs_auto_connect_retry_enabled)
-
-        self.alert_cooldown_ms = QSpinBox()
-        self.alert_cooldown_ms.setRange(1000, 3600000)
-        self.alert_cooldown_ms.setSingleStep(1000)
-        general_form.addRow("Alert cooldown ms", self.alert_cooldown_ms)
-
-        self.logs_enabled = QCheckBox("Write log files")
-        general_form.addRow("Logs", self.logs_enabled)
-        self.log_window_retention_minutes = QSpinBox()
-        self.log_window_retention_minutes.setRange(1, 10080)
-        self.log_window_retention_minutes.setSuffix(" min")
-        general_form.addRow("Log window retention", self.log_window_retention_minutes)
-        self.keep_preview_while_monitoring = QCheckBox("Keep Preview Running")
-        general_form.addRow("Preview mode", self.keep_preview_while_monitoring)
-        self.dark_mode_enabled = QCheckBox("Enable dark mode")
-        general_form.addRow("Theme", self.dark_mode_enabled)
-        self.smooth_preview_meter = QCheckBox("Smooth preview animation")
-        general_form.addRow("Meter smoothing", self.smooth_preview_meter)
-        self.preview_meter_fps = QSpinBox()
-        self.preview_meter_fps.setRange(5, 60)
-        general_form.addRow("Preview meter FPS", self.preview_meter_fps)
-
-        self.log_directory = QLineEdit()
-        self.log_directory.setPlaceholderText("Leave blank for ./Log")
-        self.log_directory.setMinimumWidth(220)
-        general_form.addRow("Log directory", self.log_directory)
-
-        twitch_group = QGroupBox("Twitch Connection")
-        twitch_group.setStyleSheet(group_title_style)
-        twitch_layout = QVBoxLayout(twitch_group)
-        twitch_layout.setSpacing(8)
-        self.twitch_channel = QLineEdit()
-        self.twitch_channel.setPlaceholderText("Channel name, without #")
-        self.twitch_channel.setMinimumWidth(250)
-        twitch_layout.addWidget(QLabel("Twitch channel"))
-        twitch_layout.addWidget(self.twitch_channel)
-
-        self.twitch_bot_username = QLineEdit()
-        self.twitch_bot_username.setPlaceholderText("Bot username")
-        self.twitch_bot_username.setMinimumWidth(250)
-        twitch_layout.addWidget(QLabel("Twitch bot username"))
-        twitch_layout.addWidget(self.twitch_bot_username)
-
-        self.twitch_oauth_token = QLineEdit()
-        self.twitch_oauth_token.setPlaceholderText("oauth:...")
-        self.twitch_oauth_token.setEchoMode(QLineEdit.Password)
-        self.twitch_oauth_token.setMinimumWidth(250)
-        twitch_layout.addWidget(QLabel("Twitch OAuth token"))
-        twitch_layout.addWidget(self.twitch_oauth_token)
-
-        commands_group = QGroupBox("Chat Commands and Permissions")
-        commands_group.setStyleSheet(group_title_style)
-        commands_form = QFormLayout(commands_group)
-        self.start_command = QLineEdit()
-        self.stop_command = QLineEdit()
-        self.restart_command = QLineEdit()
-        self.status_command = QLineEdit()
-        self.list_devices_command = QLineEdit()
-        self.fix_command = QLineEdit()
-        self.switch_device_command_prefix = QLineEdit()
-        for cmd_input in (
-            self.start_command,
-            self.stop_command,
-            self.restart_command,
-            self.status_command,
-            self.list_devices_command,
-            self.fix_command,
-            self.switch_device_command_prefix,
-        ):
-            cmd_input.setMinimumWidth(150)
-        commands_form.addRow("Start command", self.start_command)
-        commands_form.addRow("Stop command", self.stop_command)
-        commands_form.addRow("Restart command", self.restart_command)
-        commands_form.addRow("Status command", self.status_command)
-        commands_form.addRow("List devices command", self.list_devices_command)
-        commands_form.addRow("Refresh OBS Source", self.fix_command)
-        commands_form.addRow("Switch device prefix", self.switch_device_command_prefix)
-
-        self.allowed_chat_users = QPlainTextEdit()
-        self.allowed_chat_users.setPlaceholderText("One Twitch username per line")
-        self.allowed_chat_users.setFixedHeight(120)
-        self.allowed_chat_users.setMinimumWidth(0)
-        allowed_users_col = QWidget()
-        allowed_users_col_layout = QVBoxLayout(allowed_users_col)
-        allowed_users_col_layout.setContentsMargins(0, 0, 0, 0)
-        allowed_users_col_layout.setSpacing(4)
-        allowed_users_col_layout.addWidget(self.allowed_chat_users)
-        allowed_users_hint = QLabel("One Twitch username per line.")
-        allowed_users_hint.setStyleSheet("color: #bdbdbd;")
-        allowed_users_col_layout.addWidget(allowed_users_hint)
-        commands_form.addRow("Allowed users", allowed_users_col)
-
-        self.send_command_responses = QCheckBox("Send to chat")
-        commands_form.addRow("Command responses", self.send_command_responses)
-
-        left_col = QVBoxLayout()
-        left_col.addWidget(general_group)
-        left_col.addWidget(twitch_group)
-        left_col.addStretch(1)
-
-        right_col = QVBoxLayout()
-        right_col.addWidget(commands_group)
-        right_col.addStretch(1)
-
-        columns.addLayout(left_col, 1)
-        columns.addLayout(right_col, 1)
-        content_layout.addLayout(columns, 1)
-        self.save_settings_button = QPushButton("Save Settings")
-        self.save_settings_button.clicked.connect(self.save_all_settings)
-        content_layout.addWidget(self.save_settings_button)
-        self.tabs.addTab(tab, "Settings")
+        build_settings_tab_ui(self)
 
     def build_support_tab(self) -> None:
         tab = QWidget()

@@ -12,7 +12,7 @@ from .settings import LogSettings, default_log_directory, default_settings_path
 class AppFileLogger:
     def __init__(self, settings: LogSettings | None = None):
         self.settings = settings or LogSettings()
-        self.log_dir = Path(self.settings.log_directory) if self.settings.log_directory else default_log_directory()
+        self.log_dir = self._resolve_log_dir()
         self.current_date = ""
         self.current_path: Path | None = None
 
@@ -27,8 +27,7 @@ class AppFileLogger:
         stamp = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + now.strftime(" %z")
         date_key = now.strftime("%Y-%m-%d")
         if self.current_date != date_key:
-            self.current_date = date_key
-            self.current_path = self.log_dir / f"choppy-audio-detector-{date_key}.log"
+            self._set_current_log_file(date_key)
 
         field_text = " ".join(f'{key}="{_escape(value)}"' for key, value in fields.items() if value is not None)
         parts = [stamp, level.upper(), event]
@@ -39,22 +38,15 @@ class AppFileLogger:
         line = " ".join(parts).rstrip() + "\n"
 
         try:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            assert self.current_path is not None
-            with self.current_path.open("a", encoding="utf-8") as handle:
-                handle.write(line)
+            self._write_line(line)
         except Exception:
             # Logging must never crash worker threads (e.g., read-only cwd in bundled app).
             try:
                 fallback_dir = default_log_directory()
                 if fallback_dir != self.log_dir:
                     self.log_dir = fallback_dir
-                    self.current_date = ""
-                    self.current_path = self.log_dir / f"choppy-audio-detector-{date_key}.log"
-                self.log_dir.mkdir(parents=True, exist_ok=True)
-                assert self.current_path is not None
-                with self.current_path.open("a", encoding="utf-8") as handle:
-                    handle.write(line)
+                    self._set_current_log_file(date_key)
+                self._write_line(line)
             except Exception as fallback_exc:
                 print(
                     f"[WARN] File logging disabled for this event ({event}): {fallback_exc}",
@@ -68,6 +60,16 @@ class AppFileLogger:
                 return default_settings_path().parent / candidate
             return candidate
         return default_log_directory()
+
+    def _set_current_log_file(self, date_key: str) -> None:
+        self.current_date = date_key
+        self.current_path = self.log_dir / f"choppy-audio-detector-{date_key}.log"
+
+    def _write_line(self, line: str) -> None:
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        assert self.current_path is not None
+        with self.current_path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
 
 
 def _escape(value: object) -> str:

@@ -51,7 +51,16 @@ from choppy_detector_gui.gui.tabs.responses_tab import build_responses_tab as bu
 from choppy_detector_gui.gui.tabs.settings_tab import build_settings_tab as build_settings_tab_ui
 from choppy_detector_gui.gui.tabs.support_tab import build_support_tab as build_support_tab_ui
 from choppy_detector_gui.gui.tabs.websocket_tab import build_websocket_tab as build_websocket_tab_ui
-from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
+from choppy_detector_gui.obs_workflow_service import (
+    attempt_obs_auto_connect as attempt_obs_auto_connect_service,
+    connect_obs as connect_obs_service,
+    disconnect_obs as disconnect_obs_service,
+    maybe_trigger_obs_auto_refresh as maybe_trigger_obs_auto_refresh_service,
+    queue_obs_refresh_request as queue_obs_refresh_request_service,
+    refresh_obs_source_now as refresh_obs_source_now_service,
+    start_obs_auto_connect as start_obs_auto_connect_service,
+    test_obs_connection as test_obs_connection_service,
+)
 from choppy_detector_gui.obs_event_policy import decide_obs_event
 from choppy_detector_gui.obs_websocket_service import ObsWebSocketService
 from choppy_detector_gui.responses_controller import (
@@ -659,59 +668,23 @@ class MainWindow(QMainWindow):
         self.obs_badge_presenter.apply(label, color_hex)
 
     def start_obs_auto_connect(self) -> None:
-        self._obs_auto_connect_attempt = 0
-        self.attempt_obs_auto_connect()
+        start_obs_auto_connect_service(self, max_attempts=OBS_AUTO_CONNECT_MAX_ATTEMPTS)
 
     def attempt_obs_auto_connect(self) -> None:
-        if self.obs_service.is_connected:
-            return
-        max_attempts = OBS_AUTO_CONNECT_MAX_ATTEMPTS
-        if self._obs_auto_connect_attempt >= max_attempts:
-            self.append_console(f"OBS auto-connect failed after {max_attempts} attempts.")
-            self.update_obs_controls_enabled()
-            return
-        self._obs_auto_connect_attempt += 1
-        attempt = self._obs_auto_connect_attempt
-        self.append_console(f"OBS auto-connect attempt {attempt}/{max_attempts}...")
-        cfg = build_connection_config(self.settings)
-        self.set_obs_status("Connecting", "#4aa3ff")
-        self.set_obs_busy(True)
-        self._run_obs_task(
-            "connect_auto",
-            lambda: self.obs_service.connect(cfg),
-            {"attempt": attempt, "max_attempts": max_attempts},
-        )
+        attempt_obs_auto_connect_service(self, max_attempts=OBS_AUTO_CONNECT_MAX_ATTEMPTS)
 
     def cancel_obs_auto_connect_retry(self) -> None:
         self._obs_auto_connect_retry_timer.stop()
         self._obs_auto_connect_attempt = 0
 
     def connect_obs(self) -> None:
-        self.cancel_obs_auto_connect_retry()
-        if not self.obs_enabled.isChecked():
-            QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
-            return
-        collect_obs_from_controls_controller(self)
-        cfg = build_connection_config(self.settings)
-        self.set_obs_status("Connecting", "#4aa3ff")
-        self.set_obs_busy(True)
-        self._run_obs_task("connect", lambda: self.obs_service.connect(cfg))
+        connect_obs_service(self)
 
     def test_obs_connection(self) -> None:
-        if not self.obs_enabled.isChecked():
-            QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
-            return
-        collect_obs_from_controls_controller(self)
-        self.set_obs_status("Testing", "#4aa3ff")
-        self.set_obs_busy(True)
-        self._run_obs_task("test", lambda: test_connection_once(self.settings))
+        test_obs_connection_service(self)
 
     def disconnect_obs(self) -> None:
-        self.cancel_obs_auto_connect_retry()
-        self.obs_service.disconnect()
-        self.set_obs_status("Disconnected", "#ff9c4a")
-        self.append_console("Disconnected from OBS WebSocket.")
-        self.update_obs_controls_enabled()
+        disconnect_obs_service(self)
 
     def refresh_obs_scenes(self) -> None:
         selected_before = self.obs_target_scene.currentText().strip() or self.settings.obs_websocket.target_scene
@@ -751,26 +724,16 @@ class MainWindow(QMainWindow):
         self.update_obs_controls_enabled()
 
     def refresh_obs_source_now(self) -> None:
-        if not self.obs_enabled.isChecked():
-            QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
-            return
-        source = self.obs_target_source.currentText().strip()
-        if not source:
-            QMessageBox.warning(self, "No Source Selected", "Choose an OBS source first.")
-            return
-        self.queue_obs_refresh_request(source=source, action="refresh")
+        refresh_obs_source_now_service(self)
 
     def queue_obs_refresh_request(self, source: str, action: str = "refresh") -> None:
-        self.set_obs_status("Refreshing", "#4aa3ff")
-        self.set_obs_busy(True)
-        self._run_obs_task(
-            action,
-            lambda: self.obs_service.refresh_source_in_scene(
-                source_name=source,
-                scene_name="" if self.obs_target_scene.currentText().strip() == "All Scenes" else self.obs_target_scene.currentText().strip(),
-                off_on_delay_ms=self.obs_refresh_off_on_delay_ms.value(),
-            ),
-        )
+        queue_obs_refresh_request_service(self, source=source, action=action)
+
+    def _show_obs_disabled_message(self) -> None:
+        QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
+
+    def _show_obs_source_required_message(self) -> None:
+        QMessageBox.warning(self, "No Source Selected", "Choose an OBS source first.")
 
     def set_obs_busy(self, busy: bool) -> None:
         self.obs_connect_button.setEnabled(not busy)
@@ -923,50 +886,7 @@ class MainWindow(QMainWindow):
         )
 
     def maybe_trigger_obs_auto_refresh(self, glitch_data: dict[str, object]) -> None:
-        obs_settings = self.settings.obs_websocket
-        if not obs_settings.enabled or not obs_settings.auto_refresh_enabled:
-            return
-        if not self.obs_service.is_connected:
-            self.append_console("OBS auto-refresh skipped: OBS is not connected.")
-            return
-
-        source = self.obs_target_source.currentText().strip() or obs_settings.target_source.strip()
-        scene_choice = self.obs_target_scene.currentText().strip()
-        scene = "" if scene_choice == "All Scenes" else (scene_choice or obs_settings.target_scene.strip())
-        if not source:
-            self.append_console("OBS auto-refresh skipped: no target source selected.")
-            return
-
-        event_severity = self.derive_glitch_severity(glitch_data)
-        required_severity = (obs_settings.auto_refresh_min_severity or "severe").strip().lower()
-        if not self.severity_meets_threshold(event_severity, required_severity):
-            self.append_console(
-                f"OBS auto-refresh skipped: event severity {event_severity} below threshold {required_severity}."
-            )
-            return
-
-        now = time.monotonic()
-        cooldown_sec = max(0, int(obs_settings.auto_refresh_cooldown_sec))
-        elapsed = now - self._obs_last_auto_refresh_at
-        if self._obs_last_auto_refresh_at > 0 and elapsed < cooldown_sec:
-            remaining = max(0.0, cooldown_sec - elapsed)
-            self.append_console(f"OBS auto-refresh skipped: cooldown active ({remaining:.1f}s remaining).")
-            return
-
-        self._obs_last_auto_refresh_at = now
-        self.append_console(
-            f"OBS auto-refresh triggered: severity {event_severity} met threshold {required_severity}."
-        )
-        self.set_obs_status("Auto Refreshing", "#4aa3ff")
-        self.set_obs_busy(True)
-        self._run_obs_task(
-            "auto_refresh",
-            lambda: self.obs_service.refresh_source_in_scene(
-                source_name=source,
-                scene_name=scene,
-                off_on_delay_ms=obs_settings.refresh_off_on_delay_ms,
-            ),
-        )
+        maybe_trigger_obs_auto_refresh_service(self, glitch_data)
 
     def derive_glitch_severity(self, glitch_data: dict[str, object]) -> str:
         raw = str(glitch_data.get("severity", "")).strip().lower()

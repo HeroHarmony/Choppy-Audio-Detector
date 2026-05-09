@@ -1963,7 +1963,7 @@ class MainWindow(QMainWindow):
             self.set_twitch_status_badge("Connecting", "#4aa3ff")
         elif event_type in {"chat_commands.reconnecting", "chat_commands.reconnect_scheduled"}:
             self.set_twitch_status_badge("Reconnecting", "#f0c04a")
-        elif event_type in {"twitch.connection_failed", "chat_commands.connection_failed"}:
+        elif event_type in {"twitch.connection_failed", "chat_commands.connection_failed", "twitch.connection_error"}:
             error_text = str(data.get("error", "")).lower()
             if "auth" in error_text or "login" in error_text or "token" in error_text:
                 self.set_twitch_status_badge("Auth failed", "#ff6a6a")
@@ -2127,6 +2127,16 @@ class MainWindow(QMainWindow):
             return f"Chat command rejected: {data.get('user')} ({data.get('reason')})"
         if event_type in {"twitch.connecting", "chat_commands.connecting"}:
             return f"{event_type}: connecting as {data.get('username')} to {data.get('channel')}"
+        if event_type == "chat_commands.reconnecting":
+            attempt = data.get("attempt")
+            if attempt is not None:
+                return f"chat_commands.reconnecting: attempt {attempt} as {data.get('username')} to {data.get('channel')}"
+            return f"chat_commands.reconnecting: {data.get('username')} to {data.get('channel')}"
+        if event_type == "chat_commands.reconnect_scheduled":
+            return (
+                f"chat_commands.reconnect_scheduled: retrying in {data.get('delay_seconds')}s "
+                f"(attempt {data.get('attempt')})"
+            )
         if event_type == "audio.stream_opened":
             return (
                 f"Audio stream opened: {data.get('device')} "

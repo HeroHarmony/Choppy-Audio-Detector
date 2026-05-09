@@ -3,7 +3,12 @@ import socket
 import time
 import logging
 from threading import Lock
-from config import TWITCH_CHANNEL, TWITCH_BOT_USERNAME, TWITCH_OAUTH_TOKEN
+try:
+    from config import TWITCH_CHANNEL, TWITCH_BOT_USERNAME, TWITCH_OAUTH_TOKEN
+except Exception:
+    TWITCH_CHANNEL = ""
+    TWITCH_BOT_USERNAME = ""
+    TWITCH_OAUTH_TOKEN = ""
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,22 @@ class TwitchBot:
             self.last_connection_attempt = current_time
             
             try:
+                if not str(self.username or "").strip():
+                    self.last_error = "Missing Twitch username."
+                    logger.warning(self.last_error)
+                    self.connected = False
+                    return False
+                if not str(self.token or "").strip():
+                    self.last_error = "Missing Twitch OAuth token."
+                    logger.warning(self.last_error)
+                    self.connected = False
+                    return False
+                if not str(self.channel or "").strip() or str(self.channel).strip() == "#":
+                    self.last_error = "Missing Twitch channel."
+                    logger.warning(self.last_error)
+                    self.connected = False
+                    return False
+
                 # Close existing socket if present
                 if self.sock:
                     try:
@@ -53,8 +74,7 @@ class TwitchBot:
                     except:
                         pass
                         
-                # Create new socket
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                # Resolve and connect using any available address family (IPv4/IPv6).
                 timeout_seconds = self.connection_timeout
                 if deadline_monotonic is not None:
                     remaining = deadline_monotonic - time.monotonic()
@@ -64,11 +84,37 @@ class TwitchBot:
                         self.connected = False
                         return False
                     timeout_seconds = max(0.5, min(timeout_seconds, remaining))
-                self.sock.settimeout(timeout_seconds)
-                
+                resolved = socket.getaddrinfo(self.server, self.port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                if not resolved:
+                    self.last_error = f"DNS resolution returned no addresses for {self.server}"
+                    logger.error(self.last_error)
+                    self.connected = False
+                    return False
+
+                connection_errors = []
+                self.sock = None
+                for family, socktype, proto, _canonname, sockaddr in resolved:
+                    candidate = socket.socket(family, socktype, proto)
+                    candidate.settimeout(timeout_seconds)
+                    try:
+                        candidate.connect(sockaddr)
+                        self.sock = candidate
+                        break
+                    except Exception as connect_exc:
+                        connection_errors.append(f"{sockaddr}: {connect_exc}")
+                        try:
+                            candidate.close()
+                        except Exception:
+                            pass
+
+                if self.sock is None:
+                    self.last_error = "Unable to connect to Twitch IRC address: " + "; ".join(connection_errors)
+                    logger.error(self.last_error)
+                    self.connected = False
+                    return False
+
                 # Connect to Twitch IRC
                 logger.info(f"Connecting to {self.server}:{self.port}...")
-                self.sock.connect((self.server, self.port))
                 
                 # Authentication sequence
                 self.sock.send(b"CAP REQ :twitch.tv/tags twitch.tv/commands\r\n")

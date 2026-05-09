@@ -83,16 +83,19 @@ class TwitchCommandService:
     def _run(self) -> None:
         assert self.bot is not None
         while self.running:
+            connect_event = "chat_commands.connecting" if self._connect_retry_count == 0 else "chat_commands.reconnecting"
             self.emit(
-                "chat_commands.connecting",
+                connect_event,
                 channel=getattr(self.bot, "channel", ""),
                 username=getattr(self.bot, "username", ""),
+                attempt=max(1, self._connect_retry_count + 1),
             )
             self.file_logger.log(
                 "info",
-                "chat_commands.connecting",
+                connect_event,
                 channel=getattr(self.bot, "channel", ""),
                 username=getattr(self.bot, "username", ""),
+                attempt=max(1, self._connect_retry_count + 1),
             )
             if not self.bot.connect():
                 error = getattr(self.bot, "last_error", "") or "Unknown Twitch connection failure"

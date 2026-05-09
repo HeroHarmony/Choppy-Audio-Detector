@@ -19,16 +19,12 @@ try:
         QCheckBox,
         QComboBox,
         QDoubleSpinBox,
-        QGroupBox,
-        QGridLayout,
         QHBoxLayout,
         QLabel,
-        QLineEdit,
         QMainWindow,
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
-        QScrollArea,
         QSplashScreen,
         QSpinBox,
         QTabWidget,
@@ -252,17 +248,24 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.global_obs_status_badge)
         self.twitch_badge_presenter = StatusBadgePresenter(self.global_twitch_status_badge, prefix="Twitch")
         self.obs_badge_presenter = StatusBadgePresenter(self.global_obs_status_badge, prefix="OBS")
-        self.build_main_tab()
-        self.build_templates_tab()
-        self.build_settings_tab()
-        self.build_advanced_tab()
-        self.build_websocket_tab()
-        self.build_console_tab()
-        self.build_support_tab()
+        build_main_tab_ui(self)
+        build_responses_tab_ui(self)
+        build_settings_tab_ui(self)
+        build_advanced_tab_ui(self)
+        build_websocket_tab_ui(self)
+        build_console_tab_ui(self)
+        build_support_tab_ui(self)
         self._last_tab_index = self.tabs.currentIndex()
         self.tabs.currentChanged.connect(self.handle_tab_changed)
         self.refresh_devices()
-        self.apply_settings_to_controls()
+        apply_templates_to_controls(self)
+        apply_settings_controls_controller(self)
+        apply_obs_settings_to_controls_controller(self)
+        apply_advanced_controls_controller(self)
+        self.refresh_channel_options()
+        self.update_meter_refresh_timer()
+        self.update_twitch_status_from_settings()
+        self.update_obs_controls_enabled()
         self.apply_theme()
         self.update_auto_restart_timer()
         self.update_command_service()
@@ -292,27 +295,6 @@ class MainWindow(QMainWindow):
         if getattr(options, "twitch_oauth_token", None):
             self.settings.twitch_oauth_token = str(options.twitch_oauth_token).strip()
         save_settings(self.settings)
-
-    def build_main_tab(self) -> None:
-        build_main_tab_ui(self)
-
-    def build_templates_tab(self) -> None:
-        build_responses_tab_ui(self)
-
-    def build_settings_tab(self) -> None:
-        build_settings_tab_ui(self)
-
-    def build_support_tab(self) -> None:
-        build_support_tab_ui(self)
-
-    def build_websocket_tab(self) -> None:
-        build_websocket_tab_ui(self)
-
-    def build_console_tab(self) -> None:
-        build_console_tab_ui(self)
-
-    def build_advanced_tab(self) -> None:
-        build_advanced_tab_ui(self)
 
     def _advanced_row(
         self,
@@ -414,16 +396,6 @@ class MainWindow(QMainWindow):
             ("spectral_rolloff", "Detects spectral rolloff instability."),
             ("spectral_centroid", "Detects spectral centroid instability."),
         )
-
-    def apply_settings_to_controls(self) -> None:
-        apply_templates_to_controls(self)
-        apply_settings_controls_controller(self)
-        self.apply_obs_settings_to_controls()
-        self.apply_advanced_to_controls()
-        self.refresh_channel_options()
-        self.update_meter_refresh_timer()
-        self.update_twitch_status_from_settings()
-        self.update_obs_controls_enabled()
 
     def apply_theme(self) -> None:
         app = QApplication.instance()
@@ -639,7 +611,7 @@ class MainWindow(QMainWindow):
         self.update_twitch_status_from_settings()
 
     def save_templates(self) -> None:
-        templates = self.collect_templates()
+        templates = collect_templates_from_controls(self)
         errors = templates.validate_all()
         if errors:
             QMessageBox.warning(self, "Template validation failed", "\n".join(errors))
@@ -652,12 +624,6 @@ class MainWindow(QMainWindow):
         preview_text, _ = build_preview_text(self)
         self.template_preview.setPlainText(preview_text)
 
-    def collect_templates(self):
-        return collect_templates_from_controls(self)
-
-    def is_templates_dirty(self) -> bool:
-        return templates_dirty(self)
-
     def reset_template_to_default(self, template_key: str) -> None:
         reset_template_to_default_controller(self, template_key)
 
@@ -667,8 +633,8 @@ class MainWindow(QMainWindow):
 
     def save_all_settings(self) -> None:
         collect_settings_from_controls(self)
-        self.collect_obs_from_controls()
-        self.collect_advanced_from_controls()
+        collect_obs_from_controls_controller(self)
+        collect_advanced_from_controls_controller(self)
         self.file_logger.settings = self.settings.log_settings
         save_settings(self.settings)
         self.apply_theme()
@@ -681,35 +647,20 @@ class MainWindow(QMainWindow):
         self.prune_log_windows()
         self.append_console("Settings saved.")
 
-    def is_settings_dirty(self) -> bool:
-        return settings_dirty(self)
-
-    def apply_obs_settings_to_controls(self) -> None:
-        apply_obs_settings_to_controls_controller(self)
-
-    def collect_obs_from_controls(self) -> None:
-        collect_obs_from_controls_controller(self)
-
     def update_obs_bundle_network_notice(self) -> None:
         update_obs_bundle_network_notice_controller(self)
 
     def save_obs_settings(self) -> None:
-        self.collect_obs_from_controls()
+        collect_obs_from_controls_controller(self)
         save_settings(self.settings)
         self.append_console("WebSocket settings saved.")
         self.update_obs_controls_enabled()
-
-    def is_websocket_dirty(self) -> bool:
-        return websocket_dirty(self)
-
-    def is_advanced_dirty(self) -> bool:
-        return advanced_dirty(self)
 
     def handle_tab_changed(self, new_index: int) -> None:
         previous_index = self._last_tab_index
         self._last_tab_index = new_index
         previous_widget = self.tabs.widget(previous_index)
-        if previous_widget is self.settings_tab and self.is_settings_dirty():
+        if previous_widget is self.settings_tab and settings_dirty(self):
             answer = QMessageBox.question(
                 self,
                 "Unsaved Settings",
@@ -719,7 +670,7 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.Yes:
                 self.save_all_settings()
-        elif previous_widget is self.templates_tab and self.is_templates_dirty():
+        elif previous_widget is self.templates_tab and templates_dirty(self):
             answer = QMessageBox.question(
                 self,
                 "Unsaved Templates",
@@ -729,7 +680,7 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.Yes:
                 self.save_templates()
-        elif previous_widget is self.advanced_tab and self.is_advanced_dirty():
+        elif previous_widget is self.advanced_tab and advanced_dirty(self):
             answer = QMessageBox.question(
                 self,
                 "Unsaved Advanced Changes",
@@ -739,7 +690,7 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.Yes:
                 self.save_advanced_settings()
-        elif previous_widget is getattr(self, "websocket_tab", None) and self.is_websocket_dirty():
+        elif previous_widget is getattr(self, "websocket_tab", None) and websocket_dirty(self):
             answer = QMessageBox.question(
                 self,
                 "Unsaved WebSocket Changes",
@@ -788,7 +739,7 @@ class MainWindow(QMainWindow):
         if not self.obs_enabled.isChecked():
             QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
             return
-        self.collect_obs_from_controls()
+        collect_obs_from_controls_controller(self)
         cfg = build_connection_config(self.settings)
         self.set_obs_status("Connecting", "#4aa3ff")
         self.set_obs_busy(True)
@@ -798,7 +749,7 @@ class MainWindow(QMainWindow):
         if not self.obs_enabled.isChecked():
             QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
             return
-        self.collect_obs_from_controls()
+        collect_obs_from_controls_controller(self)
         self.set_obs_status("Testing", "#4aa3ff")
         self.set_obs_busy(True)
         self._run_obs_task("test", lambda: test_connection_once(self.settings))
@@ -964,20 +915,14 @@ class MainWindow(QMainWindow):
         if decision.update_controls:
             self.update_obs_controls_enabled()
 
-    def apply_advanced_to_controls(self) -> None:
-        apply_advanced_controls_controller(self)
-
-    def collect_advanced_from_controls(self) -> None:
-        collect_advanced_from_controls_controller(self)
-
     def save_advanced_settings(self) -> None:
-        self.collect_advanced_from_controls()
+        collect_advanced_from_controls_controller(self)
         save_settings(self.settings)
         self.append_console("Advanced settings saved.")
 
     def reset_advanced_defaults(self) -> None:
         reset_advanced_defaults_controller(self)
-        self.apply_advanced_to_controls()
+        apply_advanced_controls_controller(self)
         save_settings(self.settings)
         self.append_console("Advanced settings reset to defaults.")
 

@@ -48,6 +48,7 @@ from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_det
 from choppy_detector_gui.command_service_controller import sync_command_service
 from choppy_detector_gui.file_logging import AppFileLogger
 from choppy_detector_gui.gui.widgets.obs_level_meter import ObsLevelMeter
+from choppy_detector_gui.gui.tabs.websocket_tab import build_websocket_tab as build_websocket_tab_ui
 from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
 from choppy_detector_gui.obs_event_policy import decide_obs_event
 from choppy_detector_gui.obs_network_notice import should_show_unsigned_bundle_notice
@@ -613,138 +614,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(tab, "Support")
 
     def build_websocket_tab(self) -> None:
-        tab = QWidget()
-        self.websocket_tab = tab
-        root_layout = QVBoxLayout(tab)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        root_layout.addWidget(scroll)
-
-        content = QWidget()
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setSpacing(10)
-
-        connection_group = QGroupBox("OBS Connection")
-        connection_form = QFormLayout(connection_group)
-        connection_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        connection_form.setFormAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.obs_enabled = QCheckBox("Enable OBS WebSocket integration")
-        self.obs_enabled.stateChanged.connect(self.update_obs_controls_enabled)
-        connection_form.addRow("Enabled", self.obs_enabled)
-        self.obs_host = QLineEdit()
-        self.obs_host.setPlaceholderText("127.0.0.1")
-        self.obs_host.textChanged.connect(self.update_obs_bundle_network_notice)
-        connection_form.addRow("Host", self.obs_host)
-        self.obs_port = QSpinBox()
-        self.obs_port.setRange(1, 65535)
-        connection_form.addRow("Port", self.obs_port)
-        self.obs_password = QLineEdit()
-        self.obs_password.setEchoMode(QLineEdit.Password)
-        self.obs_password.setPlaceholderText("OBS WebSocket password")
-        connection_form.addRow("Password", self.obs_password)
-        self.obs_status = QLabel("Disconnected")
-        self.obs_status.setStyleSheet("color: #ff9c4a; font-weight: 700;")
-        connection_form.addRow("Status", self.obs_status)
-        self.obs_bundle_network_notice = QLabel(
-            "Note: macOS packaged app builds without an Apple signing certificate may fail to reach LAN OBS hosts "
-            "(\"No route to host\") even when Local Network access appears enabled. "
-            "Use `run_gui.command`, use localhost when OBS is local, or use a properly signed build."
-        )
-        self.obs_bundle_network_notice.setWordWrap(True)
-        self.obs_bundle_network_notice.setStyleSheet("color: #f0c04a;")
-        self.obs_bundle_network_notice.hide()
-        connection_form.addRow("", self.obs_bundle_network_notice)
-
-        connection_buttons = QHBoxLayout()
-        self.obs_connect_button = QPushButton("Connect")
-        self.obs_disconnect_button = QPushButton("Disconnect")
-        self.obs_test_button = QPushButton("Test OBS Connection")
-        self.obs_connect_button.clicked.connect(self.connect_obs)
-        self.obs_disconnect_button.clicked.connect(self.disconnect_obs)
-        self.obs_test_button.clicked.connect(self.test_obs_connection)
-        connection_buttons.addWidget(self.obs_connect_button)
-        connection_buttons.addWidget(self.obs_disconnect_button)
-        connection_buttons.addWidget(self.obs_test_button)
-        connection_form.addRow("", self._wrap_layout(connection_buttons))
-
-        target_group = QGroupBox("Target Source")
-        target_form = QFormLayout(target_group)
-        target_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        target_form.setFormAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.obs_target_scene = QComboBox()
-        self.obs_target_scene.setEditable(False)
-        self.obs_refresh_scenes_button = QPushButton("Refresh Scenes")
-        self.obs_refresh_scenes_button.clicked.connect(self.refresh_obs_scenes)
-        scene_row = QHBoxLayout()
-        scene_row.addWidget(self.obs_target_scene, 1)
-        scene_row.addWidget(self.obs_refresh_scenes_button)
-        scene_field = self._wrap_layout(scene_row)
-        scene_field.setToolTip("Optional. Leave as 'All Scenes' to search all scenes.")
-        target_form.addRow("Scene", scene_field)
-        self.obs_target_source = QComboBox()
-        self.obs_target_source.setEditable(False)
-        self.obs_refresh_sources_button = QPushButton("Refresh Sources")
-        self.obs_refresh_sources_button.clicked.connect(self.refresh_obs_sources)
-        source_row = QHBoxLayout()
-        source_row.addWidget(self.obs_target_source, 1)
-        source_row.addWidget(self.obs_refresh_sources_button)
-        target_form.addRow("Source", self._wrap_layout(source_row))
-
-        automation_group = QGroupBox("Automation")
-        automation_form = QFormLayout(automation_group)
-        automation_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        automation_form.setFormAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.obs_auto_refresh_enabled = QCheckBox("Auto refresh on detected issues")
-        automation_form.addRow("Auto refresh", self.obs_auto_refresh_enabled)
-        self.obs_auto_refresh_min_severity = QComboBox()
-        self.obs_auto_refresh_min_severity.addItems(["minor", "moderate", "severe"])
-        self.obs_auto_refresh_min_severity.setMinimumContentsLength(10)
-        self.obs_auto_refresh_min_severity.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self.obs_auto_refresh_min_severity.setMinimumWidth(140)
-        automation_form.addRow("Min severity", self.obs_auto_refresh_min_severity)
-        self.obs_auto_refresh_cooldown_sec = QSpinBox()
-        self.obs_auto_refresh_cooldown_sec.setRange(0, 86400)
-        self.obs_auto_refresh_cooldown_sec.setSuffix(" sec")
-        automation_form.addRow("Cooldown", self.obs_auto_refresh_cooldown_sec)
-        self.obs_refresh_off_on_delay_ms = QSpinBox()
-        self.obs_refresh_off_on_delay_ms.setRange(0, 10000)
-        self.obs_refresh_off_on_delay_ms.setSingleStep(50)
-        self.obs_refresh_off_on_delay_ms.setSuffix(" ms")
-        automation_form.addRow("Off/on delay", self.obs_refresh_off_on_delay_ms)
-
-        actions_group = QGroupBox("Actions")
-        actions_layout = QVBoxLayout(actions_group)
-        self.obs_refresh_now_button = QPushButton("Refresh Source Now")
-        self.obs_refresh_now_button.clicked.connect(self.refresh_obs_source_now)
-        self.obs_save_button = QPushButton("Save WebSocket Settings")
-        self.obs_save_button.clicked.connect(self.save_obs_settings)
-        actions_layout.addWidget(self.obs_refresh_now_button)
-        actions_layout.addWidget(self.obs_save_button)
-
-        if not self.obs_service.available:
-            warning = QLabel(self.obs_service.unavailable_reason or "obsws-python is not installed.")
-            warning.setWordWrap(True)
-            warning.setStyleSheet("color: #f0c04a;")
-            layout.addWidget(warning)
-
-        layout.addWidget(connection_group)
-        layout.addWidget(target_group)
-        layout.addWidget(automation_group)
-        layout.addWidget(actions_group)
-        layout.addStretch(1)
-        self.tabs.addTab(tab, "WebSocket")
-
-    def _wrap_layout(self, inner_layout: QHBoxLayout) -> QWidget:
-        inner_layout.setContentsMargins(0, 0, 0, 0)
-        inner_layout.setSpacing(8)
-        wrapper = QWidget()
-        wrapper.setLayout(inner_layout)
-        return wrapper
+        build_websocket_tab_ui(self)
 
     def build_console_tab(self) -> None:
         tab = QWidget()

@@ -47,7 +47,10 @@ except ImportError as exc:
 from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_detection_count
 from choppy_detector_gui.command_service_controller import sync_command_service
 from choppy_detector_gui.file_logging import AppFileLogger
+from choppy_detector_gui.gui.tabs.advanced_tab import build_advanced_tab as build_advanced_tab_ui
+from choppy_detector_gui.gui.tabs.console_tab import build_console_tab as build_console_tab_ui
 from choppy_detector_gui.gui.tabs.settings_tab import build_settings_tab as build_settings_tab_ui
+from choppy_detector_gui.gui.tabs.support_tab import build_support_tab as build_support_tab_ui
 from choppy_detector_gui.gui.widgets.obs_level_meter import ObsLevelMeter
 from choppy_detector_gui.gui.tabs.websocket_tab import build_websocket_tab as build_websocket_tab_ui
 from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
@@ -450,145 +453,16 @@ class MainWindow(QMainWindow):
         build_settings_tab_ui(self)
 
     def build_support_tab(self) -> None:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setSpacing(10)
-
-        title = QLabel("Support and Links")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        layout.addWidget(title)
-
-        github_link = QLabel('<a href="https://github.com/HeroHarmony/Choppy-Audio-Detector">GitHub Repository</a>')
-        github_link.setOpenExternalLinks(True)
-        layout.addWidget(github_link)
-
-        twitch_link = QLabel('<a href="https://www.twitch.tv/heroharmony">HeroHarmony on Twitch</a>')
-        twitch_link.setOpenExternalLinks(True)
-        layout.addWidget(twitch_link)
-
-        support_link = QLabel('<a href="https://streamelements.com/heroharmony/tip">Buy Me a Coffee / Support</a>')
-        support_link.setOpenExternalLinks(True)
-        layout.addWidget(support_link)
-
-        layout.addStretch(1)
-        self.tabs.addTab(tab, "Support")
+        build_support_tab_ui(self)
 
     def build_websocket_tab(self) -> None:
         build_websocket_tab_ui(self)
 
     def build_console_tab(self) -> None:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.console_output = QPlainTextEdit()
-        self.console_output.setReadOnly(True)
-        layout.addWidget(self.console_output)
-        self.clear_console_button = QPushButton("Clear Console")
-        self.clear_console_button.clicked.connect(self.clear_console_messages)
-        layout.addWidget(self.clear_console_button)
-        self.tabs.addTab(tab, "Console")
+        build_console_tab_ui(self)
 
     def build_advanced_tab(self) -> None:
-        tab = QWidget()
-        self.advanced_tab = tab
-        layout = QVBoxLayout(tab)
-        layout.setSpacing(10)
-        layout.setContentsMargins(8, 8, 8, 8)
-        group_title_style = "QGroupBox { font-size: 19px; font-weight: 600; }"
-
-        self.advanced_widgets: dict[str, QWidget] = {}
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-
-        alert_group = QGroupBox("Alert Config")
-        alert_group.setStyleSheet(group_title_style)
-        alert_layout = QVBoxLayout(alert_group)
-        alert_layout.setSpacing(8)
-        for key, desc, value_type, min_v, max_v, step in self.alert_config_schema():
-            row = self._advanced_row(
-                key,
-                desc,
-                value_type,
-                min_v,
-                max_v,
-                step,
-                DEFAULT_ALERT_CONFIG.get(key),
-            )
-            alert_layout.addWidget(row)
-
-        threshold_group = QGroupBox("Thresholds")
-        threshold_group.setStyleSheet(group_title_style)
-        threshold_layout = QVBoxLayout(threshold_group)
-        threshold_layout.setSpacing(8)
-        for key, desc, value_type, min_v, max_v, step in self.threshold_schema():
-            row = self._advanced_row(
-                key,
-                desc,
-                value_type,
-                min_v,
-                max_v,
-                step,
-                DEFAULT_THRESHOLDS.get(key),
-            )
-            threshold_layout.addWidget(row)
-
-        methods_group = QGroupBox("Detection Methods")
-        methods_group.setStyleSheet(group_title_style)
-        methods_layout = QVBoxLayout(methods_group)
-        methods_layout.setSpacing(8)
-        for key, desc in self.methods_schema():
-            checkbox = QCheckBox()
-            self.advanced_widgets[f"method:{key}"] = checkbox
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(8)
-            left = QWidget()
-            left_layout = QHBoxLayout(left)
-            left_layout.setContentsMargins(0, 0, 0, 0)
-            left_layout.setSpacing(8)
-            title = QLabel(key)
-            title.setStyleSheet("font-weight: 600;")
-            left_layout.addWidget(title)
-            left_layout.addWidget(checkbox)
-            left_layout.addStretch(1)
-
-            default_value = bool(DEFAULT_APPROACHES.get(key, False))
-            desc_label = QLabel(f"{desc} (Default: {self._format_default_value(default_value)})")
-            desc_label.setStyleSheet("color: #bdbdbd;")
-            desc_label.setWordWrap(True)
-            row_layout.addWidget(left, 3)
-            row_layout.addWidget(desc_label, 5)
-            methods_layout.addWidget(row_widget)
-
-        content_layout.addWidget(alert_group)
-        content_layout.addSpacing(12)
-        content_layout.addWidget(threshold_group)
-        content_layout.addSpacing(12)
-        content_layout.addWidget(methods_group)
-        content_layout.addStretch(1)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
-            "QScrollArea { border: none; background: transparent; }"
-            "QScrollArea > QWidget > QWidget { background: transparent; }"
-        )
-        scroll.setWidget(content)
-        layout.addWidget(scroll, 1)
-
-        actions = QHBoxLayout()
-        self.reset_advanced_defaults_btn = QPushButton("Reset Defaults")
-        self.reset_advanced_defaults_btn.clicked.connect(self.reset_advanced_defaults)
-        self.save_advanced_btn = QPushButton("Save Advanced Settings")
-        self.save_advanced_btn.clicked.connect(self.save_advanced_settings)
-        actions.addWidget(self.reset_advanced_defaults_btn)
-        actions.addWidget(self.save_advanced_btn)
-        layout.addLayout(actions)
-        self.tabs.addTab(tab, "Advanced")
+        build_advanced_tab_ui(self)
 
     def _advanced_row(
         self,

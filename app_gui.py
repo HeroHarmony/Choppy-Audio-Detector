@@ -18,9 +18,7 @@ try:
         QApplication,
         QCheckBox,
         QComboBox,
-        QFrame,
         QDoubleSpinBox,
-        QFormLayout,
         QGroupBox,
         QGridLayout,
         QHBoxLayout,
@@ -34,8 +32,6 @@ try:
         QSplashScreen,
         QSpinBox,
         QTabWidget,
-        QTextEdit,
-        QToolButton,
         QVBoxLayout,
         QWidget,
     )
@@ -49,9 +45,10 @@ from choppy_detector_gui.command_service_controller import sync_command_service
 from choppy_detector_gui.file_logging import AppFileLogger
 from choppy_detector_gui.gui.tabs.advanced_tab import build_advanced_tab as build_advanced_tab_ui
 from choppy_detector_gui.gui.tabs.console_tab import build_console_tab as build_console_tab_ui
+from choppy_detector_gui.gui.tabs.main_tab import build_main_tab as build_main_tab_ui
+from choppy_detector_gui.gui.tabs.responses_tab import build_responses_tab as build_responses_tab_ui
 from choppy_detector_gui.gui.tabs.settings_tab import build_settings_tab as build_settings_tab_ui
 from choppy_detector_gui.gui.tabs.support_tab import build_support_tab as build_support_tab_ui
-from choppy_detector_gui.gui.widgets.obs_level_meter import ObsLevelMeter
 from choppy_detector_gui.gui.tabs.websocket_tab import build_websocket_tab as build_websocket_tab_ui
 from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
 from choppy_detector_gui.obs_event_policy import decide_obs_event
@@ -269,185 +266,10 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def build_main_tab(self) -> None:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        top_row = QHBoxLayout()
-        form = QFormLayout()
-        self.device_combo = QComboBox()
-        self.device_combo.currentIndexChanged.connect(self.device_selection_changed)
-        device_col = QWidget()
-        device_col_layout = QVBoxLayout(device_col)
-        device_col_layout.setContentsMargins(0, 0, 0, 0)
-        device_col_layout.setSpacing(4)
-        device_col_layout.addWidget(self.device_combo)
-        self.device_hint_label = QLabel("")
-        self.device_hint_label.setWordWrap(True)
-        self.device_hint_label.setStyleSheet("color: #bdbdbd;")
-        self.device_hint_label.hide()
-        device_col_layout.addWidget(self.device_hint_label)
-        form.addRow("Audio input", device_col)
-        self.channel_combo = QComboBox()
-        self.channel_combo.currentIndexChanged.connect(self.channel_selection_changed)
-        form.addRow("Channel", self.channel_combo)
-        top_row.addLayout(form, 3)
-
-        toggle_col = QVBoxLayout()
-        self.twitch_enabled = QCheckBox("Enable Twitch alerts")
-        self.twitch_enabled.setChecked(self.settings.twitch_enabled)
-        self.twitch_enabled.stateChanged.connect(self.save_main_settings)
-        toggle_col.addWidget(self.twitch_enabled)
-
-        self.chat_commands_enabled = QCheckBox("Enable Twitch chat commands")
-        self.chat_commands_enabled.setChecked(self.settings.chat_commands.chat_commands_enabled)
-        self.chat_commands_enabled.stateChanged.connect(self.save_main_settings)
-        toggle_col.addWidget(self.chat_commands_enabled)
-        toggle_col.addStretch(1)
-        top_row.addLayout(toggle_col, 2)
-        layout.addLayout(top_row)
-
-        button_row = QHBoxLayout()
-        self.start_button = QPushButton("Start")
-        self.start_button.clicked.connect(self.start_monitoring)
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.clicked.connect(self.stop_monitoring)
-        self.restart_button = QPushButton("Restart")
-        self.restart_button.clicked.connect(self.restart_monitoring)
-        self.refresh_button = QPushButton("Refresh Devices")
-        self.refresh_button.clicked.connect(self.refresh_devices)
-        for button in (self.start_button, self.stop_button, self.restart_button, self.refresh_button):
-            button_row.addWidget(button)
-        layout.addLayout(button_row)
-
-        status_row = QHBoxLayout()
-        self.status_label = QLabel("Stopped")
-        status_row.addWidget(self.status_label, 1)
-
-        status_right_col = QVBoxLayout()
-        status_right_col.setContentsMargins(0, 0, 0, 0)
-        status_right_col.addStretch(1)
-        self.level_text = QLabel("Peak -inf dBFS | RMS -inf dBFS")
-        status_right_col.addWidget(self.level_text, 0, Qt.AlignRight)
-        status_row.addLayout(status_right_col, 0)
-        layout.addLayout(status_row)
-
-        meter_stack = QWidget()
-        meter_stack_layout = QVBoxLayout(meter_stack)
-        meter_stack_layout.setContentsMargins(0, 0, 0, 0)
-        meter_stack_layout.setSpacing(0)
-        self.peak_meter = ObsLevelMeter(show_ruler=False, overlay_label="Peak")
-        self.rms_meter = ObsLevelMeter(show_ruler=True, overlay_label="RMS")
-        meter_stack_layout.addWidget(self.peak_meter)
-        meter_stack_layout.addWidget(self.rms_meter)
-        layout.addWidget(meter_stack)
-
-        layout.addWidget(QLabel("Recent events"))
-        self.recent_events = QPlainTextEdit()
-        self.recent_events.setReadOnly(True)
-        layout.addWidget(self.recent_events, stretch=1)
-        self.tabs.addTab(tab, "Main")
+        build_main_tab_ui(self)
 
     def build_templates_tab(self) -> None:
-        tab = QWidget()
-        self.templates_tab = tab
-        layout = QVBoxLayout(tab)
-        self.template_first_minor = QTextEdit()
-        self.template_first_moderate = QTextEdit()
-        self.template_first_severe = QTextEdit()
-        self.template_ongoing = QTextEdit()
-        for editor in (
-            self.template_first_minor,
-            self.template_first_moderate,
-            self.template_first_severe,
-            self.template_ongoing,
-        ):
-            editor.setFixedHeight(76)
-
-        content_row = QHBoxLayout()
-        left_col = QVBoxLayout()
-        form = QFormLayout()
-        form.addRow("First minor", self._template_row(self.template_first_minor, "first_minor"))
-        form.addRow("First moderate", self._template_row(self.template_first_moderate, "first_moderate"))
-        form.addRow("First severe", self._template_row(self.template_first_severe, "first_severe"))
-        form.addRow("Ongoing", self._template_row(self.template_ongoing, "ongoing"))
-        left_col.addLayout(form)
-
-        button_row = QHBoxLayout()
-        self.preview_templates_button = QPushButton("Preview")
-        self.preview_templates_button.clicked.connect(self.preview_templates)
-        self.save_templates_button = QPushButton("Save Templates")
-        self.save_templates_button.clicked.connect(self.save_templates)
-        button_row.addWidget(self.preview_templates_button)
-        button_row.addWidget(self.save_templates_button)
-        left_col.addLayout(button_row)
-
-        self.template_preview = QPlainTextEdit()
-        self.template_preview.setReadOnly(True)
-        left_col.addWidget(self.template_preview, 1)
-
-        guide_col = QVBoxLayout()
-        guide_col.addWidget(QLabel("Template variables"))
-        guide_col.addWidget(self._template_reference_guide(), 1)
-
-        content_row.addLayout(left_col, 5)
-        content_row.addLayout(guide_col, 2)
-        layout.addLayout(content_row, 1)
-        self.tabs.addTab(tab, "Responses")
-
-    def _template_reference_guide(self) -> QWidget:
-        panel = QFrame()
-        panel.setFrameShape(QFrame.StyledPanel)
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(10, 10, 10, 10)
-        panel_layout.setSpacing(8)
-
-        entries = (
-            ("{severity}", "Alert severity label such as [MINOR], [MODERATE], [SEVERE]."),
-            ("{detection_count}", "How many detections were counted in the alert window."),
-            ("{time_span_minutes}", "Window length in minutes, for example 1.5."),
-            ("{confidence_threshold}", "Configured confidence threshold percentage."),
-            ("{device_name}", "Active device name used by monitoring."),
-            ("{timestamp}", "Local timestamp at render time."),
-        )
-        for token, description in entries:
-            panel_layout.addWidget(self._reference_token_row(token, description))
-        panel_layout.addStretch(1)
-        return panel
-
-    def _reference_token_row(self, token: str, description: str) -> QWidget:
-        row = QWidget()
-        row_layout = QVBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(2)
-
-        top = QHBoxLayout()
-        token_label = QLabel(token)
-        token_label.setStyleSheet("font-family: Menlo, Monaco, Courier New, monospace; font-weight: 600;")
-        copy_btn = QToolButton()
-        copy_btn.setText("Copy")
-        copy_btn.clicked.connect(lambda: self.copy_template_token(token))
-        top.addWidget(token_label)
-        top.addStretch(1)
-        top.addWidget(copy_btn)
-
-        desc_label = QLabel(description)
-        desc_label.setWordWrap(True)
-        desc_label.setStyleSheet("color: #bdbdbd;")
-
-        row_layout.addLayout(top)
-        row_layout.addWidget(desc_label)
-        return row
-
-    def _template_row(self, editor: QTextEdit, template_key: str) -> QWidget:
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.addWidget(editor, 1)
-        reset_button = QToolButton()
-        reset_button.setText("Default")
-        reset_button.clicked.connect(lambda: self.reset_template_to_default(template_key))
-        row_layout.addWidget(reset_button, 0, Qt.AlignTop)
-        return row_widget
+        build_responses_tab_ui(self)
 
     def build_settings_tab(self) -> None:
         build_settings_tab_ui(self)

@@ -64,9 +64,9 @@ from choppy_detector_gui.responses_controller import (
 )
 from choppy_detector_gui.settings_controller import (
     apply_settings_to_controls as apply_settings_controls_controller,
-    collect_settings_from_controls,
     settings_dirty,
 )
+from choppy_detector_gui.settings_save_service import save_all_settings as save_all_settings_service
 from choppy_detector_gui.runtime_event_presenter import RuntimeEventPresenter
 from choppy_detector_gui.runtime_event_pipeline import RuntimeEventPipeline
 from choppy_detector_gui.runtime_event_router import RuntimeEventContext
@@ -632,20 +632,7 @@ class MainWindow(QMainWindow):
         self.append_console(f"Copied token {token}")
 
     def save_all_settings(self) -> None:
-        collect_settings_from_controls(self)
-        collect_obs_from_controls_controller(self)
-        collect_advanced_from_controls_controller(self)
-        self.file_logger.settings = self.settings.log_settings
-        save_settings(self.settings)
-        self.apply_theme()
-        self.update_meter_refresh_timer()
-        self.update_auto_restart_timer()
-        self.update_command_service()
-        self.restart_meter_preview()
-        self.update_meter_display_mode()
-        self.update_twitch_status_from_settings()
-        self.prune_log_windows()
-        self.append_console("Settings saved.")
+        save_all_settings_service(self)
 
     def update_obs_bundle_network_notice(self) -> None:
         update_obs_bundle_network_notice_controller(self)

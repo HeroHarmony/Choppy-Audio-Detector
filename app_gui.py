@@ -40,7 +40,13 @@ except ImportError as exc:
         "PySide6 is required for the GUI. Install dependencies with: pip install -r requirements.txt"
     ) from exc
 
-from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_detection_count
+from choppy_detector_gui.alert_templates import severity_for_detection_count
+from choppy_detector_gui.advanced_controller import (
+    advanced_dirty,
+    apply_advanced_to_controls as apply_advanced_controls_controller,
+    collect_advanced_from_controls as collect_advanced_from_controls_controller,
+    reset_advanced_defaults as reset_advanced_defaults_controller,
+)
 from choppy_detector_gui.command_service_controller import sync_command_service
 from choppy_detector_gui.file_logging import AppFileLogger
 from choppy_detector_gui.gui.tabs.advanced_tab import build_advanced_tab as build_advanced_tab_ui
@@ -52,25 +58,34 @@ from choppy_detector_gui.gui.tabs.support_tab import build_support_tab as build_
 from choppy_detector_gui.gui.tabs.websocket_tab import build_websocket_tab as build_websocket_tab_ui
 from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
 from choppy_detector_gui.obs_event_policy import decide_obs_event
-from choppy_detector_gui.obs_network_notice import should_show_unsigned_bundle_notice
-from choppy_detector_gui.obs_settings_binding import (
-    apply_form_values_to_settings,
-    is_form_dirty,
-    read_form_values,
-)
 from choppy_detector_gui.obs_websocket_service import ObsWebSocketService
+from choppy_detector_gui.responses_controller import (
+    apply_templates_to_controls,
+    build_preview_text,
+    collect_templates_from_controls,
+    reset_template_to_default as reset_template_to_default_controller,
+    templates_dirty,
+)
+from choppy_detector_gui.settings_controller import (
+    apply_settings_to_controls as apply_settings_controls_controller,
+    collect_settings_from_controls,
+    settings_dirty,
+)
 from choppy_detector_gui.status_badge_presenter import StatusBadgePresenter
 from choppy_detector_gui.twitch_status_coordinator import TwitchStatusCoordinator
 from choppy_detector_gui.runtime import DetectorRuntime
 from choppy_detector_gui.settings import (
     AppSettings,
-    DEFAULT_ALERT_CONFIG,
-    DEFAULT_APPROACHES,
-    DEFAULT_THRESHOLDS,
     load_settings,
     save_settings,
 )
 from choppy_detector_gui.twitch_command_service import TwitchCommandService
+from choppy_detector_gui.websocket_settings_controller import (
+    apply_obs_settings_to_controls as apply_obs_settings_to_controls_controller,
+    collect_obs_from_controls as collect_obs_from_controls_controller,
+    update_obs_bundle_network_notice as update_obs_bundle_network_notice_controller,
+    websocket_dirty,
+)
 
 try:
     import numpy as np
@@ -388,37 +403,8 @@ class MainWindow(QMainWindow):
         )
 
     def apply_settings_to_controls(self) -> None:
-        templates = self.settings.alert_templates
-        self.template_first_minor.setPlainText(templates.first_minor)
-        self.template_first_moderate.setPlainText(templates.first_moderate)
-        self.template_first_severe.setPlainText(templates.first_severe)
-        self.template_ongoing.setPlainText(templates.ongoing)
-
-        self.auto_restart_minutes.setValue(self.settings.auto_restart_minutes)
-        self.auto_start_monitoring.setChecked(self.settings.auto_start_monitoring)
-        self.alert_cooldown_ms.setValue(self.settings.alert_cooldown_ms)
-        self.twitch_channel.setText(self.settings.twitch_channel)
-        self.twitch_bot_username.setText(self.settings.twitch_bot_username)
-        self.twitch_oauth_token.setText(self.settings.twitch_oauth_token)
-        commands = self.settings.chat_commands
-        self.start_command.setText(commands.start_command)
-        self.stop_command.setText(commands.stop_command)
-        self.restart_command.setText(commands.restart_command)
-        self.status_command.setText(commands.status_command)
-        self.list_devices_command.setText(commands.list_devices_command)
-        self.fix_command.setText(commands.fix_command)
-        self.switch_device_command_prefix.setText(commands.switch_device_command_prefix)
-        self.allowed_chat_users.setPlainText("\n".join(commands.allowed_chat_users))
-        self.send_command_responses.setChecked(commands.send_command_responses)
-        self.logs_enabled.setChecked(self.settings.log_settings.logs_enabled)
-        self.log_window_retention_minutes.setValue(self.settings.log_settings.log_window_retention_minutes)
-        self.keep_preview_while_monitoring.setChecked(self.settings.keep_preview_while_monitoring)
-        self.smooth_preview_meter.setChecked(self.settings.smooth_preview_meter)
-        self.preview_meter_fps.setValue(self.settings.preview_meter_fps)
-        self.dark_mode_enabled.setChecked(self.settings.dark_mode_enabled)
-        self.obs_auto_connect_on_launch.setChecked(self.settings.obs_websocket.auto_connect_on_launch)
-        self.obs_auto_connect_retry_enabled.setChecked(self.settings.obs_websocket.auto_connect_retry_enabled)
-        self.log_directory.setText(self.settings.log_settings.log_directory)
+        apply_templates_to_controls(self)
+        apply_settings_controls_controller(self)
         self.apply_obs_settings_to_controls()
         self.apply_advanced_to_controls()
         self.refresh_channel_options()
@@ -650,89 +636,24 @@ class MainWindow(QMainWindow):
         self.append_console("Response templates saved.")
 
     def preview_templates(self) -> None:
-        templates = self.collect_templates()
-        errors = templates.validate_all()
-        if errors:
-            self.template_preview.setPlainText("\n".join(errors))
-            return
-        previews = [
-            templates.render(
-                detection_count=count,
-                time_span_minutes=1.5,
-                is_first_alert=is_first,
-                confidence_threshold=70,
-                device_name=self.runtime.device_summary(),
-            )
-            for count, is_first in ((6, True), (8, True), (12, True), (9, False))
-        ]
-        self.template_preview.setPlainText("\n".join(previews))
+        preview_text, _ = build_preview_text(self)
+        self.template_preview.setPlainText(preview_text)
 
-    def collect_templates(self) -> AlertTemplates:
-        return AlertTemplates(
-            first_minor=self.template_first_minor.toPlainText().strip(),
-            first_moderate=self.template_first_moderate.toPlainText().strip(),
-            first_severe=self.template_first_severe.toPlainText().strip(),
-            ongoing=self.template_ongoing.toPlainText().strip(),
-        )
+    def collect_templates(self):
+        return collect_templates_from_controls(self)
 
     def is_templates_dirty(self) -> bool:
-        current = self.collect_templates()
-        saved = self.settings.alert_templates
-        return any(
-            (
-                current.first_minor != saved.first_minor,
-                current.first_moderate != saved.first_moderate,
-                current.first_severe != saved.first_severe,
-                current.ongoing != saved.ongoing,
-            )
-        )
+        return templates_dirty(self)
 
     def reset_template_to_default(self, template_key: str) -> None:
-        defaults = AlertTemplates()
-        if template_key == "first_minor":
-            self.template_first_minor.setPlainText(defaults.first_minor)
-        elif template_key == "first_moderate":
-            self.template_first_moderate.setPlainText(defaults.first_moderate)
-        elif template_key == "first_severe":
-            self.template_first_severe.setPlainText(defaults.first_severe)
-        elif template_key == "ongoing":
-            self.template_ongoing.setPlainText(defaults.ongoing)
+        reset_template_to_default_controller(self, template_key)
 
     def copy_template_token(self, token: str) -> None:
         QApplication.clipboard().setText(token)
         self.append_console(f"Copied token {token}")
 
     def save_all_settings(self) -> None:
-        self.settings.auto_restart_minutes = self.auto_restart_minutes.value()
-        self.settings.auto_start_monitoring = self.auto_start_monitoring.isChecked()
-        self.settings.alert_cooldown_ms = self.alert_cooldown_ms.value()
-        self.settings.twitch_channel = self.twitch_channel.text().strip().lstrip("#")
-        self.settings.twitch_bot_username = self.twitch_bot_username.text().strip()
-        self.settings.twitch_oauth_token = self.twitch_oauth_token.text().strip()
-        commands = self.settings.chat_commands
-        commands.chat_commands_enabled = self.chat_commands_enabled.isChecked()
-        commands.start_command = self.start_command.text().strip()
-        commands.stop_command = self.stop_command.text().strip()
-        commands.restart_command = self.restart_command.text().strip()
-        commands.status_command = self.status_command.text().strip()
-        commands.list_devices_command = self.list_devices_command.text().strip()
-        commands.fix_command = self.fix_command.text().strip()
-        commands.switch_device_command_prefix = self.switch_device_command_prefix.text().strip()
-        commands.allowed_chat_users = [
-            line.strip().lower()
-            for line in self.allowed_chat_users.toPlainText().splitlines()
-            if line.strip()
-        ]
-        commands.send_command_responses = self.send_command_responses.isChecked()
-        self.settings.log_settings.logs_enabled = self.logs_enabled.isChecked()
-        self.settings.log_settings.log_window_retention_minutes = self.log_window_retention_minutes.value()
-        self.settings.keep_preview_while_monitoring = self.keep_preview_while_monitoring.isChecked()
-        self.settings.smooth_preview_meter = self.smooth_preview_meter.isChecked()
-        self.settings.preview_meter_fps = self.preview_meter_fps.value()
-        self.settings.dark_mode_enabled = self.dark_mode_enabled.isChecked()
-        self.settings.obs_websocket.auto_connect_on_launch = self.obs_auto_connect_on_launch.isChecked()
-        self.settings.obs_websocket.auto_connect_retry_enabled = self.obs_auto_connect_retry_enabled.isChecked()
-        self.settings.log_settings.log_directory = self.log_directory.text().strip()
+        collect_settings_from_controls(self)
         self.collect_obs_from_controls()
         self.collect_advanced_from_controls()
         self.file_logger.settings = self.settings.log_settings
@@ -748,84 +669,16 @@ class MainWindow(QMainWindow):
         self.append_console("Settings saved.")
 
     def is_settings_dirty(self) -> bool:
-        commands = self.settings.chat_commands
-        allowed_users = [
-            line.strip().lower()
-            for line in self.allowed_chat_users.toPlainText().splitlines()
-            if line.strip()
-        ]
-        return any(
-            (
-                self.auto_restart_minutes.value() != self.settings.auto_restart_minutes,
-                self.auto_start_monitoring.isChecked() != self.settings.auto_start_monitoring,
-                self.alert_cooldown_ms.value() != self.settings.alert_cooldown_ms,
-                self.twitch_channel.text().strip().lstrip("#") != self.settings.twitch_channel,
-                self.twitch_bot_username.text().strip() != self.settings.twitch_bot_username,
-                self.twitch_oauth_token.text().strip() != self.settings.twitch_oauth_token,
-                self.chat_commands_enabled.isChecked() != commands.chat_commands_enabled,
-                self.start_command.text().strip() != commands.start_command,
-                self.stop_command.text().strip() != commands.stop_command,
-                self.restart_command.text().strip() != commands.restart_command,
-                self.status_command.text().strip() != commands.status_command,
-                self.list_devices_command.text().strip() != commands.list_devices_command,
-                self.fix_command.text().strip() != commands.fix_command,
-                self.switch_device_command_prefix.text().strip() != commands.switch_device_command_prefix,
-                allowed_users != commands.allowed_chat_users,
-                self.send_command_responses.isChecked() != commands.send_command_responses,
-                self.logs_enabled.isChecked() != self.settings.log_settings.logs_enabled,
-                self.log_window_retention_minutes.value() != self.settings.log_settings.log_window_retention_minutes,
-                self.keep_preview_while_monitoring.isChecked() != self.settings.keep_preview_while_monitoring,
-                self.smooth_preview_meter.isChecked() != self.settings.smooth_preview_meter,
-                self.preview_meter_fps.value() != self.settings.preview_meter_fps,
-                self.dark_mode_enabled.isChecked() != self.settings.dark_mode_enabled,
-                self.obs_auto_connect_on_launch.isChecked() != self.settings.obs_websocket.auto_connect_on_launch,
-                self.obs_auto_connect_retry_enabled.isChecked()
-                != self.settings.obs_websocket.auto_connect_retry_enabled,
-                self.log_directory.text().strip() != self.settings.log_settings.log_directory,
-            )
-        )
+        return settings_dirty(self)
 
     def apply_obs_settings_to_controls(self) -> None:
-        obs_settings = self.settings.obs_websocket
-        self.obs_enabled.setChecked(obs_settings.enabled)
-        self.obs_host.setText(obs_settings.host)
-        self.obs_port.setValue(obs_settings.port)
-        self.obs_password.setText(obs_settings.password)
-        self.obs_auto_refresh_enabled.setChecked(obs_settings.auto_refresh_enabled)
-        idx = self.obs_auto_refresh_min_severity.findText(obs_settings.auto_refresh_min_severity)
-        self.obs_auto_refresh_min_severity.setCurrentIndex(max(0, idx))
-        self.obs_auto_refresh_cooldown_sec.setValue(obs_settings.auto_refresh_cooldown_sec)
-        self.obs_refresh_off_on_delay_ms.setValue(obs_settings.refresh_off_on_delay_ms)
-        self.refresh_obs_scenes()
-        if obs_settings.target_scene:
-            idx_scene = self.obs_target_scene.findText(obs_settings.target_scene)
-            if idx_scene >= 0:
-                self.obs_target_scene.setCurrentIndex(idx_scene)
-        self.refresh_obs_sources()
-        self.update_obs_controls_enabled()
-        self.update_obs_bundle_network_notice()
+        apply_obs_settings_to_controls_controller(self)
 
     def collect_obs_from_controls(self) -> None:
-        values = read_form_values(
-            enabled=self.obs_enabled.isChecked(),
-            host=self.obs_host.text(),
-            port=self.obs_port.value(),
-            password=self.obs_password.text(),
-            auto_refresh_enabled=self.obs_auto_refresh_enabled.isChecked(),
-            auto_refresh_min_severity=self.obs_auto_refresh_min_severity.currentText(),
-            auto_refresh_cooldown_sec=self.obs_auto_refresh_cooldown_sec.value(),
-            refresh_off_on_delay_ms=self.obs_refresh_off_on_delay_ms.value(),
-            scene_value=self.obs_target_scene.currentText(),
-            source_value=self.obs_target_source.currentText(),
-        )
-        apply_form_values_to_settings(values, self.settings.obs_websocket)
-        self.update_obs_bundle_network_notice()
+        collect_obs_from_controls_controller(self)
 
     def update_obs_bundle_network_notice(self) -> None:
-        if should_show_unsigned_bundle_notice(self.obs_host.text()):
-            self.obs_bundle_network_notice.show()
-        else:
-            self.obs_bundle_network_notice.hide()
+        update_obs_bundle_network_notice_controller(self)
 
     def save_obs_settings(self) -> None:
         self.collect_obs_from_controls()
@@ -834,44 +687,10 @@ class MainWindow(QMainWindow):
         self.update_obs_controls_enabled()
 
     def is_websocket_dirty(self) -> bool:
-        current = read_form_values(
-            enabled=self.obs_enabled.isChecked(),
-            host=self.obs_host.text(),
-            port=self.obs_port.value(),
-            password=self.obs_password.text(),
-            auto_refresh_enabled=self.obs_auto_refresh_enabled.isChecked(),
-            auto_refresh_min_severity=self.obs_auto_refresh_min_severity.currentText(),
-            auto_refresh_cooldown_sec=self.obs_auto_refresh_cooldown_sec.value(),
-            refresh_off_on_delay_ms=self.obs_refresh_off_on_delay_ms.value(),
-            scene_value=self.obs_target_scene.currentText(),
-            source_value=self.obs_target_source.currentText(),
-        )
-        return is_form_dirty(self.settings.obs_websocket, current)
+        return websocket_dirty(self)
 
     def is_advanced_dirty(self) -> bool:
-        for key, *_ in self.alert_config_schema():
-            widget = self.advanced_widgets.get(f"value:{key}")
-            if widget is None:
-                continue
-            current = self._get_advanced_widget_value(widget, DEFAULT_ALERT_CONFIG[key])
-            saved = self.settings.advanced_alert_config.get(key, DEFAULT_ALERT_CONFIG[key])
-            if current != saved:
-                return True
-        for key, *_ in self.threshold_schema():
-            widget = self.advanced_widgets.get(f"value:{key}")
-            if widget is None:
-                continue
-            current = self._get_advanced_widget_value(widget, DEFAULT_THRESHOLDS[key])
-            saved = self.settings.advanced_thresholds.get(key, DEFAULT_THRESHOLDS[key])
-            if current != saved:
-                return True
-        for key, _ in self.methods_schema():
-            widget = self.advanced_widgets.get(f"method:{key}")
-            if widget is None:
-                continue
-            if bool(widget.isChecked()) != bool(self.settings.detection_methods.get(key, DEFAULT_APPROACHES[key])):
-                return True
-        return False
+        return advanced_dirty(self)
 
     def handle_tab_changed(self, new_index: int) -> None:
         previous_index = self._last_tab_index
@@ -1133,48 +952,10 @@ class MainWindow(QMainWindow):
             self.update_obs_controls_enabled()
 
     def apply_advanced_to_controls(self) -> None:
-        for key, *_ in self.alert_config_schema():
-            widget = self.advanced_widgets.get(f"value:{key}")
-            if widget is None:
-                continue
-            value = self.settings.advanced_alert_config.get(key, DEFAULT_ALERT_CONFIG[key])
-            self._set_advanced_widget_value(widget, value)
-        for key, *_ in self.threshold_schema():
-            widget = self.advanced_widgets.get(f"value:{key}")
-            if widget is None:
-                continue
-            value = self.settings.advanced_thresholds.get(key, DEFAULT_THRESHOLDS[key])
-            self._set_advanced_widget_value(widget, value)
-        for key, _ in self.methods_schema():
-            widget = self.advanced_widgets.get(f"method:{key}")
-            if widget is None:
-                continue
-            widget.setChecked(bool(self.settings.detection_methods.get(key, DEFAULT_APPROACHES[key])))
+        apply_advanced_controls_controller(self)
 
     def collect_advanced_from_controls(self) -> None:
-        alert_config = dict(DEFAULT_ALERT_CONFIG)
-        for key, *_ in self.alert_config_schema():
-            widget = self.advanced_widgets.get(f"value:{key}")
-            if widget is None:
-                continue
-            alert_config[key] = self._get_advanced_widget_value(widget, DEFAULT_ALERT_CONFIG[key])
-        thresholds = dict(DEFAULT_THRESHOLDS)
-        for key, *_ in self.threshold_schema():
-            widget = self.advanced_widgets.get(f"value:{key}")
-            if widget is None:
-                continue
-            thresholds[key] = self._get_advanced_widget_value(widget, DEFAULT_THRESHOLDS[key])
-        methods = dict(DEFAULT_APPROACHES)
-        for key, _ in self.methods_schema():
-            widget = self.advanced_widgets.get(f"method:{key}")
-            if widget is None:
-                continue
-            methods[key] = bool(widget.isChecked())
-
-        self.settings.advanced_alert_config = alert_config
-        self.settings.advanced_thresholds = thresholds
-        self.settings.detection_methods = methods
-        self.settings.alert_cooldown_ms = int(alert_config.get("alert_cooldown_ms", self.settings.alert_cooldown_ms))
+        collect_advanced_from_controls_controller(self)
 
     def save_advanced_settings(self) -> None:
         self.collect_advanced_from_controls()
@@ -1182,10 +963,7 @@ class MainWindow(QMainWindow):
         self.append_console("Advanced settings saved.")
 
     def reset_advanced_defaults(self) -> None:
-        self.settings.advanced_alert_config = dict(DEFAULT_ALERT_CONFIG)
-        self.settings.advanced_thresholds = dict(DEFAULT_THRESHOLDS)
-        self.settings.detection_methods = dict(DEFAULT_APPROACHES)
-        self.settings.alert_cooldown_ms = int(DEFAULT_ALERT_CONFIG["alert_cooldown_ms"])
+        reset_advanced_defaults_controller(self)
         self.apply_advanced_to_controls()
         save_settings(self.settings)
         self.append_console("Advanced settings reset to defaults.")

@@ -45,9 +45,10 @@ except ImportError as exc:
     ) from exc
 
 from choppy_detector_gui.alert_templates import AlertTemplates, severity_for_detection_count
-from choppy_detector_gui.chat_command_controller import should_restart_listener_for_credentials
+from choppy_detector_gui.command_service_controller import sync_command_service
 from choppy_detector_gui.file_logging import AppFileLogger
 from choppy_detector_gui.obs_connection_controller import build_connection_config, test_connection_once
+from choppy_detector_gui.obs_event_policy import decide_obs_event
 from choppy_detector_gui.obs_network_notice import should_show_unsigned_bundle_notice
 from choppy_detector_gui.obs_settings_binding import (
     apply_form_values_to_settings,
@@ -1792,94 +1793,36 @@ class MainWindow(QMainWindow):
         ok = bool(data.get("ok", False))
         message = str(data.get("message", ""))
         self.set_obs_busy(False)
+        decision = decide_obs_event(
+            action=action,
+            ok=ok,
+            message=message,
+            attempt=int(data.get("attempt") or self._obs_auto_connect_attempt or 1),
+            max_attempts=int(data.get("max_attempts") or OBS_AUTO_CONNECT_MAX_ATTEMPTS),
+            retry_enabled=bool(self.settings.obs_websocket.auto_connect_retry_enabled),
+            retry_delay_ms=OBS_AUTO_CONNECT_RETRY_DELAY_MS,
+        )
 
-        if action == "connect":
-            if ok:
-                self.cancel_obs_auto_connect_retry()
-                self.set_obs_status("Connected", "#3fcf5e")
-                self.append_console(message)
-                self.refresh_obs_sources()
-            else:
-                self.set_obs_status("Error", "#ff6a6a")
-                QMessageBox.warning(self, "OBS Connection Failed", message)
-                self.append_console(message)
-            return
+        if decision.cancel_auto_connect_retry:
+            self.cancel_obs_auto_connect_retry()
+        if decision.schedule_auto_connect_retry_ms:
+            self._obs_auto_connect_retry_timer.start(decision.schedule_auto_connect_retry_ms)
 
-        if action == "connect_auto":
-            attempt = int(data.get("attempt") or self._obs_auto_connect_attempt or 1)
-            max_attempts = int(data.get("max_attempts") or OBS_AUTO_CONNECT_MAX_ATTEMPTS)
-            if ok:
-                self.cancel_obs_auto_connect_retry()
-                self.set_obs_status("Connected", "#3fcf5e")
-                self.append_console(f"OBS auto-connect succeeded on attempt {attempt}/{max_attempts}.")
-                self.append_console(message)
-                self.refresh_obs_sources()
-            else:
-                self.set_obs_status("Error", "#ff6a6a")
-                self.append_console(f"OBS auto-connect attempt {attempt}/{max_attempts} failed: {message}")
-                retry_enabled = bool(self.settings.obs_websocket.auto_connect_retry_enabled)
-                if retry_enabled and attempt < max_attempts:
-                    retry_seconds = OBS_AUTO_CONNECT_RETRY_DELAY_MS // 1000
-                    self.append_console(f"Retrying OBS auto-connect in {retry_seconds} seconds.")
-                    self._obs_auto_connect_retry_timer.start(OBS_AUTO_CONNECT_RETRY_DELAY_MS)
-                else:
-                    if not retry_enabled and attempt == 1:
-                        self.append_console("OBS auto-connect retry is disabled; no further attempts will be made.")
-                    else:
-                        self.append_console(
-                            f"OBS auto-connect stopped after {attempt}/{max_attempts} attempts."
-                        )
-                    self.cancel_obs_auto_connect_retry()
-                self.update_obs_controls_enabled()
-            return
+        self.set_obs_status(decision.status_label, decision.status_color)
+        for line in decision.console_messages:
+            self.append_console(line)
+        for line in decision.event_messages:
+            self.append_event(line)
 
-        if action == "test":
-            if ok:
-                self.set_obs_status("Test OK", "#3fcf5e")
-                QMessageBox.information(self, "OBS Connection Test", message)
-                self.append_console(message)
+        if decision.dialog is not None:
+            if decision.dialog.level == "warning":
+                QMessageBox.warning(self, decision.dialog.title, decision.dialog.message)
             else:
-                self.set_obs_status("Test Failed", "#ff6a6a")
-                QMessageBox.warning(self, "OBS Connection Test Failed", message)
-                self.append_console(message)
+                QMessageBox.information(self, decision.dialog.title, decision.dialog.message)
+        if decision.refresh_sources:
+            self.refresh_obs_sources()
+        if decision.update_controls:
             self.update_obs_controls_enabled()
-            return
-
-        if action == "refresh":
-            if ok:
-                self.set_obs_status("Connected", "#3fcf5e")
-                self.append_console(message)
-                self.append_event(message)
-            else:
-                self.set_obs_status("Error", "#ff6a6a")
-                QMessageBox.warning(self, "OBS Refresh Failed", message)
-                self.append_console(message)
-            self.update_obs_controls_enabled()
-            return
-
-        if action == "chat_refresh":
-            if ok:
-                self.set_obs_status("Connected", "#3fcf5e")
-                self.append_console(f"OBS chat refresh succeeded: {message}")
-                self.append_event(f"OBS chat refresh: {message}")
-            else:
-                self.set_obs_status("Error", "#ff6a6a")
-                self.append_console(f"OBS chat refresh failed: {message}")
-                self.append_event(f"OBS chat refresh failed: {message}")
-            self.update_obs_controls_enabled()
-            return
-
-        if action == "auto_refresh":
-            if ok:
-                self.set_obs_status("Connected", "#3fcf5e")
-                self.append_console(f"OBS auto-refresh succeeded: {message}")
-                self.append_event(f"OBS auto-refresh: {message}")
-            else:
-                self.set_obs_status("Error", "#ff6a6a")
-                self.append_console(f"OBS auto-refresh failed: {message}")
-                self.append_event(f"OBS auto-refresh failed: {message}")
-            self.update_obs_controls_enabled()
-            return
 
     def apply_advanced_to_controls(self) -> None:
         for key, *_ in self.alert_config_schema():
@@ -1962,31 +1905,13 @@ class MainWindow(QMainWindow):
         self.auto_restart_timer.start(interval_ms)
 
     def update_command_service(self) -> None:
-        self.command_service.settings = self.settings
-        if not self.settings.chat_commands.chat_commands_enabled:
-            self.command_service.stop()
-            label, color = self.twitch_status.mark_chat_disabled(
-                alerts_enabled=bool(self.settings.twitch_enabled),
-                chat_enabled=bool(self.settings.chat_commands.chat_commands_enabled),
-            )
-            self.set_twitch_status_badge(label, color)
-            return
-
-        if not self.command_service.running:
-            self.command_service.start()
-            return
-
-        bot = getattr(self.command_service, "bot", None)
-        if bot is None:
-            # Defensive: running state should normally have an active bot.
-            self.command_service.stop()
-            self.command_service.start()
-            return
-
-        if should_restart_listener_for_credentials(bot, self.settings):
-            self.append_console("Twitch chat settings changed; reconnecting chat command listener.")
-            self.command_service.stop()
-            self.command_service.start()
+        sync_command_service(
+            settings=self.settings,
+            command_service=self.command_service,
+            twitch_status=self.twitch_status,
+            set_badge=self.set_twitch_status_badge,
+            append_console=self.append_console,
+        )
 
     def handle_runtime_event(self, event_type: str, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}

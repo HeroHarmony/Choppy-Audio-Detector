@@ -71,6 +71,7 @@ from choppy_detector_gui.settings_controller import (
     collect_settings_from_controls,
     settings_dirty,
 )
+from choppy_detector_gui.runtime_event_router import RuntimeEventContext, route_runtime_event
 from choppy_detector_gui.status_badge_presenter import StatusBadgePresenter
 from choppy_detector_gui.twitch_status_coordinator import TwitchStatusCoordinator
 from choppy_detector_gui.runtime import DetectorRuntime
@@ -1010,62 +1011,69 @@ class MainWindow(QMainWindow):
         if twitch_state_event:
             self.set_twitch_status_badge(*badge)
 
-        if event_type == "chat_commands.fix_requested":
-            user = str(data.get("user", "")).strip() or "unknown"
-            if not self.obs_enabled.isChecked():
-                self.append_console(f"Chat fix by {user} skipped: OBS WebSocket integration disabled.")
-                return
-            if not self.obs_service.is_connected:
-                self.append_console(f"Chat fix by {user} skipped: OBS is not connected.")
-                return
-            source = self.obs_target_source.currentText().strip() or self.settings.obs_websocket.target_source.strip()
-            if not source:
-                self.append_console(f"Chat fix by {user} skipped: no OBS source selected.")
-                return
-            self.append_console(f"Chat fix requested by {user}: refreshing source '{source}'.")
-            self.queue_obs_refresh_request(source=source, action="chat_refresh")
-            return
+        route = route_runtime_event(
+            event_type,
+            data,
+            RuntimeEventContext(
+                obs_enabled=self.obs_enabled.isChecked(),
+                obs_connected=self.obs_service.is_connected,
+                selected_source=self.obs_target_source.currentText().strip(),
+                saved_source=self.settings.obs_websocket.target_source.strip(),
+                runtime_running=self.runtime.is_running,
+                keep_preview_while_monitoring=self.settings.keep_preview_while_monitoring,
+            ),
+        )
 
-        if event_type == "audio.level":
+        if route.mark_audio_level_received:
             self._last_audio_level_seen_at = datetime.now()
+        if route.clear_audio_watchdog_warned:
             self._audio_watchdog_warned = False
-            if self.runtime.is_running and not self.settings.keep_preview_while_monitoring:
-                return
-            peak_dbfs = float(data.get("peak_dbfs", data.get("dbfs", -120.0)))
-            rms_dbfs = float(data.get("rms_dbfs", data.get("dbfs", -120.0)))
-            smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(peak_dbfs, rms_dbfs)
+        for line in route.append_console:
+            self.append_console(line)
+        for line in route.append_event:
+            self.append_event(line)
+
+        if route.obs_refresh_request is not None:
+            self.queue_obs_refresh_request(
+                source=route.obs_refresh_request.source,
+                action=route.obs_refresh_request.action,
+            )
+
+        if route.audio_level is not None and not route.audio_level.skip_display:
+            smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(
+                route.audio_level.peak_dbfs,
+                route.audio_level.rms_dbfs,
+            )
             self.peak_meter.set_level_dbfs(smooth_peak_dbfs, peak_source=True)
             self.rms_meter.set_level_dbfs(smooth_rms_dbfs, peak_source=False)
-            self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS")
-            return
+            self.level_text.setText(
+                f"Peak {route.audio_level.peak_dbfs:.1f} dBFS | RMS {route.audio_level.rms_dbfs:.1f} dBFS"
+            )
 
-        if event_type == "glitch.detected":
+        if route.trigger_obs_auto_refresh:
             self.maybe_trigger_obs_auto_refresh(data)
 
-        if event_type == "runtime.console":
-            line = str(data.get("line", "")).rstrip()
-            if line:
-                self.append_console(line)
-                self.append_event(line)
-            return
+        if route.monitoring_ui_update is not None:
+            self._monitoring_ui_active = route.monitoring_ui_update.active
+            if route.monitoring_ui_update.status_label == "running_device_summary":
+                self.status_label.setText(f"Running - {self.runtime.device_summary()}")
+            else:
+                self.status_label.setText(route.monitoring_ui_update.status_label)
+            if route.monitoring_ui_update.reset_audio_watchdog_warned:
+                self._audio_watchdog_warned = False
+            if route.monitoring_ui_update.clear_monitoring_started_at:
+                self._monitoring_started_at = None
+            if route.monitoring_ui_update.restart_meter_preview:
+                self.restart_meter_preview()
+            if route.monitoring_ui_update.update_meter_display_mode:
+                self.update_meter_display_mode()
+            if route.monitoring_ui_update.update_device_controls:
+                self.update_device_controls()
 
-        if event_type in {"monitoring.started", "audio.stream_opened"}:
-            self._monitoring_ui_active = True
-            self.status_label.setText(f"Running - {self.runtime.device_summary()}")
-            self.update_meter_display_mode()
-            self.update_device_controls()
-        elif event_type in {"monitoring.stopped", "monitoring.stopped_by_request"}:
-            self._monitoring_ui_active = False
-            self.status_label.setText("Stopped")
-            self._audio_watchdog_warned = False
-            self._monitoring_started_at = None
-            self.restart_meter_preview()
-            self.update_meter_display_mode()
-            self.update_device_controls()
-        elif event_type in {"monitoring.error", "audio.stream_error", "detector.error"}:
-            self._monitoring_ui_active = False
-            self.status_label.setText("Error")
-            self.update_device_controls()
+        if route.consume_event:
+            return
+        if not route.append_formatted_event:
+            return
 
         message = self.format_event(event_type, data)
         self.append_event(message)

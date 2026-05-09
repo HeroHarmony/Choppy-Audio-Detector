@@ -821,7 +821,8 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self.obs_save_button)
 
         if not self.obs_service.available:
-            warning = QLabel("obsws-python is not installed. Install dependencies to enable OBS controls.")
+            warning = QLabel(self.obs_service.unavailable_reason or "obsws-python is not installed.")
+            warning.setWordWrap(True)
             warning.setStyleSheet("color: #f0c04a;")
             layout.addWidget(warning)
 

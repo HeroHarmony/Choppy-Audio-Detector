@@ -292,7 +292,7 @@ def default_settings_path() -> Path:
 
 
 def default_log_directory() -> Path:
-    return Path.cwd() / "Log"
+    return default_settings_path().parent / "Log"
 
 
 def load_settings(path: Path | None = None) -> AppSettings:

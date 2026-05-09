@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import sys
 
-from .settings import LogSettings, default_log_directory
+from .settings import LogSettings, default_log_directory, default_settings_path
 
 
 class AppFileLogger:
@@ -18,7 +19,7 @@ class AppFileLogger:
     def log(self, level: str, event: str, message: str = "", **fields: object) -> None:
         if not self.settings.logs_enabled:
             return
-        configured_dir = Path(self.settings.log_directory) if self.settings.log_directory else default_log_directory()
+        configured_dir = self._resolve_log_dir()
         if configured_dir != self.log_dir:
             self.log_dir = configured_dir
             self.current_date = ""
@@ -37,10 +38,36 @@ class AppFileLogger:
             parts.append(field_text)
         line = " ".join(parts).rstrip() + "\n"
 
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        assert self.current_path is not None
-        with self.current_path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            assert self.current_path is not None
+            with self.current_path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except Exception:
+            # Logging must never crash worker threads (e.g., read-only cwd in bundled app).
+            try:
+                fallback_dir = default_log_directory()
+                if fallback_dir != self.log_dir:
+                    self.log_dir = fallback_dir
+                    self.current_date = ""
+                    self.current_path = self.log_dir / f"choppy-audio-detector-{date_key}.log"
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                assert self.current_path is not None
+                with self.current_path.open("a", encoding="utf-8") as handle:
+                    handle.write(line)
+            except Exception as fallback_exc:
+                print(
+                    f"[WARN] File logging disabled for this event ({event}): {fallback_exc}",
+                    file=sys.stderr,
+                )
+
+    def _resolve_log_dir(self) -> Path:
+        if self.settings.log_directory:
+            candidate = Path(self.settings.log_directory).expanduser()
+            if not candidate.is_absolute():
+                return default_settings_path().parent / candidate
+            return candidate
+        return default_log_directory()
 
 
 def _escape(value: object) -> str:

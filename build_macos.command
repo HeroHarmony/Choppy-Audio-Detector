@@ -15,12 +15,6 @@ echo "Installing build dependencies..."
 ".venv/bin/python" -m pip install pyinstaller
 
 echo "Building macOS app bundle..."
-".venv/bin/python" -m PyInstaller \
-  --noconfirm \
-  --clean \
-  --windowed \
-  --name ChoppyAudioDetector \
-  --hidden-import live_analysis \
-  app_gui.py
+".venv/bin/python" -m PyInstaller --noconfirm --clean ChoppyAudioDetector.spec
 
 echo "Build complete: dist/ChoppyAudioDetector.app"

@@ -2,7 +2,8 @@
 import socket
 import time
 import logging
-from threading import Lock
+import ssl
+from threading import Lock, Thread
 try:
     from config import TWITCH_CHANNEL, TWITCH_BOT_USERNAME, TWITCH_OAUTH_TOKEN
 except Exception:
@@ -16,6 +17,9 @@ class TwitchBot:
     def __init__(self, channel=None, username=None, token=None):
         self.server = 'irc.chat.twitch.tv'
         self.port = 6667
+        self.secure_port = 6697
+        self.connected_server = self.server
+        self.connected_port = self.port
         channel_name = (channel or TWITCH_CHANNEL or "").strip().lstrip("#")
         self.channel = f'#{channel_name}'
         self.username = username or TWITCH_BOT_USERNAME
@@ -29,6 +33,33 @@ class TwitchBot:
         self.connection_timeout = 10
         self.last_error = ""
         self.last_response = ""
+
+    def _resolve_addresses(self, host, port, *, deadline_monotonic=None):
+        """Resolve addresses with a bounded wait so DNS cannot stall forever."""
+        result = {}
+
+        def _resolver():
+            try:
+                result["addresses"] = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            except Exception as exc:
+                result["error"] = exc
+
+        resolver = Thread(target=_resolver, daemon=True)
+        resolver.start()
+
+        wait_seconds = self.connection_timeout
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("DNS resolution deadline expired before lookup")
+            wait_seconds = max(0.5, min(wait_seconds, remaining))
+
+        resolver.join(timeout=wait_seconds)
+        if resolver.is_alive():
+            raise TimeoutError(f"DNS resolution timeout for {host}:{port}")
+        if "error" in result:
+            raise result["error"]
+        return result.get("addresses", [])
         
     def connect(self, deadline_monotonic=None):
         """Connect to Twitch IRC with retry logic"""
@@ -84,37 +115,71 @@ class TwitchBot:
                         self.connected = False
                         return False
                     timeout_seconds = max(0.5, min(timeout_seconds, remaining))
-                resolved = socket.getaddrinfo(self.server, self.port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                if not resolved:
-                    self.last_error = f"DNS resolution returned no addresses for {self.server}"
-                    logger.error(self.last_error)
-                    self.connected = False
-                    return False
-
+                endpoints = [
+                    (self.server, self.port, False),
+                    (self.server, self.secure_port, True),
+                ]
                 connection_errors = []
                 self.sock = None
-                for family, socktype, proto, _canonname, sockaddr in resolved:
-                    candidate = socket.socket(family, socktype, proto)
-                    candidate.settimeout(timeout_seconds)
+                selected_host = self.server
+                selected_port = self.port
+
+                for endpoint_host, endpoint_port, use_tls in endpoints:
                     try:
-                        candidate.connect(sockaddr)
-                        self.sock = candidate
-                        break
-                    except Exception as connect_exc:
-                        connection_errors.append(f"{sockaddr}: {connect_exc}")
+                        resolved = self._resolve_addresses(
+                            endpoint_host,
+                            endpoint_port,
+                            deadline_monotonic=deadline_monotonic,
+                        )
+                    except Exception as resolve_exc:
+                        connection_errors.append(f"{endpoint_host}:{endpoint_port} resolution failed: {resolve_exc}")
+                        continue
+
+                    for family, socktype, proto, _canonname, sockaddr in resolved:
+                        if deadline_monotonic is not None:
+                            remaining = deadline_monotonic - time.monotonic()
+                            if remaining <= 0:
+                                connection_errors.append(
+                                    f"{endpoint_host}:{endpoint_port} deadline expired before connect"
+                                )
+                                break
+                            per_attempt_timeout = max(0.5, min(timeout_seconds, remaining))
+                        else:
+                            per_attempt_timeout = timeout_seconds
+
+                        candidate = socket.socket(family, socktype, proto)
+                        candidate.settimeout(per_attempt_timeout)
                         try:
-                            candidate.close()
-                        except Exception:
-                            pass
+                            candidate.connect(sockaddr)
+                            if use_tls:
+                                context = ssl.create_default_context()
+                                candidate = context.wrap_socket(candidate, server_hostname=endpoint_host)
+                                candidate.settimeout(per_attempt_timeout)
+                            self.sock = candidate
+                            selected_host = endpoint_host
+                            selected_port = endpoint_port
+                            break
+                        except Exception as connect_exc:
+                            connection_errors.append(
+                                f"{endpoint_host}:{endpoint_port} {sockaddr}: {connect_exc}"
+                            )
+                            try:
+                                candidate.close()
+                            except Exception:
+                                pass
+                    if self.sock is not None:
+                        break
 
                 if self.sock is None:
-                    self.last_error = "Unable to connect to Twitch IRC address: " + "; ".join(connection_errors)
+                    self.last_error = "Unable to connect to Twitch IRC: " + "; ".join(connection_errors)
                     logger.error(self.last_error)
                     self.connected = False
                     return False
 
                 # Connect to Twitch IRC
-                logger.info(f"Connecting to {self.server}:{self.port}...")
+                self.connected_server = selected_host
+                self.connected_port = selected_port
+                logger.info(f"Connecting to {self.connected_server}:{self.connected_port}...")
                 
                 # Authentication sequence
                 self.sock.send(b"CAP REQ :twitch.tv/tags twitch.tv/commands\r\n")
@@ -139,6 +204,12 @@ class TwitchBot:
                     combined_response = "".join(response_parts)
                     self.last_response = combined_response
 
+                    if "PING :tmi.twitch.tv" in response:
+                        try:
+                            self.sock.send(b"PONG :tmi.twitch.tv\r\n")
+                        except Exception:
+                            pass
+
                     if (
                         "Login authentication failed" in combined_response
                         or "Improperly formatted auth" in combined_response
@@ -153,6 +224,9 @@ class TwitchBot:
                         or " 001 " in combined_response
                         or " 353 " in combined_response
                         or " JOIN " in combined_response
+                        or " GLOBALUSERSTATE " in combined_response
+                        or " ROOMSTATE " in combined_response
+                        or " USERSTATE " in combined_response
                     ):
                         connected_response = combined_response
                         break

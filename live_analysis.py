@@ -850,7 +850,7 @@ class BalancedChoppyDetector:
                 channel=getattr(self.twitch_bot, "channel", ""),
                 username=getattr(self.twitch_bot, "username", ""),
             )
-            if self.twitch_bot.connect():
+            if self.twitch_bot.connect(deadline_monotonic=time_module.monotonic() + 20.0):
                 print("Connected to Twitch chat")
                 self.emit_event("twitch.connected")
                 self.log_file_event("info", "twitch.connected")

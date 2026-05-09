@@ -10,8 +10,10 @@ from typing import Any
 
 try:
     import obsws_python as obs
-except Exception:  # pragma: no cover - optional dependency at runtime
+    OBS_IMPORT_ERROR = ""
+except Exception as exc:  # pragma: no cover - optional dependency at runtime
     obs = None
+    OBS_IMPORT_ERROR = str(exc)
 
 
 @dataclass
@@ -42,9 +44,16 @@ class ObsWebSocketService:
     def available(self) -> bool:
         return obs is not None
 
+    @property
+    def unavailable_reason(self) -> str:
+        if self.available:
+            return ""
+        detail = f" ({OBS_IMPORT_ERROR})" if OBS_IMPORT_ERROR else ""
+        return f"OBS WebSocket client dependency missing{detail}. Install/rebuild with obsws-python."
+
     def connect(self, config: ObsConnectionConfig, timeout_seconds: float = 3.0) -> tuple[bool, str]:
         if obs is None:
-            return False, "OBS WebSocket client dependency missing. Install obsws-python."
+            return False, self.unavailable_reason
 
         host = str(config.host).strip() or "127.0.0.1"
         try:
@@ -70,7 +79,14 @@ class ObsWebSocketService:
                 self._client = None
                 self._connected = False
                 self._last_error = str(exc)
-                return False, f"Failed to connect to OBS: {exc}"
+                error_text = str(exc)
+                guidance = ""
+                if "Errno 65" in error_text or "No route to host" in error_text:
+                    guidance = (
+                        " On macOS app bundles, allow this app under System Settings > "
+                        "Privacy & Security > Local Network, then relaunch and retry."
+                    )
+                return False, f"Failed to connect to OBS: {exc}{guidance}"
 
     def disconnect(self) -> None:
         with self._lock:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -97,7 +98,8 @@ class TwitchCommandService:
                 username=getattr(self.bot, "username", ""),
                 attempt=max(1, self._connect_retry_count + 1),
             )
-            if not self.bot.connect():
+            connect_deadline = time.monotonic() + 20.0
+            if not self.bot.connect(deadline_monotonic=connect_deadline):
                 error = getattr(self.bot, "last_error", "") or "Unknown Twitch connection failure"
                 response = getattr(self.bot, "last_response", "")
                 self.emit("chat_commands.connection_failed", error=error, response=response)

@@ -101,6 +101,14 @@ def build_settings_tab(window) -> None:
     window.twitch_oauth_token.setMinimumWidth(250)
     twitch_layout.addWidget(QLabel("Twitch OAuth token"))
     twitch_layout.addWidget(window.twitch_oauth_token)
+    oauth_link = QLabel(
+        '<a href="https://twitchtokengenerator.com/">Get Twitch OAuth token / client ID</a>'
+    )
+    oauth_link.setOpenExternalLinks(True)
+    oauth_link.setTextFormat(Qt.RichText)
+    oauth_link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+    oauth_link.setStyleSheet("color: #7db8ff;")
+    twitch_layout.addWidget(oauth_link)
 
     commands_group = QGroupBox("Chat Commands and Permissions")
     commands_group.setStyleSheet(group_title_style)

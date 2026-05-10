@@ -303,6 +303,7 @@ class MainWindow(QMainWindow):
         self._playground_live_started_at_monotonic = 0.0
         self._playground_live_chunks: list[np.ndarray] = []
         self._playground_live_lock = threading.Lock()
+        self._playground_analysis_running = False
         self._playground_preview_active_path: str | None = None
         self._playground_preview_active_channel_index: int = 0
 
@@ -817,12 +818,14 @@ class MainWindow(QMainWindow):
         has_file = file_count > 0
         batch_mode = file_count > 1
         live_running = self._playground_live_running
+        analysis_running = self._playground_analysis_running
         prod_window_ms, prod_step_ms = self._playground_prod_timing()
-        self.playground_browse_button.setEnabled(not live_running)
-        self.playground_load_button.setEnabled(not live_running)
-        self.playground_file_path.setEnabled(not live_running)
-        self.playground_preview_on_done.setEnabled(has_file and not live_running)
-        self.playground_also_prod_timing.setEnabled(has_file and not live_running)
+        controls_locked = live_running or analysis_running
+        self.playground_browse_button.setEnabled(not controls_locked)
+        self.playground_load_button.setEnabled(not controls_locked)
+        self.playground_file_path.setEnabled(not controls_locked)
+        self.playground_preview_on_done.setEnabled(has_file and not controls_locked)
+        self.playground_also_prod_timing.setEnabled(has_file and not controls_locked)
         self.playground_also_prod_timing.setToolTip(
             "When enabled and current timing is not "
             f"{prod_window_ms}/{prod_step_ms},\n"
@@ -834,15 +837,15 @@ class MainWindow(QMainWindow):
             if batch_mode
             else "Run offline detector analysis on the loaded WAV file and save a compact report."
         )
-        self.playground_analyze_button.setEnabled(has_file and not live_running)
+        self.playground_analyze_button.setEnabled(has_file and not controls_locked)
         self.playground_preview_button.setEnabled(
-            has_file and (not batch_mode) and SOUNDDEVICE_AVAILABLE and not live_running
+            has_file and (not batch_mode) and SOUNDDEVICE_AVAILABLE and not controls_locked
         )
         self.playground_preview_button.setText("Stop Preview" if self._playground_is_playing else "Preview Sound")
         selected_device = self.selected_combo_device()
         can_start_live = bool(
             SOUNDDEVICE_AVAILABLE
-            and not live_running
+            and not controls_locked
             and selected_device
             and selected_device.is_monitorable
         )
@@ -929,8 +932,9 @@ class MainWindow(QMainWindow):
         self.playground_analysis_summary.setPlainText(
             "Running batch analysis..." if batch_mode else "Running analysis..."
         )
-        self.playground_analyze_button.setEnabled(False)
+        self._playground_analysis_running = True
         self.playground_table.setSortingEnabled(False)
+        self.update_playground_controls()
         try:
             analysis_rows: list[dict[str, object]] = []
             for loaded in loaded_files:
@@ -968,7 +972,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Analysis failed", str(exc))
             return
         finally:
-            self.playground_analyze_button.setEnabled(True)
+            self._playground_analysis_running = False
             self.update_playground_controls()
 
         if batch_mode:
@@ -1358,6 +1362,8 @@ class MainWindow(QMainWindow):
             window_ms != prod_window_ms or step_ms != prod_step_ms
         )
         self.playground_analysis_summary.setPlainText("Running live capture analysis...")
+        self._playground_analysis_running = True
+        self.update_playground_controls()
         try:
             result = analyze_wav_file(
                 loaded,
@@ -1370,6 +1376,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Live report analysis failed", str(exc))
             return
+        finally:
+            self._playground_analysis_running = False
+            self.update_playground_controls()
 
         expected_glitch = self.prompt_playground_expected_outcome(allow_preview=False)
         self.render_playground_result(

@@ -2,6 +2,8 @@
 
 This page is for advanced tuning and script-first workflows.
 
+For Playground tab workflows and report behavior, see [Playground Reference](playground-reference.md).
+
 ## CLI Usage (`live_analysis.py`)
 
 Show available audio devices:

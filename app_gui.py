@@ -1089,6 +1089,7 @@ class MainWindow(QMainWindow):
         can_start_live = bool(
             SOUNDDEVICE_AVAILABLE
             and not controls_locked
+            and not self._playground_is_playing
             and selected_device
             and selected_device.is_monitorable
         )
@@ -1370,17 +1371,21 @@ class MainWindow(QMainWindow):
         assert result is not None
         inferred_expected = row["inferred_expected"]
         inferred_source = row["inferred_source"]
+        marker_inferred = self.infer_expected_outcome_from_markers(list(row.get("markers_ms", [])))
+        if marker_inferred is not None:
+            inferred_expected, inferred_source = marker_inferred
         if inferred_expected is None:
             expected_glitch = self.prompt_playground_expected_outcome(
                 allow_preview=bool(self.playground_preview_on_done.isChecked())
             )
         else:
             expected_glitch = bool(inferred_expected)
-            if bool(self.playground_preview_on_done.isChecked()):
+            if bool(self.playground_preview_on_done.isChecked()) and inferred_source != "markers":
                 self._play_playground_loaded_file(row["loaded"], int(row["effective_channel_idx"]))
             if inferred_source is not None:
                 self.append_console(
-                    f"Playground expected outcome auto-set from filename tag: "
+                    f"Playground expected outcome auto-set from "
+                    f"{'marker(s)' if inferred_source == 'markers' else 'filename tag'}: "
                     f"{'glitch' if expected_glitch else 'clean'} ({inferred_source})"
                 )
 
@@ -1487,6 +1492,11 @@ class MainWindow(QMainWindow):
 
             inferred_expected = row["inferred_expected"]
             inferred_source = row["inferred_source"]
+            marker_inferred = self.infer_expected_outcome_from_markers(list(row.get("markers_ms", [])))
+            if marker_inferred is not None:
+                inferred_expected, inferred_source = marker_inferred
+                row["inferred_expected"] = inferred_expected
+                row["inferred_source"] = inferred_source
             if inferred_expected is None:
                 selector = QComboBox()
                 selector.addItem("Choose...", None)
@@ -1499,7 +1509,8 @@ class MainWindow(QMainWindow):
                 auto_label = QLabel(f"Auto ({inferred_source}): {expected_text}")
                 grid.addWidget(auto_label, idx, 1)
                 self.append_console(
-                    f"Batch expected outcome auto-set from filename tag: "
+                    f"Batch expected outcome auto-set from "
+                    f"{'marker(s)' if inferred_source == 'markers' else 'filename tag'}: "
                     f"{'glitch' if bool(inferred_expected) else 'clean'} "
                     f"({inferred_source}) for {file_name}"
                 )
@@ -1798,6 +1809,11 @@ class MainWindow(QMainWindow):
         if re.search(r"\[(?:\s*glitch(?:y)?\s*)\]", lowered):
             return True, "[glitch]"
         return None
+
+    def infer_expected_outcome_from_markers(self, markers_ms: list[int] | None) -> tuple[bool, str] | None:
+        if not markers_ms:
+            return None
+        return True, "markers"
 
     def resolve_playground_expected_outcome(
         self,

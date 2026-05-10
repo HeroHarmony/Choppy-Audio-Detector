@@ -221,6 +221,8 @@ OBS_AUTO_CONNECT_MAX_ATTEMPTS = 5
 class RuntimeSignals(QObject):
     event = Signal(str, object)
     obs_event = Signal(str, object)
+    playground_analysis_done = Signal(object)
+    playground_analysis_failed = Signal(str)
 
 
 class MainWindow(QMainWindow):
@@ -237,6 +239,8 @@ class MainWindow(QMainWindow):
         self.signals = RuntimeSignals()
         self.signals.event.connect(self.handle_runtime_event)
         self.signals.obs_event.connect(self.handle_obs_event)
+        self.signals.playground_analysis_done.connect(self._on_playground_analysis_done)
+        self.signals.playground_analysis_failed.connect(self._on_playground_analysis_failed)
         self.runtime = DetectorRuntime(
             self.settings,
             event_handler=lambda event_type, payload: self.signals.event.emit(event_type, payload),
@@ -318,6 +322,7 @@ class MainWindow(QMainWindow):
         self._playground_live_chunks: list[np.ndarray] = []
         self._playground_live_lock = threading.Lock()
         self._playground_analysis_running = False
+        self._playground_analysis_thread: threading.Thread | None = None
         self._playground_preview_active_path: str | None = None
         self._playground_preview_active_channel_index: int = 0
         self._playground_markers_by_path: dict[str, list[int]] = {}
@@ -1153,6 +1158,8 @@ class MainWindow(QMainWindow):
         if self._playground_live_running:
             QMessageBox.information(self, "Playground", "Stop the live report before running file analysis.")
             return
+        if self._playground_analysis_running:
+            return
         loaded_files = list(self._playground_loaded_files)
         if not loaded_files:
             QMessageBox.information(self, "Playground", "Load a WAV file first.")
@@ -1175,9 +1182,43 @@ class MainWindow(QMainWindow):
         self._playground_analysis_running = True
         self.playground_table.setSortingEnabled(False)
         self.update_playground_controls()
+        worker_payload = {
+            "loaded_files": loaded_files,
+            "window_ms": window_ms,
+            "step_ms": step_ms,
+            "warmup_ms": warmup_ms,
+            "channel_idx": channel_idx,
+            "run_prod_timing": bool(run_prod_timing),
+            "compare_window_ms": compare_window_ms,
+            "compare_step_ms": compare_step_ms,
+            "baseline_profiles": dict(self._playground_baseline_profiles_by_path),
+            "markers_by_path": {k: list(v) for k, v in self._playground_markers_by_path.items()},
+        }
+        self._playground_analysis_thread = threading.Thread(
+            target=self._run_playground_analysis_worker,
+            args=(worker_payload,),
+            name="playground-analysis-worker",
+            daemon=True,
+        )
+        self._playground_analysis_thread.start()
+
+    def _run_playground_analysis_worker(self, payload: dict[str, object]) -> None:
         try:
+            loaded_files = list(payload.get("loaded_files", []))
+            window_ms = int(payload.get("window_ms", 1000))
+            step_ms = int(payload.get("step_ms", 50))
+            warmup_ms = int(payload.get("warmup_ms", 700))
+            channel_idx = int(payload.get("channel_idx", 0))
+            run_prod_timing = bool(payload.get("run_prod_timing", False))
+            compare_window_ms = int(payload.get("compare_window_ms", 2000))
+            compare_step_ms = int(payload.get("compare_step_ms", 200))
+            baseline_profiles = dict(payload.get("baseline_profiles", {}))
+            markers_by_path = dict(payload.get("markers_by_path", {}))
+
             analysis_rows: list[dict[str, object]] = []
             for loaded in loaded_files:
+                if not isinstance(loaded, LoadedWavFile):
+                    continue
                 effective_channel_idx = max(0, min(channel_idx, loaded.channel_count - 1))
                 result = analyze_wav_file(
                     loaded,
@@ -1186,7 +1227,7 @@ class MainWindow(QMainWindow):
                     window_ms=window_ms,
                     step_ms=step_ms,
                     warmup_ms=warmup_ms,
-                    baseline_profile=self._playground_baseline_profiles_by_path.get(loaded.path),
+                    baseline_profile=baseline_profiles.get(loaded.path),
                 )
                 prod_result = None
                 if run_prod_timing:
@@ -1197,7 +1238,7 @@ class MainWindow(QMainWindow):
                         window_ms=compare_window_ms,
                         step_ms=compare_step_ms,
                         warmup_ms=warmup_ms,
-                        baseline_profile=self._playground_baseline_profiles_by_path.get(loaded.path),
+                        baseline_profile=baseline_profiles.get(loaded.path),
                     )
                 inferred = self.infer_expected_outcome_from_filename(loaded.path)
                 analysis_rows.append(
@@ -1208,17 +1249,28 @@ class MainWindow(QMainWindow):
                         "effective_channel_idx": effective_channel_idx,
                         "inferred_expected": inferred[0] if inferred is not None else None,
                         "inferred_source": inferred[1] if inferred is not None else None,
-                        "markers_ms": list(self._playground_markers_by_path.get(loaded.path, [])),
+                        "markers_ms": list(markers_by_path.get(loaded.path, [])),
                     }
                 )
+            self.signals.playground_analysis_done.emit(analysis_rows)
         except Exception as exc:
-            QMessageBox.warning(self, "Analysis failed", str(exc))
-            return
-        finally:
-            self._playground_analysis_running = False
-            self.update_playground_controls()
+            self.signals.playground_analysis_failed.emit(str(exc))
 
-        if batch_mode:
+    def _on_playground_analysis_failed(self, message: str) -> None:
+        self._playground_analysis_running = False
+        self._playground_analysis_thread = None
+        self.update_playground_controls()
+        QMessageBox.warning(self, "Analysis failed", message)
+
+    def _on_playground_analysis_done(self, analysis_rows_obj: object) -> None:
+        analysis_rows = list(analysis_rows_obj) if isinstance(analysis_rows_obj, list) else []
+        self._playground_analysis_running = False
+        self._playground_analysis_thread = None
+        self.update_playground_controls()
+        if not analysis_rows:
+            QMessageBox.warning(self, "Analysis failed", "No analysis rows were produced.")
+            return
+        if len(analysis_rows) > 1:
             self.finalize_batch_playground_analysis(
                 analysis_rows,
                 allow_preview=bool(self.playground_preview_on_done.isChecked()),

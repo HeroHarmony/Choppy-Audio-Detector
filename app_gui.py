@@ -34,6 +34,7 @@ try:
         QScrollArea,
         QSplashScreen,
         QSpinBox,
+        QStyle,
         QTableWidgetItem,
         QTabWidget,
         QVBoxLayout,
@@ -974,10 +975,12 @@ class MainWindow(QMainWindow):
             self.playground_progress.set_position_ms(0)
             self.playground_progress.set_markers_ms([])
             self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+            self._set_playground_seek_time_display(0)
             self._reset_playground_preview_meters()
             return
         self.playground_progress.set_duration_ms(int(max(1, loaded.duration_ms)))
         self.playground_progress.set_markers_ms(list(self._playground_markers_by_path.get(loaded.path, [])))
+        self._set_playground_seek_time_display(int(self._playground_preview_start_offset_ms))
         if not self._playground_is_playing:
             self._reset_playground_preview_meters()
 
@@ -1065,6 +1068,7 @@ class MainWindow(QMainWindow):
         batch_mode = file_count > 1
         live_running = self._playground_live_running
         analysis_running = self._playground_analysis_running
+        can_seek = has_file and (not batch_mode)
         compare_window_ms, compare_step_ms = self._playground_comparison_timing()
         controls_locked = live_running or analysis_running
         self.playground_browse_button.setEnabled(not controls_locked)
@@ -1088,13 +1092,21 @@ class MainWindow(QMainWindow):
         self.playground_preview_button.setEnabled(
             has_file and (not batch_mode) and SOUNDDEVICE_AVAILABLE and not controls_locked
         )
+        self.playground_preview_reset_button.setEnabled(can_seek and not controls_locked)
+        self.playground_seek_time.setEnabled(can_seek and not controls_locked)
         self.playground_add_marker_button.setEnabled(
             has_file and (not batch_mode) and not controls_locked and self._playground_is_playing
         )
         self.playground_clear_markers_button.setEnabled(
             has_file and (not batch_mode) and not controls_locked and len(self._playground_current_markers()) > 0
         )
-        self.playground_preview_button.setText("Stop Preview" if self._playground_is_playing else "Preview Sound")
+        if self._playground_is_playing:
+            self.playground_preview_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+            self.playground_preview_button.setToolTip("Pause/stop preview playback.")
+        else:
+            self.playground_preview_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.playground_preview_button.setToolTip("Start preview playback.")
+        self.playground_preview_reset_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSkipBackward))
         selected_device = self.selected_combo_device()
         can_start_live = bool(
             SOUNDDEVICE_AVAILABLE
@@ -1108,7 +1120,6 @@ class MainWindow(QMainWindow):
         if not SOUNDDEVICE_AVAILABLE:
             self.playground_playback_status.setText("Playback unavailable (sounddevice missing)")
             self.playground_live_status.setText("Live report unavailable (sounddevice missing)")
-            self.playground_preview_button.setText("Preview Sound")
             self._reset_playground_preview_meters()
         self.playground_peak_meter.setEnabled(has_file)
         self.update_playground_marker_status()
@@ -1180,6 +1191,52 @@ class MainWindow(QMainWindow):
         peak_dbfs = 20.0 * math.log10(peak + 1e-12)
         self._set_playground_preview_meters(peak_dbfs, rms_dbfs)
 
+    def _format_playground_time_hms(self, position_ms: int) -> str:
+        total_seconds = max(0, int(position_ms) // 1000)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def _set_playground_seek_time_display(self, position_ms: int) -> None:
+        if not hasattr(self, "playground_seek_time"):
+            return
+        text = self._format_playground_time_hms(position_ms)
+        if self.playground_seek_time.text() == text:
+            return
+        self.playground_seek_time.blockSignals(True)
+        self.playground_seek_time.setText(text)
+        self.playground_seek_time.blockSignals(False)
+
+    def _parse_playground_seek_time_text(self, text: str) -> int | None:
+        cleaned = str(text or "").strip()
+        match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2})", cleaned)
+        if not match:
+            return None
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = int(match.group(3))
+        if minutes > 59 or seconds > 59:
+            return None
+        return ((hours * 60 + minutes) * 60 + seconds) * 1000
+
+    def apply_playground_seek_time(self) -> None:
+        loaded = self._playground_audio_file
+        if loaded is None:
+            return
+        parsed_ms = self._parse_playground_seek_time_text(self.playground_seek_time.text())
+        if parsed_ms is None:
+            if self._playground_is_playing:
+                elapsed_ms = int(round(max(0.0, time.monotonic() - self._playground_started_at_monotonic) * 1000.0))
+                self._set_playground_seek_time_display(elapsed_ms)
+            else:
+                self._set_playground_seek_time_display(int(self._playground_preview_start_offset_ms))
+            return
+        self.seek_playground_preview(parsed_ms)
+
+    def reset_playground_preview_position(self) -> None:
+        self.seek_playground_preview(0)
+
     def toggle_playground_preview(self) -> None:
         if self._playground_is_playing:
             self.stop_playground_audio()
@@ -1216,6 +1273,7 @@ class MainWindow(QMainWindow):
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
         self._playground_preview_start_offset_ms = 0
+        self._set_playground_seek_time_display(0)
         self._reset_playground_preview_meters()
         self.update_playground_controls()
 
@@ -1225,6 +1283,7 @@ class MainWindow(QMainWindow):
         elapsed = max(0.0, time.monotonic() - self._playground_started_at_monotonic)
         current_ms = int(round(elapsed * 1000.0))
         self.playground_progress.set_position_ms(current_ms)
+        self._set_playground_seek_time_display(current_ms)
         self._update_playground_preview_meters_from_position(current_ms)
         nearest_marker = None
         nearest_distance = 10_000_000
@@ -1442,6 +1501,10 @@ class MainWindow(QMainWindow):
         try:
             sd.play(playback_audio, samplerate=loaded.sample_rate, blocking=False)
         except Exception as exc:
+            self._playground_is_playing = False
+            self.playground_playback_timer.stop()
+            self.playground_playback_status.setText("Not playing")
+            self.update_playground_controls()
             if show_error:
                 QMessageBox.warning(self, "Playback failed", str(exc))
             return False
@@ -1454,6 +1517,7 @@ class MainWindow(QMainWindow):
         self._playground_marker_flash_phase = False
         self._sync_playground_progress_for_loaded(loaded)
         self.playground_progress.set_position_ms(clamped_start_ms)
+        self._set_playground_seek_time_display(clamped_start_ms)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
         self._update_playground_preview_meters_from_position(clamped_start_ms)
         self.playground_playback_timer.start(self._preview_timer_interval_ms())
@@ -1475,6 +1539,7 @@ class MainWindow(QMainWindow):
         clamped_ms = max(0, min(int(position_ms), int(max(0, loaded.duration_ms))))
         self._playground_preview_start_offset_ms = clamped_ms
         self.playground_progress.set_position_ms(clamped_ms)
+        self._set_playground_seek_time_display(clamped_ms)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
         self._update_playground_preview_meters_from_position(clamped_ms)
         if self._playground_is_playing:

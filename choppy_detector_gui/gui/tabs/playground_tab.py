@@ -194,13 +194,30 @@ def build_playground_tab(window) -> None:
     marker_row = QHBoxLayout()
     marker_row.setSpacing(6)
 
-    window.playground_preview_button = QPushButton("Preview Sound")
+    window.playground_seek_time = QLineEdit("00:00:00")
+    window.playground_seek_time.setInputMask("00:00:00;_")
+    window.playground_seek_time.setMaximumWidth(92)
+    window.playground_seek_time.setToolTip(
+        "Current preview position (HH:MM:SS).\n"
+        "Type a time and press Enter to seek."
+    )
+    window.playground_seek_time.returnPressed.connect(window.apply_playground_seek_time)
+    window.playground_seek_time.editingFinished.connect(window.apply_playground_seek_time)
+    marker_row.addWidget(window.playground_seek_time)
+
+    window.playground_preview_reset_button = QPushButton("")
+    window.playground_preview_reset_button.clicked.connect(window.reset_playground_preview_position)
+    window.playground_preview_reset_button.setToolTip("Seek preview back to start (00:00:00).")
+    window.playground_preview_reset_button.setMaximumWidth(36)
+    marker_row.addWidget(window.playground_preview_reset_button)
+
+    window.playground_preview_button = QPushButton("")
     window.playground_preview_button.clicked.connect(window.toggle_playground_preview)
     window.playground_preview_button.setToolTip(
         "Toggle WAV preview playback.\n"
         "Click once to play, click again to stop."
     )
-    window.playground_preview_button.setMaximumWidth(130)
+    window.playground_preview_button.setMaximumWidth(36)
     marker_row.addWidget(window.playground_preview_button)
 
     window.playground_add_marker_button = QPushButton("Add Choppy Marker")

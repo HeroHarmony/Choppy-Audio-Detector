@@ -1,8 +1,10 @@
 # twitch_chat.py
+import os
 import socket
 import time
 import logging
 import ssl
+import sys
 from threading import Lock, Thread
 try:
     from config import TWITCH_CHANNEL, TWITCH_BOT_USERNAME, TWITCH_OAUTH_TOKEN
@@ -12,6 +14,44 @@ except Exception:
     TWITCH_OAUTH_TOKEN = ""
 
 logger = logging.getLogger(__name__)
+
+_LOG_FALLBACK_STREAM = None
+
+
+def _select_logging_stream():
+    for attr in ("stderr", "__stderr__", "stdout", "__stdout__"):
+        stream = getattr(sys, attr, None)
+        if stream is not None and hasattr(stream, "write"):
+            return stream
+    return None
+
+
+def _configure_logger():
+    global _LOG_FALLBACK_STREAM
+    valid_handlers = []
+    for handler in list(logger.handlers):
+        stream = getattr(handler, "stream", None)
+        if stream is None:
+            continue
+        if hasattr(stream, "closed") and getattr(stream, "closed", False):
+            continue
+        valid_handlers.append(handler)
+    if len(valid_handlers) != len(logger.handlers):
+        logger.handlers = valid_handlers
+
+    if not logger.handlers:
+        stream = _select_logging_stream()
+        if stream is None:
+            _LOG_FALLBACK_STREAM = open(os.devnull, "w", encoding="utf-8")
+            stream = _LOG_FALLBACK_STREAM
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
+_configure_logger()
 
 class TwitchBot:
     def __init__(self, channel=None, username=None, token=None):

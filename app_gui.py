@@ -221,6 +221,8 @@ OBS_AUTO_CONNECT_MAX_ATTEMPTS = 5
 class RuntimeSignals(QObject):
     event = Signal(str, object)
     obs_event = Signal(str, object)
+    playground_analysis_done = Signal(object)
+    playground_analysis_failed = Signal(str)
 
 
 class MainWindow(QMainWindow):
@@ -237,6 +239,8 @@ class MainWindow(QMainWindow):
         self.signals = RuntimeSignals()
         self.signals.event.connect(self.handle_runtime_event)
         self.signals.obs_event.connect(self.handle_obs_event)
+        self.signals.playground_analysis_done.connect(self._on_playground_analysis_done)
+        self.signals.playground_analysis_failed.connect(self._on_playground_analysis_failed)
         self.runtime = DetectorRuntime(
             self.settings,
             event_handler=lambda event_type, payload: self.signals.event.emit(event_type, payload),
@@ -318,11 +322,15 @@ class MainWindow(QMainWindow):
         self._playground_live_chunks: list[np.ndarray] = []
         self._playground_live_lock = threading.Lock()
         self._playground_analysis_running = False
+        self._playground_analysis_thread: threading.Thread | None = None
         self._playground_preview_active_path: str | None = None
         self._playground_preview_active_channel_index: int = 0
         self._playground_markers_by_path: dict[str, list[int]] = {}
         self._playground_baseline_profiles_by_path: dict[str, dict] = {}
         self._playground_marker_flash_phase = False
+        self._playground_display_peak_dbfs = -120.0
+        self._playground_display_rms_dbfs = -120.0
+        self._playground_display_last_update_at = time.monotonic()
         self._playground_live_paused_monitoring = False
         self._playground_live_baseline_profile: dict | None = None
 
@@ -499,15 +507,25 @@ class MainWindow(QMainWindow):
         app.setStyleSheet(DARK_THEME_STYLESHEET if self.settings.dark_mode_enabled else "")
 
     def update_meter_refresh_timer(self) -> None:
-        fps = max(5, min(60, int(self.settings.preview_meter_fps)))
-        interval_ms = max(10, int(round(1000.0 / fps)))
+        interval_ms = self._preview_timer_interval_ms()
         self.meter_preview_timer.start(interval_ms)
+        playback_timer = getattr(self, "playground_playback_timer", None)
+        if (
+            getattr(self, "_playground_is_playing", False)
+            and playback_timer is not None
+            and playback_timer.isActive()
+        ):
+            playback_timer.start(interval_ms)
 
     def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
         self.twitch_badge_presenter.apply(label, color_hex)
 
     def set_audio_status_badge(self, label: str, color_hex: str) -> None:
         self.audio_badge_presenter.apply(label, color_hex)
+
+    def _preview_timer_interval_ms(self) -> int:
+        fps = max(5, min(60, int(self.settings.preview_meter_fps)))
+        return max(10, int(round(1000.0 / fps)))
 
     def _is_chat_commands_connected(self) -> bool:
         bot = getattr(self.command_service, "bot", None)
@@ -946,9 +964,12 @@ class MainWindow(QMainWindow):
             self.playground_progress.set_position_ms(0)
             self.playground_progress.set_markers_ms([])
             self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+            self._reset_playground_preview_meters()
             return
         self.playground_progress.set_duration_ms(int(max(1, loaded.duration_ms)))
         self.playground_progress.set_markers_ms(list(self._playground_markers_by_path.get(loaded.path, [])))
+        if not self._playground_is_playing:
+            self._reset_playground_preview_meters()
 
     def remove_playground_marker_at(self, marker_ms: int) -> None:
         marker_path = self._playground_marker_context_path()
@@ -1077,7 +1098,76 @@ class MainWindow(QMainWindow):
             self.playground_playback_status.setText("Playback unavailable (sounddevice missing)")
             self.playground_live_status.setText("Live report unavailable (sounddevice missing)")
             self.playground_preview_button.setText("Preview Sound")
+            self._reset_playground_preview_meters()
+        self.playground_peak_meter.setEnabled(has_file)
         self.update_playground_marker_status()
+
+    def _smooth_playground_levels(self, peak_dbfs: float, rms_dbfs: float) -> tuple[float, float]:
+        if not self.settings.smooth_preview_meter:
+            self._playground_display_peak_dbfs = max(-120.0, min(0.0, float(peak_dbfs)))
+            self._playground_display_rms_dbfs = max(-120.0, min(0.0, float(rms_dbfs)))
+            self._playground_display_last_update_at = time.monotonic()
+            return self._playground_display_peak_dbfs, self._playground_display_rms_dbfs
+
+        now = time.monotonic()
+        dt = max(0.001, now - self._playground_display_last_update_at)
+        self._playground_display_last_update_at = now
+
+        attack_tau = 0.07
+        release_tau = 0.24
+
+        def step(current: float, target: float) -> float:
+            tau = attack_tau if target > current else release_tau
+            alpha = 1.0 - math.exp(-dt / max(0.001, tau))
+            value = current + (target - current) * alpha
+            return max(-120.0, min(0.0, value))
+
+        self._playground_display_peak_dbfs = step(self._playground_display_peak_dbfs, peak_dbfs)
+        self._playground_display_rms_dbfs = step(self._playground_display_rms_dbfs, rms_dbfs)
+        return self._playground_display_peak_dbfs, self._playground_display_rms_dbfs
+
+    def _set_playground_preview_meters(self, peak_dbfs: float, rms_dbfs: float, *, force: bool = False) -> None:
+        peak_clamped = max(-120.0, min(0.0, float(peak_dbfs)))
+        rms_clamped = max(-120.0, min(0.0, float(rms_dbfs)))
+        if force:
+            self._playground_display_peak_dbfs = peak_clamped
+            self._playground_display_rms_dbfs = rms_clamped
+            self._playground_display_last_update_at = time.monotonic()
+            display_peak = peak_clamped
+        else:
+            display_peak, _ = self._smooth_playground_levels(peak_clamped, rms_clamped)
+        self.playground_peak_meter.set_level_dbfs(display_peak, peak_source=True)
+
+    def _reset_playground_preview_meters(self) -> None:
+        self._set_playground_preview_meters(-120.0, -120.0, force=True)
+
+    def _update_playground_preview_meters_from_position(self, current_ms: int) -> None:
+        preview_path = self._playground_preview_active_path
+        if not preview_path:
+            self._reset_playground_preview_meters()
+            return
+        loaded = self._playground_find_loaded_by_path(preview_path)
+        if loaded is None or loaded.sample_rate <= 0:
+            self._reset_playground_preview_meters()
+            return
+        channel_idx = max(0, min(int(self._playground_preview_active_channel_index), loaded.channel_count - 1))
+        audio = loaded.samples[:, channel_idx]
+        if audio.size <= 0:
+            self._reset_playground_preview_meters()
+            return
+        sample_idx = int(round((max(0, current_ms) / 1000.0) * float(loaded.sample_rate)))
+        half_window = max(64, int(round(float(loaded.sample_rate) * 0.06)))
+        start = max(0, sample_idx - half_window)
+        end = min(int(audio.size), sample_idx + half_window)
+        if end <= start:
+            self._reset_playground_preview_meters()
+            return
+        segment = audio[start:end]
+        rms = float(np.sqrt(np.mean(segment**2)))
+        peak = float(np.max(np.abs(segment))) if int(segment.size) > 0 else 0.0
+        rms_dbfs = 20.0 * math.log10(rms + 1e-12)
+        peak_dbfs = 20.0 * math.log10(peak + 1e-12)
+        self._set_playground_preview_meters(peak_dbfs, rms_dbfs)
 
     def toggle_playground_preview(self) -> None:
         if self._playground_is_playing:
@@ -1109,7 +1199,8 @@ class MainWindow(QMainWindow):
         self._sync_playground_progress_for_loaded(loaded)
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
-        self.playground_playback_timer.start(100)
+        self._update_playground_preview_meters_from_position(0)
+        self.playground_playback_timer.start(self._preview_timer_interval_ms())
         self.playground_playback_status.setText("Playing")
         self.update_playground_controls()
 
@@ -1126,6 +1217,7 @@ class MainWindow(QMainWindow):
         self.playground_playback_status.setText("Not playing")
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+        self._reset_playground_preview_meters()
         self.update_playground_controls()
 
     def refresh_playground_playback_status(self) -> None:
@@ -1134,6 +1226,7 @@ class MainWindow(QMainWindow):
         elapsed = max(0.0, time.monotonic() - self._playground_started_at_monotonic)
         current_ms = int(round(elapsed * 1000.0))
         self.playground_progress.set_position_ms(current_ms)
+        self._update_playground_preview_meters_from_position(current_ms)
         nearest_marker = None
         nearest_distance = 10_000_000
         for marker_ms in self._playground_current_markers():
@@ -1152,6 +1245,8 @@ class MainWindow(QMainWindow):
     def run_playground_analysis(self) -> None:
         if self._playground_live_running:
             QMessageBox.information(self, "Playground", "Stop the live report before running file analysis.")
+            return
+        if self._playground_analysis_running:
             return
         loaded_files = list(self._playground_loaded_files)
         if not loaded_files:
@@ -1175,9 +1270,43 @@ class MainWindow(QMainWindow):
         self._playground_analysis_running = True
         self.playground_table.setSortingEnabled(False)
         self.update_playground_controls()
+        worker_payload = {
+            "loaded_files": loaded_files,
+            "window_ms": window_ms,
+            "step_ms": step_ms,
+            "warmup_ms": warmup_ms,
+            "channel_idx": channel_idx,
+            "run_prod_timing": bool(run_prod_timing),
+            "compare_window_ms": compare_window_ms,
+            "compare_step_ms": compare_step_ms,
+            "baseline_profiles": dict(self._playground_baseline_profiles_by_path),
+            "markers_by_path": {k: list(v) for k, v in self._playground_markers_by_path.items()},
+        }
+        self._playground_analysis_thread = threading.Thread(
+            target=self._run_playground_analysis_worker,
+            args=(worker_payload,),
+            name="playground-analysis-worker",
+            daemon=True,
+        )
+        self._playground_analysis_thread.start()
+
+    def _run_playground_analysis_worker(self, payload: dict[str, object]) -> None:
         try:
+            loaded_files = list(payload.get("loaded_files", []))
+            window_ms = int(payload.get("window_ms", 1000))
+            step_ms = int(payload.get("step_ms", 50))
+            warmup_ms = int(payload.get("warmup_ms", 700))
+            channel_idx = int(payload.get("channel_idx", 0))
+            run_prod_timing = bool(payload.get("run_prod_timing", False))
+            compare_window_ms = int(payload.get("compare_window_ms", 2000))
+            compare_step_ms = int(payload.get("compare_step_ms", 200))
+            baseline_profiles = dict(payload.get("baseline_profiles", {}))
+            markers_by_path = dict(payload.get("markers_by_path", {}))
+
             analysis_rows: list[dict[str, object]] = []
             for loaded in loaded_files:
+                if not isinstance(loaded, LoadedWavFile):
+                    continue
                 effective_channel_idx = max(0, min(channel_idx, loaded.channel_count - 1))
                 result = analyze_wav_file(
                     loaded,
@@ -1186,7 +1315,7 @@ class MainWindow(QMainWindow):
                     window_ms=window_ms,
                     step_ms=step_ms,
                     warmup_ms=warmup_ms,
-                    baseline_profile=self._playground_baseline_profiles_by_path.get(loaded.path),
+                    baseline_profile=baseline_profiles.get(loaded.path),
                 )
                 prod_result = None
                 if run_prod_timing:
@@ -1197,7 +1326,7 @@ class MainWindow(QMainWindow):
                         window_ms=compare_window_ms,
                         step_ms=compare_step_ms,
                         warmup_ms=warmup_ms,
-                        baseline_profile=self._playground_baseline_profiles_by_path.get(loaded.path),
+                        baseline_profile=baseline_profiles.get(loaded.path),
                     )
                 inferred = self.infer_expected_outcome_from_filename(loaded.path)
                 analysis_rows.append(
@@ -1208,17 +1337,28 @@ class MainWindow(QMainWindow):
                         "effective_channel_idx": effective_channel_idx,
                         "inferred_expected": inferred[0] if inferred is not None else None,
                         "inferred_source": inferred[1] if inferred is not None else None,
-                        "markers_ms": list(self._playground_markers_by_path.get(loaded.path, [])),
+                        "markers_ms": list(markers_by_path.get(loaded.path, [])),
                     }
                 )
+            self.signals.playground_analysis_done.emit(analysis_rows)
         except Exception as exc:
-            QMessageBox.warning(self, "Analysis failed", str(exc))
-            return
-        finally:
-            self._playground_analysis_running = False
-            self.update_playground_controls()
+            self.signals.playground_analysis_failed.emit(str(exc))
 
-        if batch_mode:
+    def _on_playground_analysis_failed(self, message: str) -> None:
+        self._playground_analysis_running = False
+        self._playground_analysis_thread = None
+        self.update_playground_controls()
+        QMessageBox.warning(self, "Analysis failed", message)
+
+    def _on_playground_analysis_done(self, analysis_rows_obj: object) -> None:
+        analysis_rows = list(analysis_rows_obj) if isinstance(analysis_rows_obj, list) else []
+        self._playground_analysis_running = False
+        self._playground_analysis_thread = None
+        self.update_playground_controls()
+        if not analysis_rows:
+            QMessageBox.warning(self, "Analysis failed", "No analysis rows were produced.")
+            return
+        if len(analysis_rows) > 1:
             self.finalize_batch_playground_analysis(
                 analysis_rows,
                 allow_preview=bool(self.playground_preview_on_done.isChecked()),
@@ -1286,7 +1426,8 @@ class MainWindow(QMainWindow):
         self._sync_playground_progress_for_loaded(loaded)
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
-        self.playground_playback_timer.start(100)
+        self._update_playground_preview_meters_from_position(0)
+        self.playground_playback_timer.start(self._preview_timer_interval_ms())
         self.playground_playback_status.setText("Playing")
         self.update_playground_controls()
 

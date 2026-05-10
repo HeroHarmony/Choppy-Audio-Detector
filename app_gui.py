@@ -1118,7 +1118,6 @@ class MainWindow(QMainWindow):
         self.playground_live_start_button.setEnabled(can_start_live)
         self.playground_live_stop_button.setEnabled(SOUNDDEVICE_AVAILABLE and live_running)
         if not SOUNDDEVICE_AVAILABLE:
-            self.playground_playback_status.setText("Playback unavailable (sounddevice missing)")
             self.playground_live_status.setText("Live report unavailable (sounddevice missing)")
             self._reset_playground_preview_meters()
         self.playground_peak_meter.setEnabled(has_file)
@@ -1239,7 +1238,7 @@ class MainWindow(QMainWindow):
 
     def toggle_playground_preview(self) -> None:
         if self._playground_is_playing:
-            self.stop_playground_audio()
+            self.stop_playground_audio(reset_position=False)
             return
         self.play_playground_audio()
 
@@ -1259,7 +1258,16 @@ class MainWindow(QMainWindow):
             show_error=True,
         )
 
-    def stop_playground_audio(self) -> None:
+    def stop_playground_audio(self, *, reset_position: bool = True) -> None:
+        paused_position_ms = int(self._playground_preview_start_offset_ms)
+        if self._playground_is_playing:
+            elapsed = max(0.0, time.monotonic() - self._playground_started_at_monotonic)
+            paused_position_ms = int(round(elapsed * 1000.0))
+            loaded = None
+            if self._playground_preview_active_path:
+                loaded = self._playground_find_loaded_by_path(self._playground_preview_active_path)
+            if loaded is not None:
+                paused_position_ms = max(0, min(paused_position_ms, int(max(0, loaded.duration_ms))))
         if SOUNDDEVICE_AVAILABLE:
             try:
                 sd.stop()
@@ -1269,12 +1277,17 @@ class MainWindow(QMainWindow):
         self._playground_preview_active_path = None
         self._playground_preview_active_channel_index = 0
         self.playground_playback_timer.stop()
-        self.playground_playback_status.setText("Not playing")
-        self.playground_progress.set_position_ms(0)
+        if reset_position:
+            self._playground_preview_start_offset_ms = 0
+            self.playground_progress.set_position_ms(0)
+            self._set_playground_seek_time_display(0)
+            self._reset_playground_preview_meters()
+        else:
+            self._playground_preview_start_offset_ms = paused_position_ms
+            self.playground_progress.set_position_ms(paused_position_ms)
+            self._set_playground_seek_time_display(paused_position_ms)
+            self._update_playground_preview_meters_from_position(paused_position_ms)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
-        self._playground_preview_start_offset_ms = 0
-        self._set_playground_seek_time_display(0)
-        self._reset_playground_preview_meters()
         self.update_playground_controls()
 
     def refresh_playground_playback_status(self) -> None:
@@ -1503,7 +1516,6 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._playground_is_playing = False
             self.playground_playback_timer.stop()
-            self.playground_playback_status.setText("Not playing")
             self.update_playground_controls()
             if show_error:
                 QMessageBox.warning(self, "Playback failed", str(exc))
@@ -1521,7 +1533,6 @@ class MainWindow(QMainWindow):
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
         self._update_playground_preview_meters_from_position(clamped_start_ms)
         self.playground_playback_timer.start(self._preview_timer_interval_ms())
-        self.playground_playback_status.setText("Playing")
         self.update_playground_controls()
         return True
 
@@ -1548,8 +1559,6 @@ class MainWindow(QMainWindow):
                 effective_channel_idx,
                 start_ms=clamped_ms,
             )
-        else:
-            self.playground_playback_status.setText(f"Ready @ {clamped_ms / 1000.0:.2f}s")
 
     def toggle_playground_loaded_file_preview(self, loaded: LoadedWavFile, channel_idx: int) -> None:
         effective_channel_idx = max(0, min(int(channel_idx), loaded.channel_count - 1))

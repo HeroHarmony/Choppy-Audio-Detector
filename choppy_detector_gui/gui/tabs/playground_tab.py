@@ -259,8 +259,6 @@ def build_playground_tab(window) -> None:
     marker_row.addWidget(window.playground_marker_match_ms_spin)
 
     marker_row.addStretch(1)
-    window.playground_playback_status = QLabel("Not playing")
-    marker_row.addWidget(window.playground_playback_status)
     window.playground_marker_status = QLabel("Markers: 0")
     window.playground_marker_status.setStyleSheet("color: #bdbdbd;")
     marker_row.addWidget(window.playground_marker_status)

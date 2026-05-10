@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from choppy_detector_gui.gui.widgets.obs_level_meter import ObsLevelMeter
 from choppy_detector_gui.gui.widgets.marker_progress_bar import MarkerProgressBar
 
 
@@ -123,54 +124,13 @@ def build_playground_tab(window) -> None:
     )
     controls_layout.addWidget(window.playground_preview_on_done, 1, 0, 1, 2)
 
-    window.playground_analyze_button = QPushButton("Analyze File")
-    window.playground_analyze_button.clicked.connect(window.run_playground_analysis)
-    window.playground_analyze_button.setToolTip(
-        "Run offline detector analysis on the loaded WAV file and save a compact report."
-    )
-    controls_layout.addWidget(window.playground_analyze_button, 1, 2, 1, 2)
-
-    window.playground_preview_button = QPushButton("Preview Sound")
-    window.playground_preview_button.clicked.connect(window.toggle_playground_preview)
-    window.playground_preview_button.setToolTip(
-        "Toggle WAV preview playback.\n"
-        "Click once to play, click again to stop."
-    )
-    controls_layout.addWidget(window.playground_preview_button, 1, 4, 1, 3)
-
-    window.playground_playback_status = QLabel("Not playing")
-    controls_layout.addWidget(window.playground_playback_status, 1, 7, 1, 1)
-
-    window.playground_add_marker_button = QPushButton("Add Marker")
-    window.playground_add_marker_button.clicked.connect(window.add_playground_marker)
-    window.playground_add_marker_button.setToolTip(
-        "While preview is playing, add a marker where you hear an obvious glitch burst."
-    )
-    controls_layout.addWidget(window.playground_add_marker_button, 2, 4, 1, 1)
-
-    window.playground_clear_markers_button = QPushButton("Clear Markers")
-    window.playground_clear_markers_button.clicked.connect(window.clear_playground_markers)
-    window.playground_clear_markers_button.setToolTip("Remove all markers for the currently loaded WAV file.")
-    controls_layout.addWidget(window.playground_clear_markers_button, 2, 5, 1, 1)
-
-    window.playground_marker_latency_ms_spin = QSpinBox()
-    window.playground_marker_latency_ms_spin.setRange(0, 1000)
-    window.playground_marker_latency_ms_spin.setValue(270)
-    window.playground_marker_latency_ms_spin.setSingleStep(10)
-    window.playground_marker_latency_ms_spin.setSuffix(" ms")
-    window.playground_marker_latency_ms_spin.setToolTip(
-        "Compensate human click reaction time when adding markers."
-    )
-    controls_layout.addWidget(QLabel("Marker latency"), 2, 6)
-    controls_layout.addWidget(window.playground_marker_latency_ms_spin, 2, 7)
-
-    window.playground_also_prod_timing = QCheckBox("Also run legacy 2000/200")
+    window.playground_also_prod_timing = QCheckBox("Also run 2000/200")
     window.playground_also_prod_timing.setChecked(True)
     window.playground_also_prod_timing.setToolTip(
         "When enabled, generates an additional report using\n"
         "legacy comparison timing (window 2000 ms, step 200 ms)."
     )
-    controls_layout.addWidget(window.playground_also_prod_timing, 3, 0, 1, 2)
+    controls_layout.addWidget(window.playground_also_prod_timing, 1, 2, 1, 2)
 
     window.playground_extended_report = QCheckBox("Extended report")
     window.playground_extended_report.setChecked(True)
@@ -178,39 +138,46 @@ def build_playground_tab(window) -> None:
         "When enabled, include deeper diagnostics in report output\n"
         "(near-threshold windows, clusters, feature ranges, and transition summaries)."
     )
-    controls_layout.addWidget(window.playground_extended_report, 3, 2, 1, 2)
+    controls_layout.addWidget(window.playground_extended_report, 1, 4, 1, 2)
 
-    window.playground_marker_match_ms_spin = QSpinBox()
-    window.playground_marker_match_ms_spin.setRange(0, 2000)
-    window.playground_marker_match_ms_spin.setValue(450)
-    window.playground_marker_match_ms_spin.setSingleStep(10)
-    window.playground_marker_match_ms_spin.setSuffix(" ms")
-    window.playground_marker_match_ms_spin.setToolTip(
-        "Marker comparison radius used in report alignment metrics."
+    window.playground_analyze_button = QPushButton("Analyze File")
+    window.playground_analyze_button.clicked.connect(window.run_playground_analysis)
+    window.playground_analyze_button.setToolTip(
+        "Run offline detector analysis on the loaded WAV file and save a compact report."
     )
-    controls_layout.addWidget(QLabel("Marker match"), 3, 4)
-    controls_layout.addWidget(window.playground_marker_match_ms_spin, 3, 5)
+    controls_layout.addWidget(window.playground_analyze_button, 1, 6, 1, 2)
 
+    layout.addWidget(controls)
+
+    live_row = QHBoxLayout()
+    live_row.setSpacing(8)
     window.playground_live_start_button = QPushButton("Start Live Report")
     window.playground_live_start_button.clicked.connect(window.start_live_playground_report)
     window.playground_live_start_button.setToolTip(
         "Start recording live audio from the currently selected input device/channel.\n"
         "Main tab monitoring is paused during recording and resumed after save."
     )
-    controls_layout.addWidget(window.playground_live_start_button, 4, 2, 1, 2)
+    live_row.addWidget(window.playground_live_start_button)
 
-    window.playground_live_stop_button = QPushButton("Stop & Save Live WAV")
+    window.playground_live_stop_button = QPushButton("Stop && Save Live WAV")
     window.playground_live_stop_button.clicked.connect(window.stop_live_playground_report)
     window.playground_live_stop_button.setToolTip(
         "Stop live recording and save a WAV file.\n"
         "A baseline profile sidecar is also saved next to the WAV when available."
     )
-    controls_layout.addWidget(window.playground_live_stop_button, 4, 4, 1, 3)
+    live_row.addWidget(window.playground_live_stop_button)
 
     window.playground_live_status = QLabel("Live report idle")
-    controls_layout.addWidget(window.playground_live_status, 4, 7, 1, 1)
+    window.playground_live_status.setMinimumWidth(210)
+    window.playground_live_status.setMaximumWidth(260)
+    window.playground_live_status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    window.playground_live_status.setStyleSheet("padding-left: 8px; padding-right: 8px;")
+    live_row.addWidget(window.playground_live_status)
+    live_row.addStretch(1)
+    layout.addLayout(live_row)
 
-    layout.addWidget(controls)
+    window.playground_peak_meter = ObsLevelMeter(show_ruler=False, overlay_label="")
+    layout.addWidget(window.playground_peak_meter)
 
     window.playground_progress = MarkerProgressBar()
     window.playground_progress.set_duration_ms(1)
@@ -219,9 +186,63 @@ def build_playground_tab(window) -> None:
     window.playground_progress.setToolTip("Playback progress for WAV file mode.")
     layout.addWidget(window.playground_progress)
 
+    marker_row = QHBoxLayout()
+    marker_row.setSpacing(6)
+
+    window.playground_preview_button = QPushButton("Preview Sound")
+    window.playground_preview_button.clicked.connect(window.toggle_playground_preview)
+    window.playground_preview_button.setToolTip(
+        "Toggle WAV preview playback.\n"
+        "Click once to play, click again to stop."
+    )
+    window.playground_preview_button.setMaximumWidth(130)
+    marker_row.addWidget(window.playground_preview_button)
+
+    window.playground_add_marker_button = QPushButton("Add Choppy Marker")
+    window.playground_add_marker_button.clicked.connect(window.add_playground_marker)
+    window.playground_add_marker_button.setToolTip(
+        "While preview is playing, add a marker where you hear an obvious glitch burst."
+    )
+    window.playground_add_marker_button.setMaximumWidth(150)
+    marker_row.addWidget(window.playground_add_marker_button)
+
+    window.playground_clear_markers_button = QPushButton("Clear Markers")
+    window.playground_clear_markers_button.clicked.connect(window.clear_playground_markers)
+    window.playground_clear_markers_button.setToolTip("Remove all markers for the currently loaded WAV file.")
+    window.playground_clear_markers_button.setMaximumWidth(115)
+    marker_row.addWidget(window.playground_clear_markers_button)
+
+    marker_row.addWidget(QLabel("Latency"))
+    window.playground_marker_latency_ms_spin = QSpinBox()
+    window.playground_marker_latency_ms_spin.setRange(0, 1000)
+    window.playground_marker_latency_ms_spin.setValue(270)
+    window.playground_marker_latency_ms_spin.setSingleStep(10)
+    window.playground_marker_latency_ms_spin.setSuffix(" ms")
+    window.playground_marker_latency_ms_spin.setToolTip(
+        "Compensate human click reaction time when adding markers."
+    )
+    window.playground_marker_latency_ms_spin.setMaximumWidth(95)
+    marker_row.addWidget(window.playground_marker_latency_ms_spin)
+
+    marker_row.addWidget(QLabel("Match"))
+    window.playground_marker_match_ms_spin = QSpinBox()
+    window.playground_marker_match_ms_spin.setRange(0, 2000)
+    window.playground_marker_match_ms_spin.setValue(450)
+    window.playground_marker_match_ms_spin.setSingleStep(10)
+    window.playground_marker_match_ms_spin.setSuffix(" ms")
+    window.playground_marker_match_ms_spin.setToolTip(
+        "Marker comparison radius used in report alignment metrics."
+    )
+    window.playground_marker_match_ms_spin.setMaximumWidth(95)
+    marker_row.addWidget(window.playground_marker_match_ms_spin)
+
+    marker_row.addStretch(1)
+    window.playground_playback_status = QLabel("Not playing")
+    marker_row.addWidget(window.playground_playback_status)
     window.playground_marker_status = QLabel("Markers: 0")
     window.playground_marker_status.setStyleSheet("color: #bdbdbd;")
-    layout.addWidget(window.playground_marker_status)
+    marker_row.addWidget(window.playground_marker_status)
+    layout.addLayout(marker_row)
 
     file_label = QLabel("File")
     file_label.setStyleSheet("font-weight: 600;")

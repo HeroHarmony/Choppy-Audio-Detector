@@ -328,6 +328,9 @@ class MainWindow(QMainWindow):
         self._playground_markers_by_path: dict[str, list[int]] = {}
         self._playground_baseline_profiles_by_path: dict[str, dict] = {}
         self._playground_marker_flash_phase = False
+        self._playground_display_peak_dbfs = -120.0
+        self._playground_display_rms_dbfs = -120.0
+        self._playground_display_last_update_at = time.monotonic()
         self._playground_live_paused_monitoring = False
         self._playground_live_baseline_profile: dict | None = None
 
@@ -504,15 +507,25 @@ class MainWindow(QMainWindow):
         app.setStyleSheet(DARK_THEME_STYLESHEET if self.settings.dark_mode_enabled else "")
 
     def update_meter_refresh_timer(self) -> None:
-        fps = max(5, min(60, int(self.settings.preview_meter_fps)))
-        interval_ms = max(10, int(round(1000.0 / fps)))
+        interval_ms = self._preview_timer_interval_ms()
         self.meter_preview_timer.start(interval_ms)
+        playback_timer = getattr(self, "playground_playback_timer", None)
+        if (
+            getattr(self, "_playground_is_playing", False)
+            and playback_timer is not None
+            and playback_timer.isActive()
+        ):
+            playback_timer.start(interval_ms)
 
     def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
         self.twitch_badge_presenter.apply(label, color_hex)
 
     def set_audio_status_badge(self, label: str, color_hex: str) -> None:
         self.audio_badge_presenter.apply(label, color_hex)
+
+    def _preview_timer_interval_ms(self) -> int:
+        fps = max(5, min(60, int(self.settings.preview_meter_fps)))
+        return max(10, int(round(1000.0 / fps)))
 
     def _is_chat_commands_connected(self) -> bool:
         bot = getattr(self.command_service, "bot", None)
@@ -951,9 +964,12 @@ class MainWindow(QMainWindow):
             self.playground_progress.set_position_ms(0)
             self.playground_progress.set_markers_ms([])
             self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+            self._reset_playground_preview_meters()
             return
         self.playground_progress.set_duration_ms(int(max(1, loaded.duration_ms)))
         self.playground_progress.set_markers_ms(list(self._playground_markers_by_path.get(loaded.path, [])))
+        if not self._playground_is_playing:
+            self._reset_playground_preview_meters()
 
     def remove_playground_marker_at(self, marker_ms: int) -> None:
         marker_path = self._playground_marker_context_path()
@@ -1082,7 +1098,76 @@ class MainWindow(QMainWindow):
             self.playground_playback_status.setText("Playback unavailable (sounddevice missing)")
             self.playground_live_status.setText("Live report unavailable (sounddevice missing)")
             self.playground_preview_button.setText("Preview Sound")
+            self._reset_playground_preview_meters()
+        self.playground_peak_meter.setEnabled(has_file)
         self.update_playground_marker_status()
+
+    def _smooth_playground_levels(self, peak_dbfs: float, rms_dbfs: float) -> tuple[float, float]:
+        if not self.settings.smooth_preview_meter:
+            self._playground_display_peak_dbfs = max(-120.0, min(0.0, float(peak_dbfs)))
+            self._playground_display_rms_dbfs = max(-120.0, min(0.0, float(rms_dbfs)))
+            self._playground_display_last_update_at = time.monotonic()
+            return self._playground_display_peak_dbfs, self._playground_display_rms_dbfs
+
+        now = time.monotonic()
+        dt = max(0.001, now - self._playground_display_last_update_at)
+        self._playground_display_last_update_at = now
+
+        attack_tau = 0.07
+        release_tau = 0.24
+
+        def step(current: float, target: float) -> float:
+            tau = attack_tau if target > current else release_tau
+            alpha = 1.0 - math.exp(-dt / max(0.001, tau))
+            value = current + (target - current) * alpha
+            return max(-120.0, min(0.0, value))
+
+        self._playground_display_peak_dbfs = step(self._playground_display_peak_dbfs, peak_dbfs)
+        self._playground_display_rms_dbfs = step(self._playground_display_rms_dbfs, rms_dbfs)
+        return self._playground_display_peak_dbfs, self._playground_display_rms_dbfs
+
+    def _set_playground_preview_meters(self, peak_dbfs: float, rms_dbfs: float, *, force: bool = False) -> None:
+        peak_clamped = max(-120.0, min(0.0, float(peak_dbfs)))
+        rms_clamped = max(-120.0, min(0.0, float(rms_dbfs)))
+        if force:
+            self._playground_display_peak_dbfs = peak_clamped
+            self._playground_display_rms_dbfs = rms_clamped
+            self._playground_display_last_update_at = time.monotonic()
+            display_peak = peak_clamped
+        else:
+            display_peak, _ = self._smooth_playground_levels(peak_clamped, rms_clamped)
+        self.playground_peak_meter.set_level_dbfs(display_peak, peak_source=True)
+
+    def _reset_playground_preview_meters(self) -> None:
+        self._set_playground_preview_meters(-120.0, -120.0, force=True)
+
+    def _update_playground_preview_meters_from_position(self, current_ms: int) -> None:
+        preview_path = self._playground_preview_active_path
+        if not preview_path:
+            self._reset_playground_preview_meters()
+            return
+        loaded = self._playground_find_loaded_by_path(preview_path)
+        if loaded is None or loaded.sample_rate <= 0:
+            self._reset_playground_preview_meters()
+            return
+        channel_idx = max(0, min(int(self._playground_preview_active_channel_index), loaded.channel_count - 1))
+        audio = loaded.samples[:, channel_idx]
+        if audio.size <= 0:
+            self._reset_playground_preview_meters()
+            return
+        sample_idx = int(round((max(0, current_ms) / 1000.0) * float(loaded.sample_rate)))
+        half_window = max(64, int(round(float(loaded.sample_rate) * 0.06)))
+        start = max(0, sample_idx - half_window)
+        end = min(int(audio.size), sample_idx + half_window)
+        if end <= start:
+            self._reset_playground_preview_meters()
+            return
+        segment = audio[start:end]
+        rms = float(np.sqrt(np.mean(segment**2)))
+        peak = float(np.max(np.abs(segment))) if int(segment.size) > 0 else 0.0
+        rms_dbfs = 20.0 * math.log10(rms + 1e-12)
+        peak_dbfs = 20.0 * math.log10(peak + 1e-12)
+        self._set_playground_preview_meters(peak_dbfs, rms_dbfs)
 
     def toggle_playground_preview(self) -> None:
         if self._playground_is_playing:
@@ -1114,7 +1199,8 @@ class MainWindow(QMainWindow):
         self._sync_playground_progress_for_loaded(loaded)
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
-        self.playground_playback_timer.start(100)
+        self._update_playground_preview_meters_from_position(0)
+        self.playground_playback_timer.start(self._preview_timer_interval_ms())
         self.playground_playback_status.setText("Playing")
         self.update_playground_controls()
 
@@ -1131,6 +1217,7 @@ class MainWindow(QMainWindow):
         self.playground_playback_status.setText("Not playing")
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+        self._reset_playground_preview_meters()
         self.update_playground_controls()
 
     def refresh_playground_playback_status(self) -> None:
@@ -1139,6 +1226,7 @@ class MainWindow(QMainWindow):
         elapsed = max(0.0, time.monotonic() - self._playground_started_at_monotonic)
         current_ms = int(round(elapsed * 1000.0))
         self.playground_progress.set_position_ms(current_ms)
+        self._update_playground_preview_meters_from_position(current_ms)
         nearest_marker = None
         nearest_distance = 10_000_000
         for marker_ms in self._playground_current_markers():
@@ -1338,7 +1426,8 @@ class MainWindow(QMainWindow):
         self._sync_playground_progress_for_loaded(loaded)
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
-        self.playground_playback_timer.start(100)
+        self._update_playground_preview_meters_from_position(0)
+        self.playground_playback_timer.start(self._preview_timer_interval_ms())
         self.playground_playback_status.setText("Playing")
         self.update_playground_controls()
 

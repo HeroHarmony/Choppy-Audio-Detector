@@ -319,6 +319,7 @@ class MainWindow(QMainWindow):
         self._playground_live_sample_rate = 0
         self._playground_live_channel_index = 0
         self._playground_live_started_at_monotonic = 0.0
+        self._playground_preview_start_offset_ms = 0
         self._playground_live_chunks: list[np.ndarray] = []
         self._playground_live_lock = threading.Lock()
         self._playground_analysis_running = False
@@ -784,6 +785,7 @@ class MainWindow(QMainWindow):
 
     def load_playground_files(self, paths: list[str]) -> None:
         self.stop_playground_audio()
+        self._playground_preview_start_offset_ms = 0
         unique_paths: list[str] = []
         for raw in paths:
             normalized = str(raw).strip()
@@ -1193,25 +1195,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Playground", "Load a WAV file first.")
             return
         channel_idx = max(0, min(self.playground_channel_spin.value() - 1, loaded.channel_count - 1))
-        audio = loaded.samples[:, channel_idx]
-        try:
-            sd.play(audio, samplerate=loaded.sample_rate, blocking=False)
-        except Exception as exc:
-            QMessageBox.warning(self, "Playback failed", str(exc))
-            return
-        self._playground_is_playing = True
-        self._playground_preview_active_path = loaded.path
-        self._playground_preview_active_channel_index = channel_idx
-        self._playground_started_at_monotonic = time.monotonic()
-        self._playground_play_duration_seconds = max(0.001, len(audio) / float(loaded.sample_rate))
-        self._playground_marker_flash_phase = False
-        self._sync_playground_progress_for_loaded(loaded)
-        self.playground_progress.set_position_ms(0)
-        self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
-        self._update_playground_preview_meters_from_position(0)
-        self.playground_playback_timer.start(self._preview_timer_interval_ms())
-        self.playground_playback_status.setText("Playing")
-        self.update_playground_controls()
+        self._play_playground_loaded_file(
+            loaded,
+            channel_idx,
+            start_ms=int(self._playground_preview_start_offset_ms),
+            show_error=True,
+        )
 
     def stop_playground_audio(self) -> None:
         if SOUNDDEVICE_AVAILABLE:
@@ -1226,6 +1215,7 @@ class MainWindow(QMainWindow):
         self.playground_playback_status.setText("Not playing")
         self.playground_progress.set_position_ms(0)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+        self._playground_preview_start_offset_ms = 0
         self._reset_playground_preview_meters()
         self.update_playground_controls()
 
@@ -1420,29 +1410,81 @@ class MainWindow(QMainWindow):
                 f"{self.playground_analysis_summary.toPlainText()} | Legacy report: {prod_report_path}"
             )
 
-    def _play_playground_loaded_file(self, loaded: LoadedWavFile, channel_idx: int) -> None:
+    def _play_playground_loaded_file(
+        self,
+        loaded: LoadedWavFile,
+        channel_idx: int,
+        *,
+        start_ms: int = 0,
+        show_error: bool = False,
+    ) -> bool:
         if not SOUNDDEVICE_AVAILABLE:
-            return
+            return False
         effective_channel_idx = max(0, min(int(channel_idx), loaded.channel_count - 1))
         audio = loaded.samples[:, effective_channel_idx]
-        self.stop_playground_audio()
+        if audio.size <= 0:
+            return False
+        clamped_start_ms = max(0, min(int(start_ms), int(max(0, loaded.duration_ms))))
+        start_sample = int(round((clamped_start_ms / 1000.0) * float(loaded.sample_rate)))
+        start_sample = max(0, min(start_sample, int(audio.shape[0])))
+        playback_audio = audio[start_sample:]
+        if playback_audio.size <= 0:
+            if int(audio.shape[0]) <= 0:
+                return False
+            start_sample = int(audio.shape[0]) - 1
+            clamped_start_ms = int(round((start_sample / float(loaded.sample_rate)) * 1000.0))
+            playback_audio = audio[start_sample:]
+        if SOUNDDEVICE_AVAILABLE:
+            try:
+                sd.stop()
+            except Exception:
+                pass
         try:
-            sd.play(audio, samplerate=loaded.sample_rate, blocking=False)
-        except Exception:
-            return
+            sd.play(playback_audio, samplerate=loaded.sample_rate, blocking=False)
+        except Exception as exc:
+            if show_error:
+                QMessageBox.warning(self, "Playback failed", str(exc))
+            return False
         self._playground_is_playing = True
         self._playground_preview_active_path = loaded.path
         self._playground_preview_active_channel_index = effective_channel_idx
-        self._playground_started_at_monotonic = time.monotonic()
-        self._playground_play_duration_seconds = max(0.001, len(audio) / float(loaded.sample_rate))
+        self._playground_preview_start_offset_ms = clamped_start_ms
+        self._playground_started_at_monotonic = time.monotonic() - (clamped_start_ms / 1000.0)
+        self._playground_play_duration_seconds = max(0.001, loaded.duration_ms / 1000.0)
         self._playground_marker_flash_phase = False
         self._sync_playground_progress_for_loaded(loaded)
-        self.playground_progress.set_position_ms(0)
+        self.playground_progress.set_position_ms(clamped_start_ms)
         self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
-        self._update_playground_preview_meters_from_position(0)
+        self._update_playground_preview_meters_from_position(clamped_start_ms)
         self.playground_playback_timer.start(self._preview_timer_interval_ms())
         self.playground_playback_status.setText("Playing")
         self.update_playground_controls()
+        return True
+
+    def seek_playground_preview(self, position_ms: int) -> None:
+        loaded = None
+        effective_channel_idx = 0
+        if self._playground_is_playing and self._playground_preview_active_path:
+            loaded = self._playground_find_loaded_by_path(self._playground_preview_active_path)
+            effective_channel_idx = int(self._playground_preview_active_channel_index)
+        if loaded is None:
+            loaded = self._playground_audio_file
+            if loaded is None:
+                return
+            effective_channel_idx = max(0, min(self.playground_channel_spin.value() - 1, loaded.channel_count - 1))
+        clamped_ms = max(0, min(int(position_ms), int(max(0, loaded.duration_ms))))
+        self._playground_preview_start_offset_ms = clamped_ms
+        self.playground_progress.set_position_ms(clamped_ms)
+        self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+        self._update_playground_preview_meters_from_position(clamped_ms)
+        if self._playground_is_playing:
+            self._play_playground_loaded_file(
+                loaded,
+                effective_channel_idx,
+                start_ms=clamped_ms,
+            )
+        else:
+            self.playground_playback_status.setText(f"Ready @ {clamped_ms / 1000.0:.2f}s")
 
     def toggle_playground_loaded_file_preview(self, loaded: LoadedWavFile, channel_idx: int) -> None:
         effective_channel_idx = max(0, min(int(channel_idx), loaded.channel_count - 1))

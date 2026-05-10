@@ -183,7 +183,12 @@ def build_playground_tab(window) -> None:
     window.playground_progress.set_duration_ms(1)
     window.playground_progress.set_position_ms(0)
     window.playground_progress.markerClicked.connect(window.remove_playground_marker_at)
-    window.playground_progress.setToolTip("Playback progress for WAV file mode.")
+    window.playground_progress.seekRequested.connect(window.seek_playground_preview)
+    window.playground_progress.setToolTip(
+        "Playback progress for WAV mode.\n"
+        "Click the bar to seek preview.\n"
+        "Click a marker to remove it."
+    )
     layout.addWidget(window.playground_progress)
 
     marker_row = QHBoxLayout()

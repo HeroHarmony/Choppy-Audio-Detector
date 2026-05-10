@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QWidget
 
 class MarkerProgressBar(QWidget):
     markerClicked = Signal(int)
+    seekRequested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -41,15 +42,19 @@ class MarkerProgressBar(QWidget):
         self.update()
 
     def mousePressEvent(self, event) -> None:
-        if event.button() != Qt.LeftButton or not self._markers_ms:
+        if event.button() != Qt.LeftButton:
             return super().mousePressEvent(event)
         track_rect = self._track_rect()
-        hit = self._find_marker_near_point(event.position(), track_rect)
-        if hit is not None:
-            self.markerClicked.emit(hit)
-            event.accept()
-            return
-        super().mousePressEvent(event)
+        if self._markers_ms:
+            hit = self._find_marker_near_point(event.position(), track_rect)
+            if hit is not None:
+                self.markerClicked.emit(hit)
+                event.accept()
+                return
+        seek_ms = self._position_to_ms(event.position().x(), track_rect)
+        self.seekRequested.emit(seek_ms)
+        event.accept()
+        return
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -97,3 +102,9 @@ class MarkerProgressBar(QWidget):
                 closest_dist = dist
                 closest_marker = marker_ms
         return closest_marker
+
+    def _position_to_ms(self, x: float, track_rect: QRectF) -> int:
+        width = max(1.0, float(track_rect.width()))
+        ratio = (float(x) - float(track_rect.x())) / width
+        ratio = max(0.0, min(1.0, ratio))
+        return int(round(ratio * float(self._duration_ms)))

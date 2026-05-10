@@ -701,6 +701,23 @@ class BalancedChoppyDetector:
         # Run enabled methods
         if APPROACHES['silence_gaps']:
             choppy, score, gaps = self.silence_gaps_detector(audio)
+            # In longer windows, bursty glitches can be diluted. Also test
+            # half-windows and keep the strongest silence-gap signal.
+            if len(audio) >= int(self.sample_rate * 1.5):
+                half = len(audio) // 2
+                for chunk in (audio[:half], audio[half:]):
+                    if len(chunk) < max(256, int(self.sample_rate * 0.5)):
+                        continue
+                    sub_choppy, sub_score, sub_gaps = self.silence_gaps_detector(chunk)
+                    current_max_gap = max((g["duration_ms"] for g in gaps), default=0.0)
+                    sub_max_gap = max((g["duration_ms"] for g in sub_gaps), default=0.0)
+                    if (
+                        (sub_choppy and not choppy)
+                        or (sub_score > score + 0.03)
+                        or (sub_max_gap > current_max_gap + 40.0)
+                        or (len(sub_gaps) > len(gaps) and sub_score >= score)
+                    ):
+                        choppy, score, gaps = sub_choppy, sub_score, sub_gaps
             results['silence_gaps'] = {
                 'choppy': choppy, 
                 'score': score, 
@@ -756,16 +773,39 @@ class BalancedChoppyDetector:
                     # More strict evaluation for silence gaps
                     gap_count = len(result.get('gaps', []))
                     silence_ratio = result['score']
+                    max_gap_ms = max(
+                        (float(gap.get('duration_ms', 0.0)) for gap in result.get('gaps', [])),
+                        default=0.0,
+                    )
                     
                     if silence_ratio > 0.8:  # Extreme silence
                         confidence += 0.9
                         reasons.append(f"Extreme silence ({silence_ratio:.1%})")
+                    elif max_gap_ms >= 500.0:
+                        # A single very long dropout is usually a real stream fault.
+                        confidence += 0.85
+                        reasons.append(f"Severe long audio gap ({max_gap_ms:.0f}ms)")
                     elif gap_count >= THRESHOLDS['suspicious_gap_count']:
                         confidence += 0.8
                         reasons.append(f"{gap_count} significant gaps detected")
-                    elif any(gap['duration_ms'] > 200 for gap in result.get('gaps', [])):
+                    elif max_gap_ms >= 250.0:
+                        confidence += 0.7
+                        reasons.append(f"Very long audio gap ({max_gap_ms:.0f}ms)")
+                    elif max_gap_ms > 200.0:
                         confidence += 0.6
                         reasons.append("Long audio gap detected")
+                    elif silence_ratio >= (THRESHOLDS['silence_ratio'] + 0.03):
+                        mod = results.get('amplitude_modulation', {}) if isinstance(results, dict) else {}
+                        mod_strength = float(mod.get('score', 0.0) or 0.0)
+                        mod_depth = float(mod.get('depth', 0.0) or 0.0)
+                        if mod_strength >= 5.0 and mod_depth >= 0.55:
+                            confidence += 0.75
+                            reasons.append(
+                                f"Sustained high silence ({silence_ratio:.1%}) with modulation stress"
+                            )
+                        else:
+                            confidence += 0.62
+                            reasons.append(f"Sustained high silence ({silence_ratio:.1%})")
                     elif gap_count > 0 and silence_ratio > 0.4:
                         confidence += 0.5
                         reasons.append(f"{gap_count} gaps with high silence")
@@ -787,12 +827,16 @@ class BalancedChoppyDetector:
                         reasons.append("Amplitude instability")
                         
                 elif method == 'envelope_discontinuity':
-                    # High confidence - envelope breaks are suspicious
-                    if result['score'] > 3.0:
-                        confidence += 0.8
+                    # Envelope breaks are an important glitch signal in your samples.
+                    # Keep them meaningful, while still below the old aggressive levels.
+                    if result['score'] > 12.0:
+                        confidence += 0.78
+                        reasons.append("Strong audio envelope break detected")
+                    elif result['score'] > 3.0:
+                        confidence += 0.68
                         reasons.append("Audio envelope break detected")
                     else:
-                        confidence += 0.6
+                        confidence += 0.58
                         reasons.append("Envelope discontinuity")
                 elif method == 'amplitude_modulation':
                     # Very conservative: supporting evidence only.
@@ -1081,6 +1125,7 @@ class BalancedChoppyDetector:
         """Main detection loop with reasonable timing"""
         last_detection_time = 0
         detection_cooldown = 0.5  # Don't spam detections
+        silence_persistence_hits = deque(maxlen=32)
         
         print("Listening for streaming audio glitches...")
         print("Building baseline audio profile...")
@@ -1169,6 +1214,31 @@ class BalancedChoppyDetector:
 
                 # Assess confidence
                 confidence, reasons = self.assess_glitch_confidence(results)
+                silence_result = results.get('silence_gaps', {}) if isinstance(results, dict) else {}
+                silence_choppy = bool(silence_result.get('choppy', False))
+                silence_ratio = float(silence_result.get('score', 0.0) or 0.0)
+                envelope_hit = bool(results.get('envelope_discontinuity', {}).get('choppy', False))
+                modulation_hit = bool(results.get('amplitude_modulation', {}).get('choppy', False))
+                persistence_promoted = False
+                persistence_candidate = (
+                    silence_choppy
+                    and silence_ratio >= (float(THRESHOLDS['silence_ratio']) + 0.01)
+                    and not envelope_hit
+                    and 0.55 <= confidence < 0.75
+                )
+                while silence_persistence_hits and (current_time - silence_persistence_hits[0]) > 2.5:
+                    silence_persistence_hits.popleft()
+                if persistence_candidate:
+                    silence_persistence_hits.append(current_time)
+                if len(silence_persistence_hits) >= 3:
+                    if modulation_hit:
+                        confidence = max(confidence, 0.80)
+                        reasons = f"{reasons}; Persistent silence-gap pattern corroborated by modulation"
+                    else:
+                        confidence = max(confidence, 0.78)
+                        reasons = f"{reasons}; Persistent silence-gap pattern"
+                    persistence_promoted = True
+
                 self.recent_analysis_windows += 1
                 if results and 0 < confidence < 0.75:
                     self.recent_low_conf_hits += 1
@@ -1193,6 +1263,8 @@ class BalancedChoppyDetector:
 
                 # De-duplicate repeated windows from the same glitch burst.
                 active_methods = tuple(sorted(method for method, result in results.items() if result.get('choppy')))
+                if persistence_promoted:
+                    active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
                 current_signature = "|".join(active_methods)
                 time_since_event = current_time - self.last_detection_event_time
                 if (
@@ -1229,6 +1301,8 @@ class BalancedChoppyDetector:
                 active_methods = [
                     method for method, result in results.items() if result.get('choppy')
                 ]
+                if persistence_promoted:
+                    active_methods = sorted(set(active_methods) | {"silence_gaps_persistent"})
                 should_alert, detection_count, time_span, cooldown_remaining = self.should_send_alert()
                 self.emit_event(
                     "glitch.detected",

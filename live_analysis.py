@@ -114,11 +114,11 @@ APPROACHES = {
 ALERT_CONFIG = {
     'detections_for_alert': 6,      # Number of detections needed to trigger alert
     'alert_cooldown_ms': resolve_alert_cooldown_ms(),  # Minimum time between alerts (milliseconds)
-    'detection_window_seconds': 90, # Time window to count detections in
+    'detection_window_seconds': 120, # Time window to count detections in
     'confidence_threshold': 70,     # Minimum confidence for counting detection
     'clean_audio_reset_seconds': 60, # Seconds of clean audio to reset episode
     'event_dedup_seconds': 0.9,     # Suppress duplicate hits from one burst
-    'fast_alert_burst_detections': 3,    # Fast path for obvious glitches
+    'fast_alert_burst_detections': 4,    # Fast path for obvious glitches
     'fast_alert_window_seconds': 15,     # Time window for fast path
     'fast_alert_min_confidence': 75,     # Confidence required for fast path
     'log_possible_glitches': True,       # Show occasional low-confidence hints
@@ -491,6 +491,9 @@ class BalancedChoppyDetector:
         
     def establish_baseline(self, audio):
         """Learn what normal audio levels look like"""
+        if self.baseline_stats['established_baseline']:
+            # Freeze baseline after initial lock to avoid long-session drift.
+            return
         rms = np.sqrt(np.mean(audio**2))
         if rms > THRESHOLDS['min_audio_level']:
             self.baseline_stats['rms_history'].append(rms)

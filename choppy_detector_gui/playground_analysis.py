@@ -74,6 +74,22 @@ class MarkerAlignmentSummary:
     outside_marker_hits: int
 
 
+@dataclass
+class BurstInterval:
+    start_ms: int
+    end_ms: int
+
+
+@dataclass
+class BurstAlignmentSummary:
+    human_burst_count: int
+    detector_burst_count: int
+    human_bursts_covered: int
+    human_bursts_missed: int
+    detector_bursts_overlapping_human: int
+    detector_bursts_outside_human: int
+
+
 def write_compact_report(
     result: PlaygroundAnalysisResult,
     settings: AppSettings,
@@ -300,6 +316,34 @@ def build_compact_report(
             f"outside_marker_hits:{marker_summary.outside_marker_hits},"
             f"hit_rate_pct:{hit_rate:.1f}"
         )
+        burst_summary, human_bursts, detector_bursts = summarize_burst_alignment(
+            rows=rows,
+            markers_ms=normalized_markers,
+            marker_window_ms=marker_window_ms,
+        )
+        human_recall_pct = (
+            (burst_summary.human_bursts_covered / burst_summary.human_burst_count) * 100.0
+            if burst_summary.human_burst_count > 0
+            else 0.0
+        )
+        detector_precision_pct = (
+            (burst_summary.detector_bursts_overlapping_human / burst_summary.detector_burst_count) * 100.0
+            if burst_summary.detector_burst_count > 0
+            else 0.0
+        )
+        lines.append(
+            "burst_alignment="
+            f"human_bursts:{burst_summary.human_burst_count},"
+            f"detector_bursts:{burst_summary.detector_burst_count},"
+            f"human_covered:{burst_summary.human_bursts_covered},"
+            f"human_missed:{burst_summary.human_bursts_missed},"
+            f"detector_overlap:{burst_summary.detector_bursts_overlapping_human},"
+            f"detector_outside:{burst_summary.detector_bursts_outside_human},"
+            f"human_recall_pct:{human_recall_pct:.1f},"
+            f"detector_precision_pct:{detector_precision_pct:.1f}"
+        )
+        lines.append(f"human_bursts_ms={format_burst_intervals(human_bursts)}")
+        lines.append(f"detector_bursts_ms={format_burst_intervals(detector_bursts)}")
 
     if extended_report:
         near_threshold_rows = [
@@ -860,6 +904,84 @@ def summarize_marker_alignment(
         marker_misses=marker_misses,
         outside_marker_hits=outside_marker_hits,
     )
+
+
+def summarize_burst_alignment(
+    *,
+    rows: list[PlaygroundTelemetryRow],
+    markers_ms: list[int],
+    marker_window_ms: int,
+) -> tuple[BurstAlignmentSummary, list[BurstInterval], list[BurstInterval]]:
+    marker_intervals = [
+        BurstInterval(
+            start_ms=max(0, marker - marker_window_ms),
+            end_ms=max(0, marker + marker_window_ms),
+        )
+        for marker in markers_ms
+    ]
+    human_bursts = merge_burst_intervals(marker_intervals, bridge_ms=max(0, int(marker_window_ms)))
+
+    detector_intervals = [
+        BurstInterval(start_ms=int(row.start_ms), end_ms=int(row.end_ms))
+        for row in rows
+        if row.deduped_detection
+    ]
+    detector_bursts = merge_burst_intervals(detector_intervals, bridge_ms=1000)
+
+    human_bursts_covered = sum(
+        1 for hb in human_bursts if any(intervals_overlap(hb, db) for db in detector_bursts)
+    )
+    human_bursts_missed = max(0, len(human_bursts) - human_bursts_covered)
+
+    detector_bursts_overlapping_human = sum(
+        1 for db in detector_bursts if any(intervals_overlap(db, hb) for hb in human_bursts)
+    )
+    detector_bursts_outside_human = max(0, len(detector_bursts) - detector_bursts_overlapping_human)
+
+    return (
+        BurstAlignmentSummary(
+            human_burst_count=len(human_bursts),
+            detector_burst_count=len(detector_bursts),
+            human_bursts_covered=human_bursts_covered,
+            human_bursts_missed=human_bursts_missed,
+            detector_bursts_overlapping_human=detector_bursts_overlapping_human,
+            detector_bursts_outside_human=detector_bursts_outside_human,
+        ),
+        human_bursts,
+        detector_bursts,
+    )
+
+
+def merge_burst_intervals(
+    intervals: list[BurstInterval],
+    *,
+    bridge_ms: int,
+) -> list[BurstInterval]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals, key=lambda it: (it.start_ms, it.end_ms))
+    merged: list[BurstInterval] = [BurstInterval(start_ms=ordered[0].start_ms, end_ms=ordered[0].end_ms)]
+    for current in ordered[1:]:
+        tail = merged[-1]
+        if current.start_ms <= (tail.end_ms + max(0, int(bridge_ms))):
+            tail.end_ms = max(tail.end_ms, current.end_ms)
+            continue
+        merged.append(BurstInterval(start_ms=current.start_ms, end_ms=current.end_ms))
+    return merged
+
+
+def intervals_overlap(a: BurstInterval, b: BurstInterval) -> bool:
+    return a.start_ms <= b.end_ms and b.start_ms <= a.end_ms
+
+
+def format_burst_intervals(intervals: list[BurstInterval], *, max_items: int = 80) -> str:
+    if not intervals:
+        return "none"
+    shown = intervals[:max_items]
+    text = ";".join(f"{int(it.start_ms)}-{int(it.end_ms)}" for it in shown)
+    if len(intervals) > max_items:
+        text = f"{text};...(+{len(intervals) - max_items})"
+    return text
 
 
 def marker_sidecar_path(wav_path: str | Path) -> Path:

@@ -35,6 +35,9 @@ Improve Playground so human listening can be compared against detector output wi
   - marker_misses
   - outside_marker_hits
   - hit_rate / miss_rate style derived metrics
+- Include a compact marker snapshot in each report for portability:
+  - marker metadata (provided flag, marker count, latency setting, match window setting)
+  - marker points list (timestamp ms), truncated if very long
 - If no markers, report `marker_alignment=not_provided`.
 
 ## Phase 2 (visual UX)
@@ -56,7 +59,7 @@ Improve Playground so human listening can be compared against detector output wi
 - Optional marker severity/confidence tags for richer tuning datasets.
 
 ## Open questions
-- Keep marker sidecar as JSON only, or also embed marker summary in report for portability?
+- Marker sidecar + report embedding is the default approach (both, not either/or).
 - Should latency compensation be global setting or Playground-only control?
 
 ## Initial implementation scope for this branch

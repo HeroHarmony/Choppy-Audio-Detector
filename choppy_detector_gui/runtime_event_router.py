@@ -40,6 +40,12 @@ class MonitoringUiUpdate:
 
 
 @dataclass(frozen=True)
+class AudioBadgeUpdate:
+    label: str
+    color_hex: str
+
+
+@dataclass(frozen=True)
 class RuntimeEventRoute:
     consume_event: bool = False
     append_console: list[str] = field(default_factory=list)
@@ -48,6 +54,7 @@ class RuntimeEventRoute:
     clear_audio_watchdog_warned: bool = False
     audio_level: AudioLevelUpdate | None = None
     monitoring_ui_update: MonitoringUiUpdate | None = None
+    audio_badge_update: AudioBadgeUpdate | None = None
     obs_refresh_request: ObsRefreshRequest | None = None
     trigger_obs_auto_refresh: bool = False
     append_formatted_event: bool = True
@@ -116,7 +123,8 @@ def route_runtime_event(event_type: str, data: dict[str, object], ctx: RuntimeEv
             monitoring_ui_update=MonitoringUiUpdate(
                 active=True,
                 status_label="running_device_summary",
-            )
+            ),
+            audio_badge_update=AudioBadgeUpdate(label="Live", color_hex="#3fcf5e"),
         )
 
     if event_type in {"monitoring.stopped", "monitoring.stopped_by_request"}:
@@ -127,7 +135,8 @@ def route_runtime_event(event_type: str, data: dict[str, object], ctx: RuntimeEv
                 reset_audio_watchdog_warned=True,
                 clear_monitoring_started_at=True,
                 restart_meter_preview=True,
-            )
+            ),
+            audio_badge_update=AudioBadgeUpdate(label="Idle", color_hex="#8f8f8f"),
         )
 
     if event_type in {"monitoring.error", "audio.stream_error", "detector.error"}:
@@ -135,7 +144,26 @@ def route_runtime_event(event_type: str, data: dict[str, object], ctx: RuntimeEv
             monitoring_ui_update=MonitoringUiUpdate(
                 active=False,
                 status_label="Error",
-            )
+            ),
+            audio_badge_update=AudioBadgeUpdate(label="Error", color_hex="#ff5c5c"),
+        )
+
+    if event_type == "audio.stale":
+        return RuntimeEventRoute(
+            audio_badge_update=AudioBadgeUpdate(label="Stale", color_hex="#ff5c5c"),
+            append_formatted_event=False,
+        )
+
+    if event_type == "audio.recovered":
+        return RuntimeEventRoute(
+            audio_badge_update=AudioBadgeUpdate(label="Live", color_hex="#3fcf5e"),
+            append_formatted_event=False,
+        )
+
+    if event_type == "audio.stream_restarting":
+        return RuntimeEventRoute(
+            audio_badge_update=AudioBadgeUpdate(label="Restarting", color_hex="#ff9c4a"),
+            append_formatted_event=False,
         )
 
     return RuntimeEventRoute()

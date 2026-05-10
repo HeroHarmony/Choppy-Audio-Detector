@@ -35,6 +35,11 @@ class RuntimeEventPresenter:
 
         if route.monitoring_ui_update is not None:
             self._apply_monitoring_ui_update(route.monitoring_ui_update)
+        if route.audio_badge_update is not None:
+            self.window.set_audio_status_badge(
+                route.audio_badge_update.label,
+                route.audio_badge_update.color_hex,
+            )
 
     def _apply_monitoring_ui_update(self, update) -> None:
         self.window._monitoring_ui_active = update.active

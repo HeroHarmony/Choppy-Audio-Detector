@@ -284,6 +284,11 @@ class BalancedChoppyDetector:
         self.last_audio_callback_status = ""
         self.audio_callback_errors = 0
         self.last_stale_audio_warning_time = 0.0
+        self.audio_stale_active = False
+        self.audio_stale_started_at = 0.0
+        self.stream_restart_requested = False
+        self.stream_restart_requested_at = 0.0
+        self.stream_restart_stale_seconds = 0.0
         self.detection_loop_errors = 0
         self.last_detection_error_time = 0.0
         self.last_detection_traceback = ""
@@ -1190,6 +1195,17 @@ class BalancedChoppyDetector:
 
             current_time = time_module.time()
             self.last_audio_callback_time = current_time
+            if self.audio_stale_active:
+                stale_seconds = max(0.0, current_time - self.audio_stale_started_at)
+                self.audio_stale_active = False
+                self.audio_stale_started_at = 0.0
+                self.last_stale_audio_warning_time = current_time
+                self.stream_restart_requested = False
+                self.stream_restart_requested_at = 0.0
+                self.stream_restart_stale_seconds = 0.0
+                print(f"[{self._timestamp()}] Audio callback recovered after {stale_seconds:.1f}s")
+                self.emit_event("audio.recovered", seconds=stale_seconds)
+                self.log_file_event("info", "audio.recovered", seconds=f"{stale_seconds:.1f}", device=self.audio_device)
             if not self._audio_callback_started:
                 self._audio_callback_started = True
                 self.emit_event("audio.callback_started")
@@ -1277,16 +1293,22 @@ class BalancedChoppyDetector:
                     self.recent_analysis_windows = 0
                     self.recent_low_conf_hits = 0
 
+                stale_warn_threshold_sec = 5.0
+                stale_restart_threshold_sec = 12.0
+                stale_warn_repeat_sec = 10.0
                 if (
                     time_since_callback is not None and
-                    time_since_callback >= 5.0 and
-                    (current_time - self.last_stale_audio_warning_time) >= 10.0
+                    time_since_callback >= stale_warn_threshold_sec and
+                    (current_time - self.last_stale_audio_warning_time) >= stale_warn_repeat_sec
                 ):
                     device_label = (
                         self.device_info.get('name')
                         if isinstance(self.device_info, dict)
                         else self.audio_device
                     )
+                    if not self.audio_stale_active:
+                        self.audio_stale_active = True
+                        self.audio_stale_started_at = current_time - time_since_callback
                     print(
                         f"[{self._timestamp()}] [WARN] No fresh audio callback data for "
                         f"{time_since_callback:.1f}s; stream may be stalled. "
@@ -1304,6 +1326,34 @@ class BalancedChoppyDetector:
                         device=device_label,
                     )
                     self.last_stale_audio_warning_time = current_time
+                if (
+                    time_since_callback is not None
+                    and time_since_callback >= stale_restart_threshold_sec
+                    and not self.stream_restart_requested
+                ):
+                    self.stream_restart_requested = True
+                    self.stream_restart_requested_at = current_time
+                    self.stream_restart_stale_seconds = float(time_since_callback)
+                    print(
+                        f"[{self._timestamp()}] [WARN] Audio callback stale for {time_since_callback:.1f}s; "
+                        "requesting input stream restart."
+                    )
+                    self.emit_event(
+                        "audio.stream_restarting",
+                        reason="stale_callback",
+                        seconds=time_since_callback,
+                    )
+                    self.log_file_event(
+                        "warn",
+                        "audio.stream_restarting",
+                        reason="stale_callback",
+                        seconds=f"{time_since_callback:.1f}",
+                        device=self.audio_device,
+                    )
+
+                if self.stream_restart_requested:
+                    # Wait for stream recycle instead of scoring stale/frozen audio.
+                    continue
 
                 # Analyze audio
                 results = self.analyze_audio(audio)
@@ -1623,6 +1673,25 @@ class BalancedChoppyDetector:
                         )
                         self.log_file_event("info", "audio.stream_opened", device=self.audio_device)
                         while self.running:
+                            if self.stream_restart_requested:
+                                stale_seconds = float(self.stream_restart_stale_seconds or 0.0)
+                                print(
+                                    f"[{self._timestamp()}] Restarting audio input stream after "
+                                    f"{stale_seconds:.1f}s stale callback data."
+                                )
+                                self.log_file_event(
+                                    "warn",
+                                    "audio.stream_restart_requested",
+                                    reason="stale_callback",
+                                    stale_seconds=f"{stale_seconds:.1f}",
+                                    device=self.audio_device,
+                                )
+                                with self.lock:
+                                    self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+                                self.stream_restart_requested = False
+                                self.stream_restart_requested_at = 0.0
+                                self.stream_restart_stale_seconds = 0.0
+                                break
                             if self.detection_thread and not self.detection_thread.is_alive():
                                 print(f"[{self._timestamp()}] [WARN] Detection loop thread stopped; restarting")
                                 self._start_detection_thread()

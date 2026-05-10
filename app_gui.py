@@ -309,13 +309,17 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
+        self.global_audio_status_badge = QLabel("Audio: Idle")
         self.global_twitch_status_badge = QLabel("Twitch: Idle")
         self.global_obs_status_badge = QLabel("OBS: Disconnected")
         self.statusBar().setStyleSheet("QStatusBar::item { border: none; }")
+        self.statusBar().addPermanentWidget(self.global_audio_status_badge)
         self.statusBar().addPermanentWidget(self.global_twitch_status_badge)
         self.statusBar().addPermanentWidget(self.global_obs_status_badge)
+        self.audio_badge_presenter = StatusBadgePresenter(self.global_audio_status_badge, prefix="Audio")
         self.twitch_badge_presenter = StatusBadgePresenter(self.global_twitch_status_badge, prefix="Twitch")
         self.obs_badge_presenter = StatusBadgePresenter(self.global_obs_status_badge, prefix="OBS")
+        self.set_audio_status_badge("Idle", "#8f8f8f")
         build_main_tab_ui(self)
         build_responses_tab_ui(self)
         build_settings_tab_ui(self)
@@ -482,6 +486,9 @@ class MainWindow(QMainWindow):
 
     def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
         self.twitch_badge_presenter.apply(label, color_hex)
+
+    def set_audio_status_badge(self, label: str, color_hex: str) -> None:
+        self.audio_badge_presenter.apply(label, color_hex)
 
     def _is_chat_commands_connected(self) -> bool:
         bot = getattr(self.command_service, "bot", None)

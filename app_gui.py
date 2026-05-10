@@ -7,6 +7,7 @@ import argparse
 from collections import deque
 import math
 from pathlib import Path
+import re
 import sys
 import threading
 import time
@@ -683,6 +684,12 @@ class MainWindow(QMainWindow):
             f"{loaded.path} | {loaded.sample_rate} Hz | {loaded.channel_count} channel(s) | "
             f"{loaded.duration_ms / 1000.0:.2f}s"
         )
+        inferred = self.infer_expected_outcome_from_filename(loaded.path)
+        if inferred is not None and self.playground_preview_on_done.isChecked():
+            self.playground_preview_on_done.setChecked(False)
+            self.append_console(
+                "Playground preview-on-done disabled because filename contains an expected-outcome tag."
+            )
         self.playground_analysis_summary.setPlainText("File loaded. Run analysis to inspect telemetry.")
         self.playground_table.setRowCount(0)
         self.append_console(f"Playground loaded WAV file: {loaded.path}")
@@ -816,9 +823,15 @@ class MainWindow(QMainWindow):
             self.playground_analyze_button.setEnabled(True)
             self.update_playground_controls()
 
-        expected_glitch = self.prompt_playground_expected_outcome(
+        expected_glitch, auto_expected_source = self.resolve_playground_expected_outcome(
+            result.file.path,
             allow_preview=bool(self.playground_preview_on_done.isChecked()),
         )
+        if auto_expected_source is not None:
+            self.append_console(
+                f"Playground expected outcome auto-set from filename tag: "
+                f"{'glitch' if expected_glitch else 'clean'} ({auto_expected_source})"
+            )
         report_stem = Path(result.file.path).stem
         self.render_playground_result(
             result,
@@ -1020,6 +1033,30 @@ class MainWindow(QMainWindow):
             self.playground_analysis_summary.setPlainText(
                 f"{self.playground_analysis_summary.toPlainText()} | Prod report: {prod_report_path}"
             )
+
+    def infer_expected_outcome_from_filename(self, path_text: str) -> tuple[bool, str] | None:
+        filename = Path(path_text).name
+        lowered = filename.lower()
+
+        if re.search(r"\[(?:\s*no[\s_-]*glitch\s*)\]", lowered):
+            return False, "[no glitch]"
+        if re.search(r"\[(?:\s*glitchy\s*)\]", lowered):
+            return True, "[glitchy]"
+        return None
+
+    def resolve_playground_expected_outcome(
+        self,
+        file_path: str,
+        *,
+        allow_preview: bool,
+    ) -> tuple[bool, str | None]:
+        inferred = self.infer_expected_outcome_from_filename(file_path)
+        if inferred is not None:
+            if allow_preview and SOUNDDEVICE_AVAILABLE and self._playground_audio_file is not None:
+                self.stop_playground_audio()
+                self.play_playground_audio()
+            return inferred[0], inferred[1]
+        return self.prompt_playground_expected_outcome(allow_preview=allow_preview), None
 
     def prompt_playground_expected_outcome(self, *, allow_preview: bool) -> bool:
         started_preview = False

@@ -130,6 +130,8 @@ ALERT_CONFIG = {
     'twitch_send_pause_seconds': 60.0,   # Circuit-breaker pause window
 }
 
+STREAM_START_WARMUP_IGNORE_SECONDS = 3.0
+
 # More reasonable thresholds for streaming glitch detection
 THRESHOLDS = {
     'silence_ratio': 0.60,         # Only flag if >60% silence (major dropouts)
@@ -293,6 +295,8 @@ class BalancedChoppyDetector:
         self.last_detection_error_time = 0.0
         self.last_detection_traceback = ""
         self.detection_thread = None
+        self.stream_warmup_ignore_seconds = float(STREAM_START_WARMUP_IGNORE_SECONDS)
+        self.stream_warmup_until = 0.0
         self.alert_queue = Queue(maxsize=32)
         self.alert_sender_thread = None
         self.twitch_connection_thread = None
@@ -1118,7 +1122,7 @@ class BalancedChoppyDetector:
         cooldown_seconds = ALERT_CONFIG['alert_cooldown_ms'] / 1000.0
         if time_since_last_alert < cooldown_seconds:
             cooldown_remaining = cooldown_seconds - time_since_last_alert
-            return False, 0, 0, cooldown_remaining
+            return False, 0, 0, cooldown_remaining, "cooldown", 0
 
         # Count recent high-confidence detections
         cutoff_time = current_time - ALERT_CONFIG['detection_window_seconds']
@@ -1131,7 +1135,7 @@ class BalancedChoppyDetector:
         time_span_minutes = ALERT_CONFIG['detection_window_seconds'] / 60
 
         if detection_count >= ALERT_CONFIG['detections_for_alert']:
-            return True, detection_count, time_span_minutes, 0
+            return True, detection_count, time_span_minutes, 0, "standard_window", 0
 
         # Fast-burst path: trigger quickly when several strong primary detections
         # happen in a short period.
@@ -1147,9 +1151,9 @@ class BalancedChoppyDetector:
         burst_count = len(burst_detections)
         burst_time_span_minutes = ALERT_CONFIG['fast_alert_window_seconds'] / 60
         if burst_count >= ALERT_CONFIG['fast_alert_burst_detections']:
-            return True, burst_count, burst_time_span_minutes, 0
+            return True, burst_count, burst_time_span_minutes, 0, "fast_burst", burst_count
 
-        return False, detection_count, time_span_minutes, 0
+        return False, detection_count, time_span_minutes, 0, "threshold_pending", burst_count
 
     def record_detection(self, confidence, reasons, primary_hit):
         """Record a detection for alert tracking"""
@@ -1354,6 +1358,9 @@ class BalancedChoppyDetector:
                 if self.stream_restart_requested:
                     # Wait for stream recycle instead of scoring stale/frozen audio.
                     continue
+                if current_time < self.stream_warmup_until:
+                    # Ignore startup/reopen transients for a short period.
+                    continue
 
                 # Analyze audio
                 results = self.analyze_audio(audio)
@@ -1527,7 +1534,7 @@ class BalancedChoppyDetector:
                 ]
                 if persistence_promoted:
                     active_methods = sorted(set(active_methods) | {"silence_gaps_persistent"})
-                should_alert, detection_count, time_span, cooldown_remaining = self.should_send_alert()
+                should_alert, detection_count, time_span, cooldown_remaining, alert_path, burst_count = self.should_send_alert()
                 self.emit_event(
                     "glitch.detected",
                     confidence=round(confidence * 100, 1),
@@ -1551,6 +1558,19 @@ class BalancedChoppyDetector:
                         print(f"    {method}: {result.get('description', result['score'])}")
 
                 if should_alert:
+                    if alert_path == "standard_window":
+                        print(
+                            f"    Alert path: standard window "
+                            f"({detection_count}/{ALERT_CONFIG['detections_for_alert']} in "
+                            f"{ALERT_CONFIG['detection_window_seconds']}s)"
+                        )
+                    elif alert_path == "fast_burst":
+                        print(
+                            f"    Alert path: fast burst "
+                            f"({burst_count}/{ALERT_CONFIG['fast_alert_burst_detections']} in "
+                            f"{ALERT_CONFIG['fast_alert_window_seconds']}s, "
+                            f">= {ALERT_CONFIG['fast_alert_min_confidence']}%)"
+                        )
                     is_first_alert = not self.current_episode_started
                     if self.queue_twitch_alert(detection_count, time_span, is_first_alert):
                         self.last_alert_time = current_time
@@ -1577,6 +1597,10 @@ class BalancedChoppyDetector:
                         print(
                             f"    Recent detections: {detection_count}/{ALERT_CONFIG['detections_for_alert']} "
                             f"(need {ALERT_CONFIG['detections_for_alert']} for alert)"
+                        )
+                        print(
+                            f"    Fast-burst detections: {burst_count}/{ALERT_CONFIG['fast_alert_burst_detections']} "
+                            f"(window {ALERT_CONFIG['fast_alert_window_seconds']}s)"
                         )
 
                 last_detection_time = current_time
@@ -1631,6 +1655,7 @@ class BalancedChoppyDetector:
         print(f"  Confidence threshold: {ALERT_CONFIG['confidence_threshold']}%")
         print(f"  De-dup window: {ALERT_CONFIG['event_dedup_seconds']}s")
         print(f"  Episode reset after: {ALERT_CONFIG['clean_audio_reset_seconds']}s clean audio")
+        print(f"  Stream-start warm-up ignore: {self.stream_warmup_ignore_seconds:.1f}s")
         print(f"  Log low-confidence possible glitches: {ALERT_CONFIG['log_possible_glitches']}")
         print()
 
@@ -1664,6 +1689,11 @@ class BalancedChoppyDetector:
                         callback=self.audio_callback
                     ):
                         print(f"[{self._timestamp()}] Audio input stream opened")
+                        self.stream_warmup_until = time_module.time() + self.stream_warmup_ignore_seconds
+                        print(
+                            f"[{self._timestamp()}] Ignoring detections for "
+                            f"{self.stream_warmup_ignore_seconds:.1f}s after stream open."
+                        )
                         self.emit_event(
                             "audio.stream_opened",
                             device=self.device_info.get('name') if isinstance(self.device_info, dict) else self.audio_device,

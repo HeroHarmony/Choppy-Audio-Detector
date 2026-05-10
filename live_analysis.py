@@ -72,6 +72,17 @@ SAMPLE_RATE = 44100
 CHUNK_SIZE = 4096  # Larger chunks for stability
 BUFFER_DURATION = 2.0  # Longer buffer for better analysis
 BUFFER_SIZE = int(SAMPLE_RATE * BUFFER_DURATION)
+DETECTION_LOOP_INTERVAL_SEC = 0.2  # 5Hz analysis cadence
+
+
+def production_window_ms() -> int:
+    """Canonical live detection window used by runtime analysis."""
+    return int(round(float(BUFFER_DURATION) * 1000.0))
+
+
+def production_step_ms() -> int:
+    """Canonical live detection step used by runtime analysis."""
+    return int(round(float(DETECTION_LOOP_INTERVAL_SEC) * 1000.0))
 
 # Detection approaches - focused on streaming glitches
 APPROACHES = {
@@ -1132,7 +1143,7 @@ class BalancedChoppyDetector:
         
         while self.running:
             try:
-                time.sleep(0.2)  # 5Hz analysis rate
+                time.sleep(DETECTION_LOOP_INTERVAL_SEC)
 
                 current_time = time_module.time()
                 if current_time - last_detection_time < detection_cooldown:

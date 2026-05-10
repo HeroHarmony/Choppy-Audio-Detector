@@ -688,13 +688,30 @@ class MainWindow(QMainWindow):
         self.append_console(f"Playground loaded WAV file: {loaded.path}")
         self.update_playground_controls()
 
+    def _playground_prod_timing(self) -> tuple[int, int]:
+        try:
+            import live_analysis
+
+            window_ms = int(live_analysis.production_window_ms())
+            step_ms = int(live_analysis.production_step_ms())
+            return max(100, window_ms), max(10, step_ms)
+        except Exception:
+            return 2000, 200
+
     def update_playground_controls(self) -> None:
         has_file = self._playground_audio_file is not None
         live_running = self._playground_live_running
+        prod_window_ms, prod_step_ms = self._playground_prod_timing()
         self.playground_browse_button.setEnabled(not live_running)
         self.playground_load_button.setEnabled(not live_running)
         self.playground_file_path.setEnabled(not live_running)
         self.playground_preview_on_done.setEnabled(has_file and not live_running)
+        self.playground_also_prod_timing.setEnabled(has_file and not live_running)
+        self.playground_also_prod_timing.setToolTip(
+            "When enabled and current timing is not "
+            f"{prod_window_ms}/{prod_step_ms},\n"
+            "generate an additional report using live production timing."
+        )
         self.playground_analyze_button.setEnabled(has_file and not live_running)
         self.playground_preview_button.setEnabled(has_file and SOUNDDEVICE_AVAILABLE and not live_running)
         self.playground_preview_button.setText("Stop Preview" if self._playground_is_playing else "Preview Sound")
@@ -774,6 +791,11 @@ class MainWindow(QMainWindow):
         step_ms = int(self.playground_step_ms_spin.value())
         warmup_ms = int(self.playground_warmup_ms_spin.value())
         channel_idx = max(0, self.playground_channel_spin.value() - 1)
+        prod_window_ms, prod_step_ms = self._playground_prod_timing()
+        also_prod_timing = bool(self.playground_also_prod_timing.isChecked())
+        run_prod_timing = also_prod_timing and (
+            window_ms != prod_window_ms or step_ms != prod_step_ms
+        )
 
         self.playground_analysis_summary.setPlainText("Running analysis...")
         self.playground_analyze_button.setEnabled(False)
@@ -803,7 +825,31 @@ class MainWindow(QMainWindow):
             expected_glitch=expected_glitch,
             report_stem=report_stem,
             source_label="file",
+            update_ui=True,
         )
+        if run_prod_timing:
+            try:
+                prod_result = analyze_wav_file(
+                    loaded,
+                    self.settings,
+                    channel_index=channel_idx,
+                    window_ms=prod_window_ms,
+                    step_ms=prod_step_ms,
+                    warmup_ms=warmup_ms,
+                )
+            except Exception as exc:
+                QMessageBox.warning(self, "Prod timing analysis failed", str(exc))
+                return
+            prod_report_path, _, _ = self.render_playground_result(
+                prod_result,
+                expected_glitch=expected_glitch,
+                report_stem=report_stem,
+                source_label="file-prod",
+                update_ui=False,
+            )
+            self.playground_analysis_summary.setPlainText(
+                f"{self.playground_analysis_summary.toPlainText()} | Prod report: {prod_report_path}"
+            )
 
     def start_live_playground_report(self) -> None:
         if not SOUNDDEVICE_AVAILABLE:
@@ -924,6 +970,11 @@ class MainWindow(QMainWindow):
         window_ms = int(self.playground_window_ms_spin.value())
         step_ms = int(self.playground_step_ms_spin.value())
         warmup_ms = int(self.playground_warmup_ms_spin.value())
+        prod_window_ms, prod_step_ms = self._playground_prod_timing()
+        also_prod_timing = bool(self.playground_also_prod_timing.isChecked())
+        run_prod_timing = also_prod_timing and (
+            window_ms != prod_window_ms or step_ms != prod_step_ms
+        )
         self.playground_analysis_summary.setPlainText("Running live capture analysis...")
         try:
             result = analyze_wav_file(
@@ -944,7 +995,31 @@ class MainWindow(QMainWindow):
             expected_glitch=expected_glitch,
             report_stem=live_stem,
             source_label="live",
+            update_ui=True,
         )
+        if run_prod_timing:
+            try:
+                prod_result = analyze_wav_file(
+                    loaded,
+                    self.settings,
+                    channel_index=0,
+                    window_ms=prod_window_ms,
+                    step_ms=prod_step_ms,
+                    warmup_ms=warmup_ms,
+                )
+            except Exception as exc:
+                QMessageBox.warning(self, "Prod timing analysis failed", str(exc))
+                return
+            prod_report_path, _, _ = self.render_playground_result(
+                prod_result,
+                expected_glitch=expected_glitch,
+                report_stem=live_stem,
+                source_label="live-prod",
+                update_ui=False,
+            )
+            self.playground_analysis_summary.setPlainText(
+                f"{self.playground_analysis_summary.toPlainText()} | Prod report: {prod_report_path}"
+            )
 
     def prompt_playground_expected_outcome(self, *, allow_preview: bool) -> bool:
         started_preview = False
@@ -974,36 +1049,38 @@ class MainWindow(QMainWindow):
         expected_glitch: bool,
         report_stem: str,
         source_label: str,
-    ) -> None:
+        update_ui: bool = True,
+    ) -> tuple[Path, str, bool]:
         rows = result.rows
-        self.playground_table.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            values = [
-                str(row.index),
-                str(row.start_ms),
-                str(row.end_ms),
-                f"{row.rms_dbfs:.2f}",
-                f"{row.confidence_pct:.1f}",
-                "Y" if row.high_confidence else "",
-                "Y" if row.primary_hit else "",
-                "Y" if row.deduped_detection else "",
-                "Y" if row.suppressed_by_warmup else "",
-                row.methods,
-                f"{row.silence_ratio:.3f}",
-                str(row.gap_count),
-                f"{row.max_gap_ms:.1f}",
-                f"{row.envelope_score:.3f}",
-                f"{row.modulation_strength:.3f}",
-                f"{row.modulation_freq_hz:.2f}",
-                f"{row.modulation_depth:.3f}",
-                f"{row.modulation_peak_concentration:.3f}",
-                row.reasons,
-            ]
-            for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                self.playground_table.setItem(row_index, col, item)
+        if update_ui:
+            self.playground_table.setRowCount(len(rows))
+            for row_index, row in enumerate(rows):
+                values = [
+                    str(row.index),
+                    str(row.start_ms),
+                    str(row.end_ms),
+                    f"{row.rms_dbfs:.2f}",
+                    f"{row.confidence_pct:.1f}",
+                    "Y" if row.high_confidence else "",
+                    "Y" if row.primary_hit else "",
+                    "Y" if row.deduped_detection else "",
+                    "Y" if row.suppressed_by_warmup else "",
+                    row.methods,
+                    f"{row.silence_ratio:.3f}",
+                    str(row.gap_count),
+                    f"{row.max_gap_ms:.1f}",
+                    f"{row.envelope_score:.3f}",
+                    f"{row.modulation_strength:.3f}",
+                    f"{row.modulation_freq_hz:.2f}",
+                    f"{row.modulation_depth:.3f}",
+                    f"{row.modulation_peak_concentration:.3f}",
+                    row.reasons,
+                ]
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    self.playground_table.setItem(row_index, col, item)
 
-        self.playground_table.resizeColumnsToContents()
+            self.playground_table.resizeColumnsToContents()
         report_path = write_compact_report(
             result,
             self.settings,
@@ -1020,13 +1097,14 @@ class MainWindow(QMainWindow):
             eval_label = "FP"
         else:
             eval_label = "FN"
-        self.playground_analysis_summary.setPlainText(
-            f"Source: {source_label} | Windows: {len(rows)} | High-conf windows: {result.high_confidence_count} | "
-            f"Dedup detections: {result.deduped_detection_count} | "
-            f"Warm-up suppressed: {result.warmup_suppressed_count} | "
-            f"Max conf: {result.max_confidence_pct:.1f}% | Avg conf: {result.average_confidence_pct:.1f}% | "
-            f"Outcome: {eval_label} | Report: {report_path}"
-        )
+        if update_ui:
+            self.playground_analysis_summary.setPlainText(
+                f"Source: {source_label} | Windows: {len(rows)} | High-conf windows: {result.high_confidence_count} | "
+                f"Dedup detections: {result.deduped_detection_count} | "
+                f"Warm-up suppressed: {result.warmup_suppressed_count} | "
+                f"Max conf: {result.max_confidence_pct:.1f}% | Avg conf: {result.average_confidence_pct:.1f}% | "
+                f"Outcome: {eval_label} | Report: {report_path}"
+            )
         self.append_console(
             f"Playground {source_label} analysis complete: {result.file.path} "
             f"(channel {result.channel_index + 1}, window={result.window_ms}ms, step={result.step_ms}ms)"
@@ -1036,6 +1114,7 @@ class MainWindow(QMainWindow):
             f"detected={'glitch' if detected_glitch else 'clean'} ({eval_label})"
         )
         self.append_console(f"Playground report saved: {report_path}")
+        return report_path, eval_label, detected_glitch
 
     def save_templates(self) -> None:
         templates = collect_templates_from_controls(self)

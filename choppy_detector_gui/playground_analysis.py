@@ -84,6 +84,7 @@ def write_compact_report(
     extended_report: bool = False,
     markers_ms: list[int] | None = None,
     marker_window_ms: int = 450,
+    marker_latency_ms: int = 270,
 ) -> Path:
     report_text = build_compact_report(
         result,
@@ -92,6 +93,7 @@ def write_compact_report(
         extended_report=extended_report,
         markers_ms=markers_ms,
         marker_window_ms=marker_window_ms,
+        marker_latency_ms=marker_latency_ms,
     )
     reports_dir.mkdir(parents=True, exist_ok=True)
     stem = report_stem.strip() if isinstance(report_stem, str) else ""
@@ -111,6 +113,7 @@ def build_compact_report(
     extended_report: bool = False,
     markers_ms: list[int] | None = None,
     marker_window_ms: int = 450,
+    marker_latency_ms: int = 270,
 ) -> str:
     rows = result.rows
     high_conf_rows = [r for r in rows if r.high_confidence]
@@ -258,9 +261,26 @@ def build_compact_report(
         f"low_windows={low_windows_text}",
     ]
 
+    normalized_markers = sorted({max(0, int(round(v))) for v in (markers_ms or [])})
+    marker_points_text = "none"
+    if normalized_markers:
+        max_points = 120
+        shown = normalized_markers[:max_points]
+        marker_points_text = ",".join(str(v) for v in shown)
+        if len(normalized_markers) > max_points:
+            marker_points_text = f"{marker_points_text},...(+{len(normalized_markers) - max_points})"
+    lines.append(
+        "markers="
+        f"provided:{1 if normalized_markers else 0},"
+        f"count:{len(normalized_markers)},"
+        f"latency_ms:{max(0, int(marker_latency_ms))},"
+        f"match_window_ms:{max(0, int(marker_window_ms))}"
+    )
+    lines.append(f"marker_points_ms={marker_points_text}")
+
     marker_summary = summarize_marker_alignment(
         rows=rows,
-        markers_ms=markers_ms,
+        markers_ms=normalized_markers,
         marker_window_ms=marker_window_ms,
     )
     if marker_summary is None:

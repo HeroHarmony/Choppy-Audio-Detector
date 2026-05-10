@@ -1697,6 +1697,7 @@ class MainWindow(QMainWindow):
             extended_report=bool(self.playground_extended_report.isChecked()),
             markers_ms=markers_ms,
             marker_window_ms=int(self.playground_marker_match_ms_spin.value()),
+            marker_latency_ms=int(self.playground_marker_latency_ms_spin.value()),
         )
         detected_glitch = result.deduped_detection_count > 0
         if expected_glitch and detected_glitch:

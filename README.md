@@ -198,6 +198,7 @@ I'd like to point out that since this script is designed to monitor audio input,
 For deeper technical usage and tuning details, see:
 
 - [Technical Reference](docs/technical-reference.md)
+- [Playground Reference](docs/playground-reference.md)
 - [Build and Packaging Guide](docs/build-from-source.md)
 
 # Support

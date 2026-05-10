@@ -420,6 +420,7 @@ def analyze_wav_file(
     warmup_suppressed_count = 0
     deduped_detection_count = 0
     confidences: list[float] = []
+    silence_persistence_hits_ms: list[int] = []
     last_detection_ms = -10_000_000
     last_detection_signature = ""
     dedup_window_ms = float(live_analysis.ALERT_CONFIG.get("event_dedup_seconds", 0.9)) * 1000.0
@@ -434,14 +435,38 @@ def analyze_wav_file(
 
         results = detector.analyze_audio(window)
         confidence, reasons = detector.assess_glitch_confidence(results)
+        silence_result = results.get("silence_gaps", {}) if isinstance(results, dict) else {}
+        silence_choppy = bool((silence_result or {}).get("choppy", False))
+        silence_ratio = float((silence_result or {}).get("score", 0.0) or 0.0)
+        envelope_hit = bool((results.get("envelope_discontinuity", {}) or {}).get("choppy", False))
+        modulation_hit = bool((results.get("amplitude_modulation", {}) or {}).get("choppy", False))
+        persistence_promoted = False
+        start_ms = int(round((start / loaded.sample_rate) * 1000.0))
+        end_ms = int(round((end / loaded.sample_rate) * 1000.0))
+        persistence_candidate = (
+            silence_choppy
+            and silence_ratio >= (float(live_analysis.THRESHOLDS.get("silence_ratio", 0.60)) + 0.01)
+            and not envelope_hit
+            and 0.55 <= confidence < 0.75
+        )
+        silence_persistence_hits_ms = [t for t in silence_persistence_hits_ms if (start_ms - t) <= 2500]
+        if persistence_candidate:
+            silence_persistence_hits_ms.append(start_ms)
+        if len(silence_persistence_hits_ms) >= 3:
+            if modulation_hit:
+                confidence = max(confidence, 0.80)
+                reasons = f"{reasons}; Persistent silence-gap pattern corroborated by modulation"
+            else:
+                confidence = max(confidence, 0.78)
+                reasons = f"{reasons}; Persistent silence-gap pattern"
+            persistence_promoted = True
+
         confidence_pct = float(round(confidence * 100.0, 1))
         confidences.append(confidence_pct)
         high_confidence = bool(results) and confidence >= 0.75
         if high_confidence:
             high_confidence_count += 1
 
-        start_ms = int(round((start / loaded.sample_rate) * 1000.0))
-        end_ms = int(round((end / loaded.sample_rate) * 1000.0))
         suppressed_by_warmup = high_confidence and start_ms < int(warmup_ms)
         if suppressed_by_warmup:
             warmup_suppressed_count += 1
@@ -453,6 +478,8 @@ def analyze_wav_file(
                 if isinstance(result, dict) and bool(result.get("choppy"))
             )
         )
+        if persistence_promoted:
+            active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
         signature = "|".join(active_methods)
 
         deduped_detection = False

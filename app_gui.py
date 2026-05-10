@@ -824,6 +824,7 @@ class MainWindow(QMainWindow):
                 f"{len(loaded_files)} files loaded. Run batch analysis to inspect telemetry and save reports."
             )
         self.playground_table.setRowCount(0)
+        self.update_playground_table_height()
         self.update_playground_marker_status()
         self.append_console(
             f"Playground loaded {len(loaded_files)} WAV file(s): "
@@ -866,6 +867,18 @@ class MainWindow(QMainWindow):
             return
         markers = self._playground_current_markers()
         self.playground_marker_status.setText(f"Markers: {len(markers)}")
+
+    def update_playground_table_height(self) -> None:
+        row_count = int(self.playground_table.rowCount())
+        header_height = int(self.playground_table.horizontalHeader().height())
+        frame_height = int(self.playground_table.frameWidth()) * 2
+        rows_height = 0
+        for row in range(row_count):
+            rows_height += int(self.playground_table.rowHeight(row))
+        min_height = 180
+        target = max(min_height, header_height + frame_height + rows_height + 8)
+        self.playground_table.setMinimumHeight(target)
+        self.playground_table.setMaximumHeight(target)
 
     def _save_playground_markers_for_loaded(self) -> None:
         loaded = self._playground_audio_file
@@ -1608,6 +1621,8 @@ class MainWindow(QMainWindow):
                     self.playground_table.setItem(row_index, col, item)
 
             self.playground_table.resizeColumnsToContents()
+            self.playground_table.resizeRowsToContents()
+            self.update_playground_table_height()
         report_path = write_compact_report(
             result,
             self.settings,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QProgressBar,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QVBoxLayout,
@@ -21,6 +23,17 @@ from PySide6.QtWidgets import (
 def build_playground_tab(window) -> None:
     tab = QWidget()
     layout = QVBoxLayout(tab)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    layout.addWidget(scroll)
+
+    content = QWidget()
+    scroll.setWidget(content)
+    layout = QVBoxLayout(content)
+    layout.setContentsMargins(8, 8, 8, 8)
     layout.setSpacing(8)
 
     intro = QLabel(
@@ -258,6 +271,8 @@ def build_playground_tab(window) -> None:
     window.playground_table.verticalHeader().setVisible(False)
     window.playground_table.setAlternatingRowColors(True)
     window.playground_table.setSortingEnabled(False)
+    window.playground_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.playground_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     layout.addWidget(window.playground_table, stretch=1)
 
     window.tabs.addTab(tab, "Playground")

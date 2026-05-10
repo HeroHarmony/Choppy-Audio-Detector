@@ -48,6 +48,7 @@ def parse_chat_command(message: str, settings: ChatCommandSettings) -> ParsedCom
         normalize_command(settings.status_command): "status",
         normalize_command(settings.list_devices_command): "list_devices",
         normalize_command(settings.fix_command): "fix",
+        normalize_command(settings.rebuild_command): "rebuild_baseline",
     }
     action = exact_matches.get(text)
     if action:

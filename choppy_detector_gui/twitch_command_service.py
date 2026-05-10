@@ -216,7 +216,22 @@ class TwitchCommandService:
             if ok:
                 return f"Switching monitor device to {message.replace('Selected device ', '')}."
             return f"Could not switch device: {message}."
+        if action == "rebuild_baseline":
+            ok, message = self.runtime.rebuild_baseline(source="twitch", user=username)
+            if ok:
+                return self._render_rebuild_response(username=username)
+            return f"Could not rebuild baseline: {message}"
         return ""
+
+    def _render_rebuild_response(self, *, username: str) -> str:
+        template = str(self.settings.chat_commands.rebuild_response_template or "").strip()
+        if not template:
+            template = "Baseline relearn started."
+        try:
+            rendered = template.format(user=username)
+        except Exception:
+            rendered = template
+        return rendered[:500]
 
     def send_response(self, message: str) -> None:
         if not self.bot:

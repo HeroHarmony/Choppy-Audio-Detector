@@ -121,6 +121,23 @@ class ObsWebSocketService:
         except Exception:
             return []
 
+    def current_program_scene(self) -> str:
+        with self._lock:
+            client = self._client
+            connected = self._connected
+        if not connected or client is None:
+            return ""
+        try:
+            response = client.get_current_program_scene()
+        except Exception:
+            return ""
+        for attr in ("current_program_scene_name", "currentProgramSceneName"):
+            value = getattr(response, attr, "")
+            scene = str(value or "").strip()
+            if scene:
+                return scene
+        return ""
+
     def refresh_source(self, source_name: str, off_on_delay_ms: int = 500) -> tuple[bool, str]:
         return self.refresh_source_in_scene(source_name=source_name, scene_name="", off_on_delay_ms=off_on_delay_ms)
 

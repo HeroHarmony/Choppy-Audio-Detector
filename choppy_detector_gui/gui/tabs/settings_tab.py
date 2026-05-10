@@ -111,6 +111,7 @@ def build_settings_tab(window) -> None:
     window.status_command = QLineEdit()
     window.list_devices_command = QLineEdit()
     window.fix_command = QLineEdit()
+    window.rebuild_command = QLineEdit()
     window.switch_device_command_prefix = QLineEdit()
     for cmd_input in (
         window.start_command,
@@ -119,6 +120,7 @@ def build_settings_tab(window) -> None:
         window.status_command,
         window.list_devices_command,
         window.fix_command,
+        window.rebuild_command,
         window.switch_device_command_prefix,
     ):
         cmd_input.setMinimumWidth(150)
@@ -128,6 +130,7 @@ def build_settings_tab(window) -> None:
     commands_form.addRow("Status command", window.status_command)
     commands_form.addRow("List devices command", window.list_devices_command)
     commands_form.addRow("Refresh OBS Source", window.fix_command)
+    commands_form.addRow("Rebuild baseline", window.rebuild_command)
     commands_form.addRow("Switch device prefix", window.switch_device_command_prefix)
 
     window.allowed_chat_users = QPlainTextEdit()

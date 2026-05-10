@@ -21,7 +21,18 @@ def apply_obs_settings_to_controls(window) -> None:
     window.obs_auto_refresh_min_severity.setCurrentIndex(max(0, idx))
     window.obs_auto_refresh_cooldown_sec.setValue(obs_settings.auto_refresh_cooldown_sec)
     window.obs_refresh_off_on_delay_ms.setValue(obs_settings.refresh_off_on_delay_ms)
+    window.obs_baseline_rebuild_enabled.setChecked(obs_settings.baseline_rebuild_on_scene_exit_enabled)
+    window.obs_baseline_min_dwell_sec.setValue(obs_settings.baseline_rebuild_min_dwell_sec)
+    window.obs_baseline_exit_delay_sec.setValue(obs_settings.baseline_rebuild_delay_sec)
+    window.obs_baseline_cooldown_sec.setValue(obs_settings.baseline_rebuild_cooldown_sec)
     window.refresh_obs_scenes()
+    if obs_settings.baseline_rebuild_scene:
+        idx_watch_scene = window.obs_baseline_scene.findText(obs_settings.baseline_rebuild_scene)
+        if idx_watch_scene >= 0:
+            window.obs_baseline_scene.setCurrentIndex(idx_watch_scene)
+        else:
+            window.obs_baseline_scene.addItem(obs_settings.baseline_rebuild_scene)
+            window.obs_baseline_scene.setCurrentIndex(window.obs_baseline_scene.count() - 1)
     if obs_settings.target_scene:
         idx_scene = window.obs_target_scene.findText(obs_settings.target_scene)
         if idx_scene >= 0:
@@ -41,6 +52,11 @@ def collect_obs_from_controls(window) -> None:
         auto_refresh_min_severity=window.obs_auto_refresh_min_severity.currentText(),
         auto_refresh_cooldown_sec=window.obs_auto_refresh_cooldown_sec.value(),
         refresh_off_on_delay_ms=window.obs_refresh_off_on_delay_ms.value(),
+        baseline_rebuild_on_scene_exit_enabled=window.obs_baseline_rebuild_enabled.isChecked(),
+        baseline_rebuild_scene_value=window.obs_baseline_scene.currentText(),
+        baseline_rebuild_min_dwell_sec=window.obs_baseline_min_dwell_sec.value(),
+        baseline_rebuild_delay_sec=window.obs_baseline_exit_delay_sec.value(),
+        baseline_rebuild_cooldown_sec=window.obs_baseline_cooldown_sec.value(),
         scene_value=window.obs_target_scene.currentText(),
         source_value=window.obs_target_source.currentText(),
     )
@@ -58,6 +74,11 @@ def websocket_dirty(window) -> bool:
         auto_refresh_min_severity=window.obs_auto_refresh_min_severity.currentText(),
         auto_refresh_cooldown_sec=window.obs_auto_refresh_cooldown_sec.value(),
         refresh_off_on_delay_ms=window.obs_refresh_off_on_delay_ms.value(),
+        baseline_rebuild_on_scene_exit_enabled=window.obs_baseline_rebuild_enabled.isChecked(),
+        baseline_rebuild_scene_value=window.obs_baseline_scene.currentText(),
+        baseline_rebuild_min_dwell_sec=window.obs_baseline_min_dwell_sec.value(),
+        baseline_rebuild_delay_sec=window.obs_baseline_exit_delay_sec.value(),
+        baseline_rebuild_cooldown_sec=window.obs_baseline_cooldown_sec.value(),
         scene_value=window.obs_target_scene.currentText(),
         source_value=window.obs_target_source.currentText(),
     )

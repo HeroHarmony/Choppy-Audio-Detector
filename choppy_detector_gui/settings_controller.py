@@ -17,6 +17,7 @@ def apply_settings_to_controls(window) -> None:
     window.status_command.setText(commands.status_command)
     window.list_devices_command.setText(commands.list_devices_command)
     window.fix_command.setText(commands.fix_command)
+    window.rebuild_command.setText(commands.rebuild_command)
     window.switch_device_command_prefix.setText(commands.switch_device_command_prefix)
     window.allowed_chat_users.setPlainText("\n".join(commands.allowed_chat_users))
     window.send_command_responses.setChecked(commands.send_command_responses)
@@ -46,6 +47,7 @@ def collect_settings_from_controls(window) -> None:
     commands.status_command = window.status_command.text().strip()
     commands.list_devices_command = window.list_devices_command.text().strip()
     commands.fix_command = window.fix_command.text().strip()
+    commands.rebuild_command = window.rebuild_command.text().strip()
     commands.switch_device_command_prefix = window.switch_device_command_prefix.text().strip()
     commands.allowed_chat_users = _allowed_chat_users(window)
     commands.send_command_responses = window.send_command_responses.isChecked()
@@ -78,6 +80,7 @@ def settings_dirty(window) -> bool:
             window.status_command.text().strip() != commands.status_command,
             window.list_devices_command.text().strip() != commands.list_devices_command,
             window.fix_command.text().strip() != commands.fix_command,
+            window.rebuild_command.text().strip() != commands.rebuild_command,
             window.switch_device_command_prefix.text().strip() != commands.switch_device_command_prefix,
             allowed_users != commands.allowed_chat_users,
             window.send_command_responses.isChecked() != commands.send_command_responses,

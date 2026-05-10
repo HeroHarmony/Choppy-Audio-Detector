@@ -131,6 +131,8 @@ ALERT_CONFIG = {
 }
 
 STREAM_START_WARMUP_IGNORE_SECONDS = 3.0
+BASELINE_MIN_RMS_SAMPLES = 20
+BASELINE_CLEAN_LOCK_SECONDS = 20.0
 
 # More reasonable thresholds for streaming glitch detection
 THRESHOLDS = {
@@ -254,7 +256,9 @@ class BalancedChoppyDetector:
         self.file_logger = file_logger
         self.baseline_stats = {
             'rms_history': deque(maxlen=50),
-            'established_baseline': False
+            'established_baseline': False,
+            'learning_started_at': 0.0,
+            'last_blocked_at': 0.0,
         }
         
         # Twitch integration
@@ -494,22 +498,89 @@ class BalancedChoppyDetector:
         if self.baseline_stats['established_baseline']:
             # Freeze baseline after initial lock to avoid long-session drift.
             return
+        now = time_module.time()
+        high_conf_recent_cutoff = now - BASELINE_CLEAN_LOCK_SECONDS
+        recent_high_conf = any(
+            det['timestamp'] > high_conf_recent_cutoff
+            and float(det.get('confidence', 0.0) or 0.0) >= float(ALERT_CONFIG['confidence_threshold'])
+            for det in self.detection_history
+        )
+        if recent_high_conf:
+            if self.baseline_stats['rms_history']:
+                self.baseline_stats['rms_history'].clear()
+                self.baseline_stats['learning_started_at'] = 0.0
+                if (now - float(self.baseline_stats.get('last_blocked_at') or 0.0)) >= 10.0:
+                    print(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] "
+                        "Baseline learning reset due to recent high-confidence detection."
+                    )
+                    self.emit_event("baseline.learning_reset", reason="recent_high_conf_detection")
+                    self.log_file_event("info", "baseline.learning_reset", reason="recent_high_conf_detection")
+                    self.baseline_stats['last_blocked_at'] = now
+            return
         rms = np.sqrt(np.mean(audio**2))
         if rms > THRESHOLDS['min_audio_level']:
             self.baseline_stats['rms_history'].append(rms)
+            if not self.baseline_stats['learning_started_at']:
+                self.baseline_stats['learning_started_at'] = now
 
         # Check if we now have enough samples to lock in a baseline
-        if (not self.baseline_stats['established_baseline'] 
-            and len(self.baseline_stats['rms_history']) >= 20):
+        learning_elapsed = (
+            now - float(self.baseline_stats['learning_started_at'])
+            if self.baseline_stats['learning_started_at']
+            else 0.0
+        )
+        if (
+            not self.baseline_stats['established_baseline']
+            and len(self.baseline_stats['rms_history']) >= BASELINE_MIN_RMS_SAMPLES
+            and learning_elapsed >= BASELINE_CLEAN_LOCK_SECONDS
+        ):
             self.baseline_stats['established_baseline'] = True
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Baseline audio profile established.")
-            self.emit_event("baseline.established")
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Baseline audio profile established "
+                f"({BASELINE_CLEAN_LOCK_SECONDS:.0f}s clean window)."
+            )
+            self.emit_event(
+                "baseline.established",
+                sample_count=len(self.baseline_stats['rms_history']),
+                clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+            )
+            self.log_file_event(
+                "info",
+                "baseline.established",
+                sample_count=len(self.baseline_stats['rms_history']),
+                clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+            )
             
     def get_baseline_rms(self):
         """Get typical RMS level"""
         if len(self.baseline_stats['rms_history']) < 5:
             return 0.1  # Default assumption
         return np.median(list(self.baseline_stats['rms_history']))
+
+    def rebuild_baseline(self, *, reason: str = "manual") -> None:
+        """Reset baseline learning so a fresh clean-gated profile can be learned."""
+        with self.lock:
+            self.baseline_stats['rms_history'].clear()
+            self.baseline_stats['established_baseline'] = False
+            self.baseline_stats['learning_started_at'] = 0.0
+            self.baseline_stats['last_blocked_at'] = 0.0
+            self.stream_warmup_until = time_module.time() + self.stream_warmup_ignore_seconds
+        print(
+            f"[{self._timestamp()}] Baseline rebuild requested ({reason}). "
+            f"Learning will relock after {BASELINE_CLEAN_LOCK_SECONDS:.0f}s clean audio."
+        )
+        self.emit_event(
+            "baseline.rebuild_requested",
+            reason=reason,
+            clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+        )
+        self.log_file_event(
+            "info",
+            "baseline.rebuild_requested",
+            reason=reason,
+            clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+        )
     
     def _format_volume(self, rms: float) -> str:
         """Format RMS as both raw value and dBFS (assuming audio is -1..1 float)."""

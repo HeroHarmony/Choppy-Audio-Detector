@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QTextEdit,
@@ -40,6 +41,10 @@ def build_responses_tab(window) -> None:
     form.addRow("First moderate", _template_row(window, window.template_first_moderate, "first_moderate"))
     form.addRow("First severe", _template_row(window, window.template_first_severe, "first_severe"))
     form.addRow("Ongoing", _template_row(window, window.template_ongoing, "ongoing"))
+    window.template_rebuild_response = QLineEdit()
+    window.template_rebuild_response.setPlaceholderText("Baseline relearn started.")
+    window.template_rebuild_response.setToolTip("Twitch chat response for !choppy rebuild. Token: {user}")
+    form.addRow("Rebuild reply", window.template_rebuild_response)
     left_col.addLayout(form)
 
     button_row = QHBoxLayout()

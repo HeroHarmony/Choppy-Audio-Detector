@@ -58,6 +58,8 @@ def test_obs_connection(window) -> None:
 def disconnect_obs(window) -> None:
     window.cancel_obs_auto_connect_retry()
     window.obs_service.disconnect()
+    if hasattr(window, "_reset_obs_scene_watch_state"):
+        window._reset_obs_scene_watch_state()
     window.set_obs_status("Disconnected", "#ff9c4a")
     window.append_console("Disconnected from OBS WebSocket.")
     window.update_obs_controls_enabled()

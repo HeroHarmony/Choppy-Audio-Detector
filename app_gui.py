@@ -269,6 +269,12 @@ class MainWindow(QMainWindow):
         self._display_rms_dbfs = -120.0
         self._display_level_last_update_at = time.monotonic()
         self._obs_last_auto_refresh_at = 0.0
+        self._obs_scene_watch_last_scene = ""
+        self._obs_scene_watch_entered_at = 0.0
+        self._obs_scene_watch_pending_rebuild_at = 0.0
+        self._obs_scene_watch_pending_from_scene = ""
+        self._obs_scene_watch_pending_to_scene = ""
+        self._obs_scene_watch_last_rebuild_at = 0.0
         self._obs_auto_connect_attempt = 0
         self._obs_auto_connect_retry_timer = QTimer(self)
         self._obs_auto_connect_retry_timer.setSingleShot(True)
@@ -284,6 +290,9 @@ class MainWindow(QMainWindow):
         self.audio_watchdog_timer = QTimer(self)
         self.audio_watchdog_timer.timeout.connect(self.check_audio_watchdog)
         self.audio_watchdog_timer.start(1000)
+        self.obs_scene_watch_timer = QTimer(self)
+        self.obs_scene_watch_timer.timeout.connect(self.check_obs_scene_rebuild_automation)
+        self.obs_scene_watch_timer.start(1000)
         self.meter_preview_timer = QTimer(self)
         self.meter_preview_timer.timeout.connect(self.refresh_meter_preview_ui)
         self.update_meter_refresh_timer()
@@ -647,6 +656,14 @@ class MainWindow(QMainWindow):
         if self.settings.keep_preview_while_monitoring:
             QTimer.singleShot(700, self.ensure_meter_preview_stream)
 
+    def relearn_baseline(self) -> None:
+        ok, message = self.runtime.rebuild_baseline(source="gui")
+        if ok:
+            self.append_console("Baseline relearn requested from Main tab.")
+        else:
+            QMessageBox.information(self, "Relearn Baseline", message)
+        self.update_device_controls()
+
     def selected_combo_device(self):
         selection = self.device_combo.currentData()
         if selection is None:
@@ -663,6 +680,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(is_monitorable and not monitoring_active)
         self.restart_button.setEnabled(is_monitorable)
         self.stop_button.setEnabled(monitoring_active)
+        self.rebuild_baseline_button.setEnabled(monitoring_active)
         if device and not device.is_monitorable:
             self.device_hint_label.setText(
                 "⚠ Selected device is output-only. On macOS, route output through BlackHole/Loopback and select the matching input/capture endpoint."
@@ -1549,7 +1567,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Template validation failed", "\n".join(errors))
             return
         self.settings.alert_templates = templates
+        rebuild_template = self.template_rebuild_response.text().strip()
+        self.settings.chat_commands.rebuild_response_template = (
+            rebuild_template or "Baseline relearn started."
+        )
         save_settings(self.settings)
+        self.update_command_service()
         self.append_console("Response templates saved.")
 
     def preview_templates(self) -> None:
@@ -1614,15 +1637,31 @@ class MainWindow(QMainWindow):
 
     def refresh_obs_scenes(self) -> None:
         selected_before = self.obs_target_scene.currentText().strip() or self.settings.obs_websocket.target_scene
+        watched_before = (
+            self.obs_baseline_scene.currentText().strip()
+            or self.settings.obs_websocket.baseline_rebuild_scene
+            or "Any Scene"
+        )
         self.obs_target_scene.blockSignals(True)
+        self.obs_baseline_scene.blockSignals(True)
         self.obs_target_scene.clear()
         self.obs_target_scene.addItem("All Scenes")
+        self.obs_baseline_scene.clear()
+        self.obs_baseline_scene.addItem("Any Scene")
         scenes = self.obs_service.list_scenes()
         if scenes:
             self.obs_target_scene.addItems(scenes)
+            self.obs_baseline_scene.addItems(scenes)
             idx = self.obs_target_scene.findText(selected_before)
             self.obs_target_scene.setCurrentIndex(0 if idx < 0 else idx)
+            watched_idx = self.obs_baseline_scene.findText(watched_before)
+            self.obs_baseline_scene.setCurrentIndex(0 if watched_idx < 0 else watched_idx)
+        else:
+            if watched_before and watched_before not in {"Any Scene", ""}:
+                self.obs_baseline_scene.addItem(watched_before)
+                self.obs_baseline_scene.setCurrentIndex(self.obs_baseline_scene.count() - 1)
         self.obs_target_scene.blockSignals(False)
+        self.obs_baseline_scene.blockSignals(False)
 
     def refresh_obs_sources(self) -> None:
         selected_before = self.obs_target_source.currentText().strip() or self.settings.obs_websocket.target_source
@@ -1673,6 +1712,7 @@ class MainWindow(QMainWindow):
         enabled = self.obs_enabled.isChecked()
         if not enabled:
             self.cancel_obs_auto_connect_retry()
+            self._reset_obs_scene_watch_state()
         if not enabled and self.obs_service.is_connected:
             self.obs_service.disconnect()
             self.append_console("OBS WebSocket integration disabled: disconnected existing OBS session.")
@@ -1692,6 +1732,11 @@ class MainWindow(QMainWindow):
             self.obs_auto_refresh_min_severity,
             self.obs_auto_refresh_cooldown_sec,
             self.obs_refresh_off_on_delay_ms,
+            self.obs_baseline_rebuild_enabled,
+            self.obs_baseline_scene,
+            self.obs_baseline_min_dwell_sec,
+            self.obs_baseline_exit_delay_sec,
+            self.obs_baseline_cooldown_sec,
             self.obs_save_button,
         )
         for widget in widgets:
@@ -1706,6 +1751,87 @@ class MainWindow(QMainWindow):
         # Refresh button should require a selected source.
         if enabled:
             self.obs_refresh_now_button.setEnabled(bool(self.obs_target_source.currentText().strip()))
+
+    def _reset_obs_scene_watch_state(self) -> None:
+        self._obs_scene_watch_last_scene = ""
+        self._obs_scene_watch_entered_at = 0.0
+        self._obs_scene_watch_pending_rebuild_at = 0.0
+        self._obs_scene_watch_pending_from_scene = ""
+        self._obs_scene_watch_pending_to_scene = ""
+        self._obs_scene_watch_last_rebuild_at = 0.0
+
+    def _schedule_obs_scene_rebuild(
+        self,
+        *,
+        from_scene: str,
+        to_scene: str,
+        when_monotonic: float,
+    ) -> None:
+        self._obs_scene_watch_pending_rebuild_at = when_monotonic
+        self._obs_scene_watch_pending_from_scene = from_scene
+        self._obs_scene_watch_pending_to_scene = to_scene
+        delay_seconds = max(0.0, when_monotonic - time.monotonic())
+        self.append_console(
+            f"OBS scene automation armed: baseline relearn in {delay_seconds:.1f}s "
+            f"(exited '{from_scene}' -> '{to_scene}')."
+        )
+
+    def check_obs_scene_rebuild_automation(self) -> None:
+        settings = self.settings.obs_websocket
+        if (
+            not settings.enabled
+            or not settings.baseline_rebuild_on_scene_exit_enabled
+            or not self.obs_service.is_connected
+            or not self.runtime.is_running
+        ):
+            self._reset_obs_scene_watch_state()
+            return
+
+        now = time.monotonic()
+        current_scene = self.obs_service.current_program_scene().strip()
+        if not current_scene:
+            return
+
+        if not self._obs_scene_watch_last_scene:
+            self._obs_scene_watch_last_scene = current_scene
+            self._obs_scene_watch_entered_at = now
+        elif current_scene != self._obs_scene_watch_last_scene:
+            previous_scene = self._obs_scene_watch_last_scene
+            dwell_sec = max(0.0, now - self._obs_scene_watch_entered_at)
+            self._obs_scene_watch_last_scene = current_scene
+            self._obs_scene_watch_entered_at = now
+            watched_scene = settings.baseline_rebuild_scene.strip()
+            matches_scene = not watched_scene or watched_scene == previous_scene
+            meets_dwell = dwell_sec >= float(settings.baseline_rebuild_min_dwell_sec)
+            cooldown_elapsed = now - float(self._obs_scene_watch_last_rebuild_at or 0.0)
+            cooldown_ready = (
+                self._obs_scene_watch_last_rebuild_at <= 0
+                or cooldown_elapsed >= float(settings.baseline_rebuild_cooldown_sec)
+            )
+            if matches_scene and meets_dwell and cooldown_ready:
+                trigger_at = now + float(settings.baseline_rebuild_delay_sec)
+                self._schedule_obs_scene_rebuild(
+                    from_scene=previous_scene,
+                    to_scene=current_scene,
+                    when_monotonic=trigger_at,
+                )
+
+        pending_at = float(self._obs_scene_watch_pending_rebuild_at or 0.0)
+        if pending_at > 0.0 and now >= pending_at:
+            from_scene = self._obs_scene_watch_pending_from_scene
+            to_scene = self._obs_scene_watch_pending_to_scene
+            self._obs_scene_watch_pending_rebuild_at = 0.0
+            self._obs_scene_watch_pending_from_scene = ""
+            self._obs_scene_watch_pending_to_scene = ""
+            ok, message = self.runtime.rebuild_baseline(source="obs_scene_exit")
+            if ok:
+                self._obs_scene_watch_last_rebuild_at = now
+                self.append_console(
+                    f"OBS scene automation executed baseline relearn after scene exit "
+                    f"('{from_scene}' -> '{to_scene}')."
+                )
+            else:
+                self.append_console(f"OBS scene automation skipped baseline relearn: {message}")
 
     def _run_obs_task(self, action: str, fn, context: dict[str, object] | None = None) -> None:
         def worker() -> None:
@@ -1873,6 +1999,11 @@ class MainWindow(QMainWindow):
                 f"Audio stream opened: {data.get('device')} "
                 f"({data.get('sample_rate')} Hz, {data.get('channels')} channel, using ch {int(data.get('channel_index', 0)) + 1})"
             )
+        if event_type == "baseline.rebuild_requested":
+            source = str(data.get("source") or data.get("reason") or "unknown")
+            return f"Baseline relearn requested ({source})."
+        if event_type == "baseline.rebuild_failed":
+            return f"Baseline relearn failed: {data.get('error')}"
         if event_type == "audio.callback_started":
             return "Audio callbacks started."
         if "error" in data:
@@ -1953,6 +2084,7 @@ class MainWindow(QMainWindow):
         return f"[{at.strftime('%H:%M:%S')}] {message}"
 
     def closeEvent(self, event) -> None:
+        self.obs_scene_watch_timer.stop()
         self.stop_live_playground_report(save_report=False)
         self.stop_playground_audio()
         self.stop_meter_preview()

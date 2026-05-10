@@ -63,9 +63,17 @@ def build_main_tab(window) -> None:
     window.stop_button.clicked.connect(window.stop_monitoring)
     window.restart_button = QPushButton("Restart")
     window.restart_button.clicked.connect(window.restart_monitoring)
+    window.rebuild_baseline_button = QPushButton("Relearn Baseline")
+    window.rebuild_baseline_button.clicked.connect(window.relearn_baseline)
     window.refresh_button = QPushButton("Refresh Devices")
     window.refresh_button.clicked.connect(window.refresh_devices)
-    for button in (window.start_button, window.stop_button, window.restart_button, window.refresh_button):
+    for button in (
+        window.start_button,
+        window.stop_button,
+        window.restart_button,
+        window.rebuild_baseline_button,
+        window.refresh_button,
+    ):
         button_row.addWidget(button)
     layout.addLayout(button_row)
 

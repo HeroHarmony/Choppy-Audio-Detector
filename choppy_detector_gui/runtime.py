@@ -123,6 +123,24 @@ class DetectorRuntime:
         self.stop(source=source)
         return self.start(source=source)
 
+    def rebuild_baseline(self, source: str = "gui", user: str | None = None) -> tuple[bool, str]:
+        with self.lock:
+            detector = self.detector
+            running = bool(detector and getattr(detector, "running", False))
+        if detector is None or not running:
+            message = "Monitoring is not running."
+            self.emit("baseline.rebuild_failed", source=source, user=user, error=message)
+            self.file_logger.log("warn", "baseline.rebuild_failed", source=source, user=user, error=message)
+            return False, message
+        rebuild_fn = getattr(detector, "rebuild_baseline", None)
+        if not callable(rebuild_fn):
+            message = "Detector does not support baseline rebuild."
+            self.emit("baseline.rebuild_failed", source=source, user=user, error=message)
+            self.file_logger.log("error", "baseline.rebuild_failed", source=source, user=user, error=message)
+            return False, message
+        rebuild_fn(reason=source)
+        return True, "Baseline relearn started."
+
     def switch_device(self, selection_index: int, source: str = "gui", user: str | None = None) -> tuple[bool, str]:
         devices = self.list_devices()
         if not 0 <= selection_index < len(devices):

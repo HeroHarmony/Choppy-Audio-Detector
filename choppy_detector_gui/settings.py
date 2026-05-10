@@ -71,7 +71,9 @@ class ChatCommandSettings:
     status_command: str = "!choppy status"
     list_devices_command: str = "!choppy devices"
     fix_command: str = "!choppy fix"
+    rebuild_command: str = "!choppy rebuild"
     switch_device_command_prefix: str = "!choppy device"
+    rebuild_response_template: str = "Baseline relearn started."
     allowed_chat_users: list[str] = field(default_factory=list)
     allow_broadcaster: bool = True
     allow_moderators: bool = True
@@ -92,8 +94,12 @@ class ChatCommandSettings:
             status_command=str(data.get("status_command") or cls.status_command),
             list_devices_command=str(data.get("list_devices_command") or cls.list_devices_command),
             fix_command=str(data.get("fix_command") or cls.fix_command),
+            rebuild_command=str(data.get("rebuild_command") or cls.rebuild_command),
             switch_device_command_prefix=str(
                 data.get("switch_device_command_prefix") or cls.switch_device_command_prefix
+            ),
+            rebuild_response_template=str(
+                data.get("rebuild_response_template") or cls.rebuild_response_template
             ),
             allowed_chat_users=[str(user).strip().lower() for user in users if str(user).strip()],
             allow_broadcaster=bool(data.get("allow_broadcaster", True)),
@@ -137,6 +143,11 @@ class ObsWebSocketSettings:
     auto_refresh_min_severity: str = "severe"
     auto_refresh_cooldown_sec: int = 300
     refresh_off_on_delay_ms: int = 500
+    baseline_rebuild_on_scene_exit_enabled: bool = False
+    baseline_rebuild_scene: str = ""
+    baseline_rebuild_min_dwell_sec: int = 5
+    baseline_rebuild_delay_sec: int = 2
+    baseline_rebuild_cooldown_sec: int = 120
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ObsWebSocketSettings":
@@ -155,6 +166,11 @@ class ObsWebSocketSettings:
             auto_refresh_min_severity=str(data.get("auto_refresh_min_severity") or "severe").strip().lower(),
             auto_refresh_cooldown_sec=int(data.get("auto_refresh_cooldown_sec") or 300),
             refresh_off_on_delay_ms=int(data.get("refresh_off_on_delay_ms") or 500),
+            baseline_rebuild_on_scene_exit_enabled=bool(data.get("baseline_rebuild_on_scene_exit_enabled", False)),
+            baseline_rebuild_scene=str(data.get("baseline_rebuild_scene") or "").strip(),
+            baseline_rebuild_min_dwell_sec=int(data.get("baseline_rebuild_min_dwell_sec") or 5),
+            baseline_rebuild_delay_sec=int(data.get("baseline_rebuild_delay_sec") or 2),
+            baseline_rebuild_cooldown_sec=int(data.get("baseline_rebuild_cooldown_sec") or 120),
         )
 
 
@@ -213,6 +229,27 @@ class AppSettings:
         self.obs_websocket.refresh_off_on_delay_ms = min(
             10000,
             max(0, int(self.obs_websocket.refresh_off_on_delay_ms or 500)),
+        )
+        self.obs_websocket.baseline_rebuild_min_dwell_sec = max(
+            1,
+            int(self.obs_websocket.baseline_rebuild_min_dwell_sec or 5),
+        )
+        self.obs_websocket.baseline_rebuild_delay_sec = max(
+            0,
+            int(self.obs_websocket.baseline_rebuild_delay_sec or 2),
+        )
+        self.obs_websocket.baseline_rebuild_cooldown_sec = max(
+            0,
+            int(self.obs_websocket.baseline_rebuild_cooldown_sec or 120),
+        )
+        self.obs_websocket.baseline_rebuild_scene = str(self.obs_websocket.baseline_rebuild_scene or "").strip()
+        self.chat_commands.rebuild_command = (
+            str(self.chat_commands.rebuild_command or ChatCommandSettings.rebuild_command).strip()
+            or ChatCommandSettings.rebuild_command
+        )
+        self.chat_commands.rebuild_response_template = (
+            str(self.chat_commands.rebuild_response_template or ChatCommandSettings.rebuild_response_template).strip()
+            or ChatCommandSettings.rebuild_response_template
         )
         self.log_settings.log_retention_days = max(1, int(self.log_settings.log_retention_days or 30))
         self.log_settings.log_window_retention_minutes = max(

@@ -111,10 +111,23 @@ def route_runtime_event(event_type: str, data: dict[str, object], ctx: RuntimeEv
         line = str(data.get("line", "")).rstrip()
         if not line:
             return RuntimeEventRoute(consume_event=True, append_formatted_event=False)
+        line_lower = line.lower()
+        badge_update = None
+        if "audio input stream failure" in line_lower:
+            badge_update = AudioBadgeUpdate(label="Error", color_hex="#ff5c5c")
+        elif "no fresh audio callback data" in line_lower:
+            badge_update = AudioBadgeUpdate(label="Stale", color_hex="#ff5c5c")
+        elif "requesting input stream restart" in line_lower or "restarting audio input stream" in line_lower:
+            badge_update = AudioBadgeUpdate(label="Restarting", color_hex="#ff9c4a")
+        elif "audio callback recovered after" in line_lower:
+            badge_update = AudioBadgeUpdate(label="Live", color_hex="#3fcf5e")
+        elif "audio input stream opened" in line_lower:
+            badge_update = AudioBadgeUpdate(label="Live", color_hex="#3fcf5e")
         return RuntimeEventRoute(
             consume_event=True,
             append_console=[line],
             append_event=[line],
+            audio_badge_update=badge_update,
             append_formatted_event=False,
         )
 

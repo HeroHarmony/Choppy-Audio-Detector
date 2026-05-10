@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import json
 import struct
 import wave
 
@@ -59,6 +60,18 @@ class PlaygroundAnalysisResult:
     warmup_suppressed_count: int
     max_confidence_pct: float
     average_confidence_pct: float
+    baseline_rms: float
+    baseline_sample_count: int
+    baseline_established: bool
+
+
+@dataclass
+class MarkerAlignmentSummary:
+    marker_count: int
+    marker_window_ms: int
+    marker_hits: int
+    marker_misses: int
+    outside_marker_hits: int
 
 
 def write_compact_report(
@@ -69,12 +82,16 @@ def write_compact_report(
     expected_glitch: bool,
     report_stem: str | None = None,
     extended_report: bool = False,
+    markers_ms: list[int] | None = None,
+    marker_window_ms: int = 450,
 ) -> Path:
     report_text = build_compact_report(
         result,
         settings,
         expected_glitch=expected_glitch,
         extended_report=extended_report,
+        markers_ms=markers_ms,
+        marker_window_ms=marker_window_ms,
     )
     reports_dir.mkdir(parents=True, exist_ok=True)
     stem = report_stem.strip() if isinstance(report_stem, str) else ""
@@ -92,6 +109,8 @@ def build_compact_report(
     *,
     expected_glitch: bool,
     extended_report: bool = False,
+    markers_ms: list[int] | None = None,
+    marker_window_ms: int = 450,
 ) -> str:
     rows = result.rows
     high_conf_rows = [r for r in rows if r.high_confidence]
@@ -191,6 +210,10 @@ def build_compact_report(
             f"max_conf_pct:{result.max_confidence_pct:.1f},avg_conf_pct:{result.average_confidence_pct:.1f}"
         ),
         (
+            f"baseline=rms:{result.baseline_rms:.6f},sample_count:{result.baseline_sample_count},"
+            f"established:{1 if result.baseline_established else 0}"
+        ),
+        (
             f"rates=high_conf_per_min:{high_conf_per_min:.2f},dedup_per_min:{dedup_per_min:.2f},"
             f"primary_hit_windows:{primary_hit_windows},warmup_hit_windows:{warmup_hit_windows}"
         ),
@@ -234,6 +257,29 @@ def build_compact_report(
         f"top_windows={top_windows_text}",
         f"low_windows={low_windows_text}",
     ]
+
+    marker_summary = summarize_marker_alignment(
+        rows=rows,
+        markers_ms=markers_ms,
+        marker_window_ms=marker_window_ms,
+    )
+    if marker_summary is None:
+        lines.append("marker_alignment=not_provided")
+    else:
+        hit_rate = (
+            (marker_summary.marker_hits / marker_summary.marker_count) * 100.0
+            if marker_summary.marker_count > 0
+            else 0.0
+        )
+        lines.append(
+            "marker_alignment="
+            f"marker_count:{marker_summary.marker_count},"
+            f"marker_window_ms:{marker_summary.marker_window_ms},"
+            f"marker_hits:{marker_summary.marker_hits},"
+            f"marker_misses:{marker_summary.marker_misses},"
+            f"outside_marker_hits:{marker_summary.outside_marker_hits},"
+            f"hit_rate_pct:{hit_rate:.1f}"
+        )
 
     if extended_report:
         near_threshold_rows = [
@@ -737,6 +783,10 @@ def analyze_wav_file(
 
     max_confidence_pct = max(confidences) if confidences else 0.0
     average_confidence_pct = sum(confidences) / len(confidences) if confidences else 0.0
+    baseline_history = list((detector.baseline_stats or {}).get("rms_history", []))
+    baseline_rms = float(np.median(baseline_history)) if baseline_history else float(detector.get_baseline_rms())
+    baseline_sample_count = int(len(baseline_history))
+    baseline_established = bool((detector.baseline_stats or {}).get("established_baseline"))
     return PlaygroundAnalysisResult(
         file=loaded,
         channel_index=channel_idx,
@@ -749,4 +799,91 @@ def analyze_wav_file(
         warmup_suppressed_count=warmup_suppressed_count,
         max_confidence_pct=float(round(max_confidence_pct, 1)),
         average_confidence_pct=float(round(average_confidence_pct, 1)),
+        baseline_rms=float(baseline_rms),
+        baseline_sample_count=baseline_sample_count,
+        baseline_established=baseline_established,
     )
+
+
+def summarize_marker_alignment(
+    *,
+    rows: list[PlaygroundTelemetryRow],
+    markers_ms: list[int] | None,
+    marker_window_ms: int,
+) -> MarkerAlignmentSummary | None:
+    if not markers_ms:
+        return None
+    normalized = sorted({max(0, int(round(v))) for v in markers_ms})
+    if not normalized:
+        return None
+    window = max(0, int(marker_window_ms))
+    dedup_rows = [r for r in rows if r.deduped_detection]
+
+    marker_hits = 0
+    for marker in normalized:
+        if any((row.start_ms - window) <= marker <= (row.end_ms + window) for row in dedup_rows):
+            marker_hits += 1
+    marker_misses = max(0, len(normalized) - marker_hits)
+
+    outside_marker_hits = 0
+    for row in dedup_rows:
+        overlaps_any_marker = any(
+            (row.start_ms - window) <= marker <= (row.end_ms + window)
+            for marker in normalized
+        )
+        if not overlaps_any_marker:
+            outside_marker_hits += 1
+    return MarkerAlignmentSummary(
+        marker_count=len(normalized),
+        marker_window_ms=window,
+        marker_hits=marker_hits,
+        marker_misses=marker_misses,
+        outside_marker_hits=outside_marker_hits,
+    )
+
+
+def marker_sidecar_path(wav_path: str | Path) -> Path:
+    path = Path(wav_path).expanduser()
+    return path.with_suffix(path.suffix + ".markers.json")
+
+
+def load_marker_sidecar(wav_path: str | Path) -> list[int]:
+    sidecar = marker_sidecar_path(wav_path)
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    markers = payload.get("markers_ms")
+    if not isinstance(markers, list):
+        return []
+    normalized: list[int] = []
+    for item in markers:
+        try:
+            value = int(round(float(item)))
+        except Exception:
+            continue
+        if value >= 0:
+            normalized.append(value)
+    return sorted(set(normalized))
+
+
+def save_marker_sidecar(
+    loaded: LoadedWavFile,
+    markers_ms: list[int],
+) -> Path:
+    sidecar = marker_sidecar_path(loaded.path)
+    cleaned = sorted(set(max(0, int(round(v))) for v in markers_ms))
+    payload = {
+        "version": 1,
+        "wav_file": Path(loaded.path).name,
+        "duration_ms": int(loaded.duration_ms),
+        "sample_rate": int(loaded.sample_rate),
+        "channel_count": int(loaded.channel_count),
+        "markers_ms": cleaned,
+    }
+    sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return sidecar

@@ -48,6 +48,13 @@ class DetectorRuntime:
 
             import live_analysis
 
+            configured_window_ms = int(
+                self.settings.advanced_alert_config.get("production_window_ms", live_analysis.production_window_ms())
+            )
+            configured_step_ms = int(
+                self.settings.advanced_alert_config.get("production_step_ms", live_analysis.production_step_ms())
+            )
+            live_analysis.configure_production_timing(configured_window_ms, configured_step_ms)
             live_analysis.APPROACHES.update(self.settings.detection_methods)
             live_analysis.THRESHOLDS.update(self.settings.advanced_thresholds)
             live_analysis.ALERT_CONFIG.update(self.settings.advanced_alert_config)

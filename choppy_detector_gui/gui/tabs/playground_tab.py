@@ -70,7 +70,8 @@ def build_playground_tab(window) -> None:
     window.playground_window_ms_spin = QSpinBox()
     window.playground_window_ms_spin.setRange(100, 4000)
     window.playground_window_ms_spin.setSingleStep(50)
-    window.playground_window_ms_spin.setValue(1000)
+    prod_window_ms, prod_step_ms = window._playground_prod_timing()
+    window.playground_window_ms_spin.setValue(prod_window_ms)
     window.playground_window_ms_spin.setToolTip(
         "Analysis window size in milliseconds.\n"
         "Larger windows smooth noise; smaller windows catch short bursts."
@@ -81,7 +82,7 @@ def build_playground_tab(window) -> None:
     window.playground_step_ms_spin = QSpinBox()
     window.playground_step_ms_spin.setRange(10, 1000)
     window.playground_step_ms_spin.setSingleStep(10)
-    window.playground_step_ms_spin.setValue(50)
+    window.playground_step_ms_spin.setValue(prod_step_ms)
     window.playground_step_ms_spin.setToolTip(
         "How far each analysis window moves forward (ms).\n"
         "Smaller step = finer timing detail, more rows."

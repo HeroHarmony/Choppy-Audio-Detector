@@ -70,19 +70,32 @@ def resolve_alert_cooldown_ms():
 # Configuration
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 4096  # Larger chunks for stability
-BUFFER_DURATION = 1.0  # Production analysis window (seconds)
+DEFAULT_PRODUCTION_WINDOW_MS = 1000
+DEFAULT_PRODUCTION_STEP_MS = 50
+BUFFER_DURATION = float(DEFAULT_PRODUCTION_WINDOW_MS) / 1000.0
 BUFFER_SIZE = int(SAMPLE_RATE * BUFFER_DURATION)
-DETECTION_LOOP_INTERVAL_SEC = 0.05  # 20Hz analysis cadence (50ms step)
+DETECTION_LOOP_INTERVAL_SEC = float(DEFAULT_PRODUCTION_STEP_MS) / 1000.0
 
 
 def production_window_ms() -> int:
     """Canonical live detection window used by runtime analysis."""
-    return int(round(float(BUFFER_DURATION) * 1000.0))
+    return max(100, int(round(float(BUFFER_DURATION) * 1000.0)))
 
 
 def production_step_ms() -> int:
     """Canonical live detection step used by runtime analysis."""
-    return int(round(float(DETECTION_LOOP_INTERVAL_SEC) * 1000.0))
+    return max(10, int(round(float(DETECTION_LOOP_INTERVAL_SEC) * 1000.0)))
+
+
+def configure_production_timing(window_ms: int | float, step_ms: int | float) -> None:
+    """Apply runtime production timing in one place for live detector behavior."""
+    global BUFFER_DURATION, BUFFER_SIZE, DETECTION_LOOP_INTERVAL_SEC
+
+    normalized_window_ms = max(100, int(round(float(window_ms or DEFAULT_PRODUCTION_WINDOW_MS))))
+    normalized_step_ms = max(10, int(round(float(step_ms or DEFAULT_PRODUCTION_STEP_MS))))
+    BUFFER_DURATION = normalized_window_ms / 1000.0
+    DETECTION_LOOP_INTERVAL_SEC = normalized_step_ms / 1000.0
+    BUFFER_SIZE = int(SAMPLE_RATE * BUFFER_DURATION)
 
 # Detection approaches - focused on streaming glitches
 APPROACHES = {

@@ -26,6 +26,8 @@ DEFAULT_APPROACHES = {
 }
 
 DEFAULT_ALERT_CONFIG = {
+    "production_window_ms": 1000,
+    "production_step_ms": 50,
     "detections_for_alert": 6,
     "alert_cooldown_ms": 60000,
     "detection_window_seconds": 90,

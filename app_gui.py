@@ -420,6 +420,8 @@ class MainWindow(QMainWindow):
 
     def alert_config_schema(self):
         return (
+            ("production_window_ms", "Live detection analysis window size in milliseconds.", "int", 100, 4000, 50),
+            ("production_step_ms", "Live detection step/cadence in milliseconds.", "int", 10, 1000, 10),
             ("detections_for_alert", "Detections required before an alert can fire.", "int", 1, 100, 1),
             ("alert_cooldown_ms", "Minimum time between alerts in milliseconds.", "int", 1000, 3600000, 1000),
             ("detection_window_seconds", "Window for counting detections toward an alert.", "int", 5, 600, 1),
@@ -804,14 +806,10 @@ class MainWindow(QMainWindow):
         self.update_playground_controls()
 
     def _playground_prod_timing(self) -> tuple[int, int]:
-        try:
-            import live_analysis
-
-            window_ms = int(live_analysis.production_window_ms())
-            step_ms = int(live_analysis.production_step_ms())
-            return max(100, window_ms), max(10, step_ms)
-        except Exception:
-            return 1000, 50
+        configured = self.settings.advanced_alert_config if isinstance(self.settings.advanced_alert_config, dict) else {}
+        window_ms = int(configured.get("production_window_ms", 1000))
+        step_ms = int(configured.get("production_step_ms", 50))
+        return max(100, window_ms), max(10, step_ms)
 
     def _playground_comparison_timing(self) -> tuple[int, int]:
         """Legacy baseline timing kept for A/B comparison in Playground."""

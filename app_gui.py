@@ -318,6 +318,7 @@ class MainWindow(QMainWindow):
         self._playground_preview_active_path: str | None = None
         self._playground_preview_active_channel_index: int = 0
         self._playground_markers_by_path: dict[str, list[int]] = {}
+        self._playground_marker_flash_phase = False
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -773,6 +774,7 @@ class MainWindow(QMainWindow):
             self._playground_audio_file = None
             self._playground_loaded_files = []
             self._playground_markers_by_path = {}
+            self._sync_playground_progress_for_loaded(None)
             self.update_playground_controls()
             error_lines = "\n".join(f"{p}: {err}" for p, err in failures[:5])
             QMessageBox.warning(self, "WAV load failed", error_lines or "No WAV files were loaded.")
@@ -783,6 +785,7 @@ class MainWindow(QMainWindow):
         self._playground_markers_by_path = {}
         for loaded in loaded_files:
             self._set_playground_markers(loaded.path, load_marker_sidecar(loaded.path))
+        self._sync_playground_progress_for_loaded(self._playground_audio_file)
         self.playground_file_path.setText(" | ".join(file.path for file in loaded_files))
 
         max_channel_count = max(file.channel_count for file in loaded_files)
@@ -850,15 +853,58 @@ class MainWindow(QMainWindow):
         return 2000, 200
 
     def _playground_current_markers(self) -> list[int]:
+        marker_path = self._playground_marker_context_path()
+        if marker_path is None:
+            return []
+        return list(self._playground_markers_by_path.get(marker_path, []))
+
+    def _playground_marker_context_path(self) -> str | None:
+        if self._playground_is_playing and self._playground_preview_active_path:
+            return self._playground_preview_active_path
         loaded = self._playground_audio_file
         if loaded is None:
-            return []
-        return list(self._playground_markers_by_path.get(loaded.path, []))
+            return None
+        return loaded.path
+
+    def _playground_find_loaded_by_path(self, path: str) -> LoadedWavFile | None:
+        for loaded in self._playground_loaded_files:
+            if loaded.path == path:
+                return loaded
+        return None
 
     def _set_playground_markers(self, path: str, markers_ms: list[int]) -> None:
         cleaned = sorted({max(0, int(round(v))) for v in markers_ms})
         self._playground_markers_by_path[path] = cleaned
+        marker_path = self._playground_marker_context_path()
+        if marker_path is not None and marker_path == path:
+            self.playground_progress.set_markers_ms(cleaned)
         self.update_playground_marker_status()
+
+    def _sync_playground_progress_for_loaded(self, loaded: LoadedWavFile | None) -> None:
+        if loaded is None:
+            self.playground_progress.set_duration_ms(1)
+            self.playground_progress.set_position_ms(0)
+            self.playground_progress.set_markers_ms([])
+            self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
+            return
+        self.playground_progress.set_duration_ms(int(max(1, loaded.duration_ms)))
+        self.playground_progress.set_markers_ms(list(self._playground_markers_by_path.get(loaded.path, [])))
+
+    def remove_playground_marker_at(self, marker_ms: int) -> None:
+        marker_path = self._playground_marker_context_path()
+        if marker_path is None:
+            return
+        loaded = self._playground_find_loaded_by_path(marker_path)
+        if loaded is None:
+            return
+        markers = list(self._playground_markers_by_path.get(marker_path, []))
+        try:
+            markers.remove(int(marker_ms))
+        except ValueError:
+            return
+        self._set_playground_markers(marker_path, markers)
+        self._save_playground_markers_for_loaded()
+        self.append_console(f"Playground marker removed at {int(marker_ms)}ms ({Path(loaded.path).name})")
 
     def update_playground_marker_status(self) -> None:
         loaded = self._playground_audio_file
@@ -881,34 +927,44 @@ class MainWindow(QMainWindow):
         self.playground_table.setMaximumHeight(target)
 
     def _save_playground_markers_for_loaded(self) -> None:
-        loaded = self._playground_audio_file
+        marker_path = self._playground_marker_context_path()
+        if marker_path is None:
+            return
+        loaded = self._playground_find_loaded_by_path(marker_path)
         if loaded is None:
             return
-        markers = self._playground_current_markers()
+        markers = list(self._playground_markers_by_path.get(marker_path, []))
         save_marker_sidecar(loaded, markers)
 
     def add_playground_marker(self) -> None:
-        loaded = self._playground_audio_file
-        if loaded is None:
+        marker_path = self._playground_marker_context_path()
+        if marker_path is None:
             QMessageBox.information(self, "Playground marker", "Load a WAV file first.")
             return
         if not self._playground_is_playing:
             QMessageBox.information(self, "Playground marker", "Start preview playback before adding markers.")
             return
+        loaded = self._playground_find_loaded_by_path(marker_path)
+        if loaded is None:
+            QMessageBox.information(self, "Playground marker", "No active loaded WAV context for marker save.")
+            return
         elapsed_ms = int(round(max(0.0, time.monotonic() - self._playground_started_at_monotonic) * 1000.0))
         latency_ms = int(self.playground_marker_latency_ms_spin.value())
         marker_ms = max(0, min(int(loaded.duration_ms), elapsed_ms - latency_ms))
-        markers = self._playground_current_markers()
+        markers = list(self._playground_markers_by_path.get(marker_path, []))
         markers.append(marker_ms)
-        self._set_playground_markers(loaded.path, markers)
+        self._set_playground_markers(marker_path, markers)
         self._save_playground_markers_for_loaded()
         self.append_console(f"Playground marker added at {marker_ms}ms ({Path(loaded.path).name})")
 
     def clear_playground_markers(self) -> None:
-        loaded = self._playground_audio_file
+        marker_path = self._playground_marker_context_path()
+        if marker_path is None:
+            return
+        loaded = self._playground_find_loaded_by_path(marker_path)
         if loaded is None:
             return
-        self._set_playground_markers(loaded.path, [])
+        self._set_playground_markers(marker_path, [])
         self._save_playground_markers_for_loaded()
         self.append_console(f"Playground markers cleared for {Path(loaded.path).name}")
 
@@ -989,6 +1045,10 @@ class MainWindow(QMainWindow):
         self._playground_preview_active_channel_index = channel_idx
         self._playground_started_at_monotonic = time.monotonic()
         self._playground_play_duration_seconds = max(0.001, len(audio) / float(loaded.sample_rate))
+        self._playground_marker_flash_phase = False
+        self._sync_playground_progress_for_loaded(loaded)
+        self.playground_progress.set_position_ms(0)
+        self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
         self.playground_playback_timer.start(100)
         self.playground_playback_status.setText("Playing")
         self.update_playground_controls()
@@ -1004,27 +1064,28 @@ class MainWindow(QMainWindow):
         self._playground_preview_active_channel_index = 0
         self.playground_playback_timer.stop()
         self.playground_playback_status.setText("Not playing")
-        self.playground_progress.setValue(0)
-        self.playground_progress.setStyleSheet("")
+        self.playground_progress.set_position_ms(0)
+        self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
         self.update_playground_controls()
 
     def refresh_playground_playback_status(self) -> None:
         if not self._playground_is_playing:
             return
         elapsed = max(0.0, time.monotonic() - self._playground_started_at_monotonic)
-        progress = min(1.0, elapsed / self._playground_play_duration_seconds)
-        self.playground_progress.setValue(int(round(progress * 1000)))
         current_ms = int(round(elapsed * 1000.0))
-        near_marker = any(
-            abs(current_ms - marker_ms) <= 150
-            for marker_ms in self._playground_current_markers()
-        )
-        if near_marker:
-            self.playground_progress.setStyleSheet(
-                "QProgressBar { border: 2px solid #ff5c5c; border-radius: 3px; }"
-            )
-        else:
-            self.playground_progress.setStyleSheet("")
+        self.playground_progress.set_position_ms(current_ms)
+        nearest_marker = None
+        nearest_distance = 10_000_000
+        for marker_ms in self._playground_current_markers():
+            distance = abs(current_ms - marker_ms)
+            if distance <= 150 and distance < nearest_distance:
+                nearest_distance = distance
+                nearest_marker = marker_ms
+        flash_on = False
+        if nearest_marker is not None:
+            self._playground_marker_flash_phase = not self._playground_marker_flash_phase
+            flash_on = self._playground_marker_flash_phase
+        self.playground_progress.set_marker_alert(active_marker_ms=nearest_marker, flash_on=flash_on)
         if elapsed >= self._playground_play_duration_seconds:
             self.stop_playground_audio()
 
@@ -1159,6 +1220,10 @@ class MainWindow(QMainWindow):
         self._playground_preview_active_channel_index = effective_channel_idx
         self._playground_started_at_monotonic = time.monotonic()
         self._playground_play_duration_seconds = max(0.001, len(audio) / float(loaded.sample_rate))
+        self._playground_marker_flash_phase = False
+        self._sync_playground_progress_for_loaded(loaded)
+        self.playground_progress.set_position_ms(0)
+        self.playground_progress.set_marker_alert(active_marker_ms=None, flash_on=False)
         self.playground_playback_timer.start(100)
         self.playground_playback_status.setText("Playing")
         self.update_playground_controls()

@@ -11,13 +11,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QProgressBar,
     QScrollArea,
     QSpinBox,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from choppy_detector_gui.gui.widgets.marker_progress_bar import MarkerProgressBar
 
 
 def build_playground_tab(window) -> None:
@@ -209,9 +210,10 @@ def build_playground_tab(window) -> None:
 
     layout.addWidget(controls)
 
-    window.playground_progress = QProgressBar()
-    window.playground_progress.setRange(0, 1000)
-    window.playground_progress.setValue(0)
+    window.playground_progress = MarkerProgressBar()
+    window.playground_progress.set_duration_ms(1)
+    window.playground_progress.set_position_ms(0)
+    window.playground_progress.markerClicked.connect(window.remove_playground_marker_at)
     window.playground_progress.setToolTip("Playback progress for WAV file mode.")
     layout.addWidget(window.playground_progress)
 

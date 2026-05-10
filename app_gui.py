@@ -92,9 +92,12 @@ from choppy_detector_gui.runtime import DetectorRuntime
 from choppy_detector_gui.playground_analysis import (
     LoadedWavFile,
     analyze_wav_file,
+    load_baseline_sidecar,
     load_marker_sidecar,
     load_wav_file,
+    save_baseline_sidecar,
     save_marker_sidecar,
+    write_mono_wav_file,
     write_compact_report,
 )
 from choppy_detector_gui.settings import (
@@ -318,7 +321,10 @@ class MainWindow(QMainWindow):
         self._playground_preview_active_path: str | None = None
         self._playground_preview_active_channel_index: int = 0
         self._playground_markers_by_path: dict[str, list[int]] = {}
+        self._playground_baseline_profiles_by_path: dict[str, dict] = {}
         self._playground_marker_flash_phase = False
+        self._playground_live_paused_monitoring = False
+        self._playground_live_baseline_profile: dict | None = None
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -774,6 +780,7 @@ class MainWindow(QMainWindow):
             self._playground_audio_file = None
             self._playground_loaded_files = []
             self._playground_markers_by_path = {}
+            self._playground_baseline_profiles_by_path = {}
             self._sync_playground_progress_for_loaded(None)
             self.update_playground_controls()
             error_lines = "\n".join(f"{p}: {err}" for p, err in failures[:5])
@@ -783,8 +790,12 @@ class MainWindow(QMainWindow):
         self._playground_loaded_files = loaded_files
         self._playground_audio_file = loaded_files[0]
         self._playground_markers_by_path = {}
+        self._playground_baseline_profiles_by_path = {}
         for loaded in loaded_files:
             self._set_playground_markers(loaded.path, load_marker_sidecar(loaded.path))
+            baseline_payload = load_baseline_sidecar(loaded.path)
+            if baseline_payload is not None:
+                self._playground_baseline_profiles_by_path[loaded.path] = baseline_payload
         self._sync_playground_progress_for_loaded(self._playground_audio_file)
         self.playground_file_path.setText(" | ".join(file.path for file in loaded_files))
 
@@ -833,6 +844,11 @@ class MainWindow(QMainWindow):
             f"Playground loaded {len(loaded_files)} WAV file(s): "
             + ", ".join(Path(file.path).name for file in loaded_files)
         )
+        baseline_loaded_count = len(self._playground_baseline_profiles_by_path)
+        if baseline_loaded_count:
+            self.append_console(
+                f"Playground loaded baseline profile sidecar(s): {baseline_loaded_count}"
+            )
         if failures:
             error_lines = "\n".join(f"{Path(p).name}: {err}" for p, err in failures[:5])
             QMessageBox.warning(
@@ -851,6 +867,50 @@ class MainWindow(QMainWindow):
     def _playground_comparison_timing(self) -> tuple[int, int]:
         """Legacy baseline timing kept for A/B comparison in Playground."""
         return 2000, 200
+
+    def _snapshot_runtime_baseline_profile(self) -> dict | None:
+        with self.runtime.lock:
+            detector = self.runtime.detector
+            running = bool(detector and getattr(detector, "running", False))
+            if detector is None or not running:
+                return None
+            with detector.lock:
+                rms_history = [
+                    float(v)
+                    for v in list((detector.baseline_stats or {}).get("rms_history", []))
+                    if isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) > 0.0
+                ]
+                established = bool((detector.baseline_stats or {}).get("established_baseline", False))
+                baseline_rms = float(detector.get_baseline_rms())
+                audio_device = detector.audio_device
+                input_channel_index = int(detector.input_channel_index)
+                sample_rate = int(detector.sample_rate)
+
+        return {
+            "version": 1,
+            "captured_at": datetime.now().isoformat(timespec="seconds"),
+            "source": "main_runtime",
+            "device": self.runtime.device_summary(),
+            "audio_device_index": audio_device,
+            "input_channel_index": input_channel_index,
+            "sample_rate": sample_rate,
+            "production_window_ms": int(self.settings.advanced_alert_config.get("production_window_ms", 1000)),
+            "production_step_ms": int(self.settings.advanced_alert_config.get("production_step_ms", 50)),
+            "baseline": {
+                "rms": baseline_rms,
+                "sample_count": int(len(rms_history)),
+                "established": 1 if established else 0,
+                "rms_history": rms_history[-50:],
+            },
+        }
+
+    def _resume_main_monitoring_after_live_capture(self) -> None:
+        if not self._playground_live_paused_monitoring:
+            return
+        self._playground_live_paused_monitoring = False
+        if self.runtime.is_running:
+            return
+        self.start_monitoring()
 
     def _playground_current_markers(self) -> list[int]:
         marker_path = self._playground_marker_context_path()
@@ -1126,6 +1186,7 @@ class MainWindow(QMainWindow):
                     window_ms=window_ms,
                     step_ms=step_ms,
                     warmup_ms=warmup_ms,
+                    baseline_profile=self._playground_baseline_profiles_by_path.get(loaded.path),
                 )
                 prod_result = None
                 if run_prod_timing:
@@ -1136,6 +1197,7 @@ class MainWindow(QMainWindow):
                         window_ms=compare_window_ms,
                         step_ms=compare_step_ms,
                         warmup_ms=warmup_ms,
+                        baseline_profile=self._playground_baseline_profiles_by_path.get(loaded.path),
                     )
                 inferred = self.infer_expected_outcome_from_filename(loaded.path)
                 analysis_rows.append(
@@ -1439,6 +1501,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Live report", "Select a monitorable input/capture device first.")
             return
 
+        self._playground_live_paused_monitoring = bool(self.runtime.is_running)
+        self._playground_live_baseline_profile = None
+        if self._playground_live_paused_monitoring:
+            self._playground_live_baseline_profile = self._snapshot_runtime_baseline_profile()
+            self.stop_monitoring()
+            self.append_console("Main monitoring paused for playground live recording.")
+
         channel_index = self.channel_combo.currentData()
         channel_idx = int(channel_index if channel_index is not None else self.settings.selected_channel_index)
         channel_idx = max(0, channel_idx)
@@ -1462,6 +1531,7 @@ class MainWindow(QMainWindow):
             self._playground_live_stream.start()
         except Exception as exc:
             self._playground_live_stream = None
+            self._resume_main_monitoring_after_live_capture()
             QMessageBox.warning(self, "Live report start failed", str(exc))
             return
 
@@ -1497,7 +1567,7 @@ class MainWindow(QMainWindow):
         elapsed = max(0.0, time.monotonic() - self._playground_live_started_at_monotonic)
         self.playground_live_status.setText(f"Recording live... {elapsed:.1f}s")
 
-    def stop_live_playground_report(self, *, save_report: bool = True) -> None:
+    def stop_live_playground_report(self, *, save_report: bool = True, resume_main_monitoring: bool = True) -> None:
         if not self._playground_live_running:
             return
         self._playground_live_running = False
@@ -1521,85 +1591,60 @@ class MainWindow(QMainWindow):
         self.playground_live_status.setText("Live report idle")
 
         if not save_report:
+            if resume_main_monitoring:
+                self._resume_main_monitoring_after_live_capture()
             return
 
         if not chunks:
+            if resume_main_monitoring:
+                self._resume_main_monitoring_after_live_capture()
             QMessageBox.information(self, "Live report", "No audio captured.")
             return
 
         captured = np.concatenate(chunks).astype(np.float32, copy=False)
         if captured.size == 0:
+            if resume_main_monitoring:
+                self._resume_main_monitoring_after_live_capture()
             QMessageBox.information(self, "Live report", "No audio captured.")
             return
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        live_stem = f"live_capture_{timestamp}"
-        loaded = LoadedWavFile(
-            path=f"{live_stem}.wav",
-            sample_rate=int(self._playground_live_sample_rate or 44100),
-            channel_count=1,
-            frame_count=int(captured.size),
-            duration_ms=int(round((captured.size / float(self._playground_live_sample_rate or 1)) * 1000.0)),
-            samples=captured.reshape(-1, 1),
-        )
-        window_ms = int(self.playground_window_ms_spin.value())
-        step_ms = int(self.playground_step_ms_spin.value())
-        warmup_ms = int(self.playground_warmup_ms_spin.value())
-        compare_window_ms, compare_step_ms = self._playground_comparison_timing()
-        also_prod_timing = bool(self.playground_also_prod_timing.isChecked())
-        run_prod_timing = also_prod_timing and (
-            window_ms != compare_window_ms or step_ms != compare_step_ms
-        )
-        self.playground_analysis_summary.setPlainText("Running live capture analysis...")
-        self._playground_analysis_running = True
-        self.update_playground_controls()
         try:
-            result = analyze_wav_file(
-                loaded,
-                self.settings,
-                channel_index=0,
-                window_ms=window_ms,
-                step_ms=step_ms,
-                warmup_ms=warmup_ms,
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_name = f"live_capture_{timestamp}.wav"
+            wav_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Live Recording WAV",
+                default_name,
+                "WAV files (*.wav);;All files (*)",
+            )
+            if not wav_path:
+                self.append_console("Live recording canceled before save.")
+                return
+            if not str(wav_path).lower().endswith(".wav"):
+                wav_path = f"{wav_path}.wav"
+
+            saved_wav = write_mono_wav_file(
+                wav_path,
+                captured,
+                int(self._playground_live_sample_rate or 44100),
+            )
+            baseline_payload = self._playground_live_baseline_profile
+            baseline_sidecar = None
+            if isinstance(baseline_payload, dict):
+                baseline_sidecar = save_baseline_sidecar(saved_wav, baseline_payload)
+            self.append_console(f"Live recording saved: {saved_wav}")
+            if baseline_sidecar is not None:
+                self.append_console(f"Live baseline profile saved: {baseline_sidecar}")
+            self.load_playground_files([str(saved_wav)])
+            self.playground_analysis_summary.setPlainText(
+                "Live recording saved. Add markers if needed, then run Analyze File."
             )
         except Exception as exc:
-            QMessageBox.warning(self, "Live report analysis failed", str(exc))
-            return
+            QMessageBox.warning(self, "Live report save failed", str(exc))
         finally:
-            self._playground_analysis_running = False
-            self.update_playground_controls()
-
-        expected_glitch = self.prompt_playground_expected_outcome(allow_preview=False)
-        self.render_playground_result(
-            result,
-            expected_glitch=expected_glitch,
-            report_stem=live_stem,
-            source_label="live",
-            update_ui=True,
-        )
-        if run_prod_timing:
-            try:
-                prod_result = analyze_wav_file(
-                    loaded,
-                    self.settings,
-                    channel_index=0,
-                    window_ms=compare_window_ms,
-                    step_ms=compare_step_ms,
-                    warmup_ms=warmup_ms,
-                )
-            except Exception as exc:
-                QMessageBox.warning(self, "Legacy timing analysis failed", str(exc))
-                return
-            prod_report_path, _, _ = self.render_playground_result(
-                prod_result,
-                expected_glitch=expected_glitch,
-                report_stem=live_stem,
-                source_label="live-legacy",
-                update_ui=False,
-            )
-            self.playground_analysis_summary.setPlainText(
-                f"{self.playground_analysis_summary.toPlainText()} | Legacy report: {prod_report_path}"
-            )
+            self._playground_live_baseline_profile = None
+            if resume_main_monitoring:
+                self._resume_main_monitoring_after_live_capture()
 
     def infer_expected_outcome_from_filename(self, path_text: str) -> tuple[bool, str] | None:
         filename = Path(path_text).name
@@ -1607,6 +1652,8 @@ class MainWindow(QMainWindow):
 
         if re.search(r"\[(?:\s*no[\s_-]*glitch\s*)\]", lowered):
             return False, "[no glitch]"
+        if re.search(r"\[(?:\s*continuous[\s_-]*glitch(?:y)?\s*)\]", lowered):
+            return True, "[continuous glitchy]"
         if re.search(r"\[(?:\s*glitch(?:y)?\s*)\]", lowered):
             return True, "[glitch]"
         return None
@@ -1714,7 +1761,7 @@ class MainWindow(QMainWindow):
                 f"Dedup detections: {result.deduped_detection_count} | "
                 f"Warm-up suppressed: {result.warmup_suppressed_count} | "
                 f"Max conf: {result.max_confidence_pct:.1f}% | Avg conf: {result.average_confidence_pct:.1f}% | "
-                f"Outcome: {eval_label} | Report: {report_path}"
+                f"Baseline: {result.baseline_source} | Outcome: {eval_label} | Report: {report_path}"
             )
         self.append_console(
             f"Playground {source_label} analysis complete: {result.file.path} "
@@ -2252,7 +2299,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.obs_scene_watch_timer.stop()
-        self.stop_live_playground_report(save_report=False)
+        self.stop_live_playground_report(save_report=False, resume_main_monitoring=False)
         self.stop_playground_audio()
         self.stop_meter_preview()
         self.command_service.stop()

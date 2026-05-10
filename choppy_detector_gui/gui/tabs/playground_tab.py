@@ -194,14 +194,16 @@ def build_playground_tab(window) -> None:
     window.playground_live_start_button = QPushButton("Start Live Report")
     window.playground_live_start_button.clicked.connect(window.start_live_playground_report)
     window.playground_live_start_button.setToolTip(
-        "Start recording live audio from the currently selected input device/channel."
+        "Start recording live audio from the currently selected input device/channel.\n"
+        "Main tab monitoring is paused during recording and resumed after save."
     )
     controls_layout.addWidget(window.playground_live_start_button, 4, 2, 1, 2)
 
-    window.playground_live_stop_button = QPushButton("Stop & Save Live Report")
+    window.playground_live_stop_button = QPushButton("Stop & Save Live WAV")
     window.playground_live_stop_button.clicked.connect(window.stop_live_playground_report)
     window.playground_live_stop_button.setToolTip(
-        "Stop live recording, analyze captured audio, and save a compact report."
+        "Stop live recording and save a WAV file.\n"
+        "A baseline profile sidecar is also saved next to the WAV when available."
     )
     controls_layout.addWidget(window.playground_live_stop_button, 4, 4, 1, 3)
 

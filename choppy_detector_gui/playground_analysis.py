@@ -63,6 +63,7 @@ class PlaygroundAnalysisResult:
     baseline_rms: float
     baseline_sample_count: int
     baseline_established: bool
+    baseline_source: str
 
 
 @dataclass
@@ -232,6 +233,7 @@ def build_compact_report(
             f"baseline=rms:{result.baseline_rms:.6f},sample_count:{result.baseline_sample_count},"
             f"established:{1 if result.baseline_established else 0}"
         ),
+        f"baseline_source={result.baseline_source}",
         (
             f"rates=high_conf_per_min:{high_conf_per_min:.2f},dedup_per_min:{dedup_per_min:.2f},"
             f"primary_hit_windows:{primary_hit_windows},warmup_hit_windows:{warmup_hit_windows}"
@@ -625,12 +627,16 @@ def analyze_wav_file(
     window_ms: int,
     step_ms: int,
     warmup_ms: int,
+    baseline_profile: dict | None = None,
 ) -> PlaygroundAnalysisResult:
     import live_analysis
 
     _apply_runtime_settings(settings)
     detector = live_analysis.BalancedChoppyDetector(enable_twitch=False)
     detector.sample_rate = int(loaded.sample_rate)
+    baseline_source = "learned"
+    if apply_baseline_profile_to_detector(detector, baseline_profile):
+        baseline_source = "imported"
 
     channel_idx = max(0, min(int(channel_index), loaded.channel_count - 1))
     mono = loaded.samples[:, channel_idx]
@@ -867,7 +873,53 @@ def analyze_wav_file(
         baseline_rms=float(baseline_rms),
         baseline_sample_count=baseline_sample_count,
         baseline_established=baseline_established,
+        baseline_source=baseline_source,
     )
+
+
+def apply_baseline_profile_to_detector(detector, baseline_profile: dict | None) -> bool:
+    if not isinstance(baseline_profile, dict):
+        return False
+    baseline = baseline_profile.get("baseline")
+    if not isinstance(baseline, dict):
+        return False
+
+    rms_history_raw = baseline.get("rms_history")
+    normalized_history: list[float] = []
+    if isinstance(rms_history_raw, list):
+        for item in rms_history_raw:
+            try:
+                value = float(item)
+            except Exception:
+                continue
+            if math.isfinite(value) and value > 0.0:
+                normalized_history.append(value)
+    normalized_history = normalized_history[-50:]
+
+    try:
+        established = bool(int(baseline.get("established", 0)))
+    except Exception:
+        established = False
+
+    baseline_rms = baseline.get("rms")
+    if not normalized_history and baseline_rms is not None:
+        try:
+            fallback_rms = float(baseline_rms)
+        except Exception:
+            fallback_rms = 0.0
+        if math.isfinite(fallback_rms) and fallback_rms > 0.0:
+            normalized_history = [fallback_rms] * 8
+
+    if not normalized_history:
+        return False
+
+    with detector.lock:
+        detector.baseline_stats["rms_history"].clear()
+        detector.baseline_stats["rms_history"].extend(normalized_history)
+        detector.baseline_stats["established_baseline"] = established
+        detector.baseline_stats["learning_started_at"] = 0.0
+        detector.baseline_stats["last_blocked_at"] = 0.0
+    return True
 
 
 def summarize_marker_alignment(
@@ -990,6 +1042,11 @@ def marker_sidecar_path(wav_path: str | Path) -> Path:
     return path.with_suffix(path.suffix + ".markers.json")
 
 
+def baseline_sidecar_path(wav_path: str | Path) -> Path:
+    path = Path(wav_path).expanduser()
+    return path.with_suffix(path.suffix + ".baseline.json")
+
+
 def load_marker_sidecar(wav_path: str | Path) -> list[int]:
     sidecar = marker_sidecar_path(wav_path)
     try:
@@ -1030,3 +1087,40 @@ def save_marker_sidecar(
     }
     sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return sidecar
+
+
+def load_baseline_sidecar(wav_path: str | Path) -> dict | None:
+    sidecar = baseline_sidecar_path(wav_path)
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    baseline = payload.get("baseline")
+    if not isinstance(baseline, dict):
+        return None
+    return payload
+
+
+def save_baseline_sidecar(wav_path: str | Path, payload: dict) -> Path:
+    sidecar = baseline_sidecar_path(wav_path)
+    sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return sidecar
+
+
+def write_mono_wav_file(path: str | Path, samples: np.ndarray, sample_rate: int) -> Path:
+    wav_path = Path(path).expanduser()
+    pcm = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if pcm.size == 0:
+        raise ValueError("No audio samples to write")
+    pcm = np.clip(pcm, -1.0, 1.0)
+    pcm_i16 = np.round(pcm * 32767.0).astype(np.int16)
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(int(max(1, sample_rate)))
+        wav.writeframes(pcm_i16.tobytes())
+    return wav_path

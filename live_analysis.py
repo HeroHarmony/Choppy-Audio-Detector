@@ -1504,10 +1504,10 @@ class BalancedChoppyDetector:
                 burst_candidate = (
                     silence_choppy
                     and not envelope_hit
-                    and 0.66 <= confidence < 0.75
+                    and 0.64 <= confidence < 0.75
                     and 0.52 <= silence_ratio <= 0.85
                     and silence_gap_count <= 2
-                    and mod_strength >= 4.6
+                    and mod_strength >= 4.3
                     and mod_depth >= 0.45
                 )
                 while burst_cluster_hits and (current_time - burst_cluster_hits[0]) > 2.2:
@@ -1526,11 +1526,12 @@ class BalancedChoppyDetector:
                     int(getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms()) >= 1600
                     and silence_choppy
                     and not envelope_hit
-                    and 0.68 <= confidence < 0.75
+                    and 0.66 <= confidence < 0.75
                     and 0.52 <= silence_ratio <= 0.85
-                    and mod_strength >= 5.0
+                    and silence_max_gap_ms >= 600.0
+                    and mod_strength >= 4.0
                     and mod_depth >= 0.45
-                    and mod_peak_concentration >= 0.07
+                    and mod_peak_concentration >= 0.05
                 )
                 while long_window_sparse_burst_hits and (current_time - long_window_sparse_burst_hits[0]) > 2.8:
                     long_window_sparse_burst_hits.popleft()
@@ -1540,7 +1541,7 @@ class BalancedChoppyDetector:
                         or (current_time - long_window_sparse_burst_hits[-1]) >= 0.15
                     ):
                         long_window_sparse_burst_hits.append(current_time)
-                if len(long_window_sparse_burst_hits) >= 4:
+                if len(long_window_sparse_burst_hits) >= 2:
                     confidence = max(confidence, 0.76)
                     reasons = f"{reasons}; Long-window sparse-gap burst cluster"
 

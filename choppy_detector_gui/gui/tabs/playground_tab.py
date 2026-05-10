@@ -141,7 +141,7 @@ def build_playground_tab(window) -> None:
 
     window.playground_marker_latency_ms_spin = QSpinBox()
     window.playground_marker_latency_ms_spin.setRange(0, 1000)
-    window.playground_marker_latency_ms_spin.setValue(150)
+    window.playground_marker_latency_ms_spin.setValue(270)
     window.playground_marker_latency_ms_spin.setSingleStep(10)
     window.playground_marker_latency_ms_spin.setSuffix(" ms")
     window.playground_marker_latency_ms_spin.setToolTip(

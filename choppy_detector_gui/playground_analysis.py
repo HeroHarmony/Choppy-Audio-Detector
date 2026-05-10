@@ -659,6 +659,7 @@ def analyze_wav_file(
     silence_persistence_hits_ms: list[int] = []
     burst_cluster_hits_ms: list[int] = []
     long_window_sparse_burst_hits_ms: list[int] = []
+    subtle_modulation_hits_ms: list[int] = []
     last_detection_ms = -10_000_000
     last_detection_signature = ""
     dedup_window_ms = float(live_analysis.ALERT_CONFIG.get("event_dedup_seconds", 0.9)) * 1000.0
@@ -686,6 +687,7 @@ def analyze_wav_file(
         envelope_hit = bool((results.get("envelope_discontinuity", {}) or {}).get("choppy", False))
         modulation_hit = bool((results.get("amplitude_modulation", {}) or {}).get("choppy", False))
         persistence_promoted = False
+        subtle_modulation_promoted = False
         start_ms = int(round((start / loaded.sample_rate) * 1000.0))
         end_ms = int(round((end / loaded.sample_rate) * 1000.0))
         severe_silence_ratio = max(float(live_analysis.THRESHOLDS.get("silence_ratio", 0.60)) + 0.08, 0.68)
@@ -774,6 +776,44 @@ def analyze_wav_file(
             confidence = max(confidence, 0.76)
             reasons = f"{reasons}; Long-window sparse-gap burst cluster"
 
+        if bool(live_analysis.ALERT_CONFIG.get("enable_subtle_modulation_promotion", False)):
+            # Subtle low-ambient path:
+            # Recover gradual/ambient glitch texture where hard gap detectors stay below threshold.
+            if int(window_ms) >= 1600:
+                subtle_strength_min = 5.2
+                subtle_depth_min = 0.50
+                subtle_concentration_min = 0.10
+                subtle_hits_required = 2
+                subtle_window_ms = 3200
+                subtle_spacing_ms = 180
+            else:
+                subtle_strength_min = 5.8
+                subtle_depth_min = 0.50
+                subtle_concentration_min = 0.16
+                subtle_hits_required = 3
+                subtle_window_ms = 3000
+                subtle_spacing_ms = 120
+
+            subtle_candidate = (
+                not silence_choppy
+                and not envelope_hit
+                and 0.08 <= silence_ratio <= 0.55
+                and mod_strength >= subtle_strength_min
+                and mod_depth >= subtle_depth_min
+                and mod_peak_concentration >= subtle_concentration_min
+            )
+            subtle_modulation_hits_ms = [t for t in subtle_modulation_hits_ms if (start_ms - t) <= subtle_window_ms]
+            if subtle_candidate:
+                if not subtle_modulation_hits_ms or (start_ms - subtle_modulation_hits_ms[-1]) >= subtle_spacing_ms:
+                    subtle_modulation_hits_ms.append(start_ms)
+            if len(subtle_modulation_hits_ms) >= subtle_hits_required:
+                confidence = max(confidence, 0.76)
+                if reasons:
+                    reasons = f"{reasons}; Subtle low-ambient modulation cluster"
+                else:
+                    reasons = "Subtle low-ambient modulation cluster"
+                subtle_modulation_promoted = True
+
         confidence_pct = float(round(confidence * 100.0, 1))
         confidences.append(confidence_pct)
         high_confidence = bool(results) and confidence >= 0.75
@@ -793,6 +833,8 @@ def analyze_wav_file(
         )
         if persistence_promoted:
             active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
+        if subtle_modulation_promoted:
+            active_methods = tuple(sorted(set(active_methods) | {"subtle_modulation_cluster"}))
         signature = "|".join(active_methods)
 
         deduped_detection = False

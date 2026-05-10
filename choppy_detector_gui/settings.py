@@ -40,6 +40,7 @@ DEFAULT_ALERT_CONFIG = {
     "log_possible_glitches": True,
     "possible_log_min_confidence": 0.70,
     "possible_log_interval_seconds": 10.0,
+    "enable_subtle_modulation_promotion": False,
     "max_alert_age_seconds": 15.0,
     "max_alert_send_window_seconds": 8.0,
     "twitch_send_failures_for_pause": 3,

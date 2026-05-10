@@ -124,6 +124,7 @@ ALERT_CONFIG = {
     'log_possible_glitches': True,       # Show occasional low-confidence hints
     'possible_log_min_confidence': 0.70, # Only log stronger low-confidence hits
     'possible_log_interval_seconds': 10.0,# Throttle repeated "possible" logs
+    'enable_subtle_modulation_promotion': False,  # Experimental subtle ambient promotion path
     'max_alert_age_seconds': 15.0,       # Drop stale queued alerts
     'max_alert_send_window_seconds': 8.0,# Give up on sending if retries exceed this window
     'twitch_send_failures_for_pause': 3, # Consecutive send failures before pausing
@@ -1316,6 +1317,7 @@ class BalancedChoppyDetector:
         silence_persistence_hits = deque(maxlen=32)
         burst_cluster_hits = deque(maxlen=64)
         long_window_sparse_burst_hits = deque(maxlen=64)
+        subtle_modulation_hits = deque(maxlen=96)
         
         print("Listening for streaming audio glitches...")
         print("Building baseline audio profile...")
@@ -1458,6 +1460,7 @@ class BalancedChoppyDetector:
                 envelope_hit = bool(results.get('envelope_discontinuity', {}).get('choppy', False))
                 modulation_hit = bool(results.get('amplitude_modulation', {}).get('choppy', False))
                 persistence_promoted = False
+                subtle_modulation_promoted = False
                 severe_silence_ratio = max(float(THRESHOLDS['silence_ratio']) + 0.08, 0.68)
                 severe_gap_pattern = (
                     silence_ratio >= severe_silence_ratio
@@ -1545,6 +1548,51 @@ class BalancedChoppyDetector:
                     confidence = max(confidence, 0.76)
                     reasons = f"{reasons}; Long-window sparse-gap burst cluster"
 
+                if bool(ALERT_CONFIG.get('enable_subtle_modulation_promotion', False)):
+                    # Subtle low-ambient path:
+                    # Recover gradual/ambient glitch texture where hard gap detectors stay below threshold.
+                    current_window_ms = int(
+                        getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms()
+                    )
+                    if current_window_ms >= 1600:
+                        subtle_strength_min = 5.2
+                        subtle_depth_min = 0.50
+                        subtle_concentration_min = 0.10
+                        subtle_hits_required = 2
+                        subtle_window_seconds = 3.2
+                        subtle_spacing_seconds = 0.18
+                    else:
+                        subtle_strength_min = 5.8
+                        subtle_depth_min = 0.50
+                        subtle_concentration_min = 0.16
+                        subtle_hits_required = 3
+                        subtle_window_seconds = 3.0
+                        subtle_spacing_seconds = 0.12
+
+                    subtle_candidate = (
+                        not silence_choppy
+                        and not envelope_hit
+                        and 0.08 <= silence_ratio <= 0.55
+                        and mod_strength >= subtle_strength_min
+                        and mod_depth >= subtle_depth_min
+                        and mod_peak_concentration >= subtle_concentration_min
+                    )
+                    while subtle_modulation_hits and (current_time - subtle_modulation_hits[0]) > subtle_window_seconds:
+                        subtle_modulation_hits.popleft()
+                    if subtle_candidate:
+                        if (
+                            not subtle_modulation_hits
+                            or (current_time - subtle_modulation_hits[-1]) >= subtle_spacing_seconds
+                        ):
+                            subtle_modulation_hits.append(current_time)
+                    if len(subtle_modulation_hits) >= subtle_hits_required:
+                        confidence = max(confidence, 0.76)
+                        if reasons:
+                            reasons = f"{reasons}; Subtle low-ambient modulation cluster"
+                        else:
+                            reasons = "Subtle low-ambient modulation cluster"
+                        subtle_modulation_promoted = True
+
                 self.recent_analysis_windows += 1
                 if results and 0 < confidence < 0.75:
                     self.recent_low_conf_hits += 1
@@ -1571,6 +1619,8 @@ class BalancedChoppyDetector:
                 active_methods = tuple(sorted(method for method, result in results.items() if result.get('choppy')))
                 if persistence_promoted:
                     active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
+                if subtle_modulation_promoted:
+                    active_methods = tuple(sorted(set(active_methods) | {"subtle_modulation_cluster"}))
                 current_signature = "|".join(active_methods)
                 time_since_event = current_time - self.last_detection_event_time
                 if (

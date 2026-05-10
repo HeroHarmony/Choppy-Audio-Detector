@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import math
+from pathlib import Path
 import sys
 import threading
 import time
@@ -19,6 +20,7 @@ try:
         QCheckBox,
         QComboBox,
         QDoubleSpinBox,
+        QFileDialog,
         QHBoxLayout,
         QLabel,
         QMainWindow,
@@ -27,6 +29,7 @@ try:
         QPushButton,
         QSplashScreen,
         QSpinBox,
+        QTableWidgetItem,
         QTabWidget,
         QVBoxLayout,
         QWidget,
@@ -47,6 +50,7 @@ from choppy_detector_gui.file_logging import AppFileLogger
 from choppy_detector_gui.gui.tabs.advanced_tab import build_advanced_tab as build_advanced_tab_ui
 from choppy_detector_gui.gui.tabs.console_tab import build_console_tab as build_console_tab_ui
 from choppy_detector_gui.gui.tabs.main_tab import build_main_tab as build_main_tab_ui
+from choppy_detector_gui.gui.tabs.playground_tab import build_playground_tab as build_playground_tab_ui
 from choppy_detector_gui.gui.tabs.responses_tab import build_responses_tab as build_responses_tab_ui
 from choppy_detector_gui.gui.tabs.settings_tab import build_settings_tab as build_settings_tab_ui
 from choppy_detector_gui.gui.tabs.support_tab import build_support_tab as build_support_tab_ui
@@ -80,6 +84,12 @@ from choppy_detector_gui.runtime_event_router import RuntimeEventContext
 from choppy_detector_gui.status_badge_presenter import StatusBadgePresenter
 from choppy_detector_gui.twitch_status_coordinator import TwitchStatusCoordinator
 from choppy_detector_gui.runtime import DetectorRuntime
+from choppy_detector_gui.playground_analysis import (
+    LoadedWavFile,
+    analyze_wav_file,
+    load_wav_file,
+    write_compact_report,
+)
 from choppy_detector_gui.settings import (
     AppSettings,
     load_settings,
@@ -244,6 +254,21 @@ class MainWindow(QMainWindow):
         self.meter_preview_timer = QTimer(self)
         self.meter_preview_timer.timeout.connect(self.refresh_meter_preview_ui)
         self.update_meter_refresh_timer()
+        self.playground_playback_timer = QTimer(self)
+        self.playground_playback_timer.timeout.connect(self.refresh_playground_playback_status)
+        self.playground_live_timer = QTimer(self)
+        self.playground_live_timer.timeout.connect(self.refresh_live_playground_status)
+        self._playground_audio_file = None
+        self._playground_is_playing = False
+        self._playground_started_at_monotonic = 0.0
+        self._playground_play_duration_seconds = 0.0
+        self._playground_live_stream = None
+        self._playground_live_running = False
+        self._playground_live_sample_rate = 0
+        self._playground_live_channel_index = 0
+        self._playground_live_started_at_monotonic = 0.0
+        self._playground_live_chunks: list[np.ndarray] = []
+        self._playground_live_lock = threading.Lock()
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -259,6 +284,7 @@ class MainWindow(QMainWindow):
         build_settings_tab_ui(self)
         build_advanced_tab_ui(self)
         build_websocket_tab_ui(self)
+        build_playground_tab_ui(self)
         build_console_tab_ui(self)
         build_support_tab_ui(self)
         self._last_tab_index = self.tabs.currentIndex()
@@ -276,6 +302,7 @@ class MainWindow(QMainWindow):
         self.update_auto_restart_timer()
         self.update_command_service()
         self.restart_meter_preview()
+        self.update_playground_controls()
         self.append_console("GUI started.")
         if self.settings.obs_websocket.enabled and self.settings.obs_websocket.auto_connect_on_launch:
             QTimer.singleShot(250, self.start_obs_auto_connect)
@@ -465,6 +492,7 @@ class MainWindow(QMainWindow):
         self.refresh_channel_options()
         self.update_device_controls()
         self.restart_meter_preview()
+        self.update_playground_controls()
 
     def device_selection_changed(self) -> None:
         if self._loading_devices:
@@ -481,6 +509,7 @@ class MainWindow(QMainWindow):
             return
         self.refresh_channel_options()
         self.restart_meter_preview()
+        self.update_playground_controls()
         if self.runtime.is_running:
             ok, message = self.runtime.switch_device(int(selection), source="gui")
             if not ok:
@@ -499,6 +528,7 @@ class MainWindow(QMainWindow):
         self.settings.selected_channel_index = int(channel_index)
         save_settings(self.settings)
         self.restart_meter_preview()
+        self.update_playground_controls()
         if self.runtime.is_running:
             self.restart_monitoring()
 
@@ -615,6 +645,373 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.update_command_service()
         self.update_twitch_status_from_settings()
+
+    def browse_playground_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select WAV file",
+            "",
+            "WAV files (*.wav);;All files (*)",
+        )
+        if not path:
+            return
+        self.playground_file_path.setText(path)
+        self.load_playground_file(path)
+
+    def load_playground_file_clicked(self) -> None:
+        path = self.playground_file_path.text().strip()
+        if not path:
+            QMessageBox.information(self, "Playground", "Choose a WAV file first.")
+            return
+        self.load_playground_file(path)
+
+    def load_playground_file(self, path: str) -> None:
+        self.stop_playground_audio()
+        try:
+            loaded = load_wav_file(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "WAV load failed", str(exc))
+            self._playground_audio_file = None
+            self.update_playground_controls()
+            return
+
+        self._playground_audio_file = loaded
+        self.playground_file_path.setText(loaded.path)
+        self.playground_channel_spin.setRange(1, max(1, loaded.channel_count))
+        self.playground_channel_spin.setValue(min(self.playground_channel_spin.value(), loaded.channel_count))
+        self.playground_file_info.setPlainText(
+            f"{loaded.path} | {loaded.sample_rate} Hz | {loaded.channel_count} channel(s) | "
+            f"{loaded.duration_ms / 1000.0:.2f}s"
+        )
+        self.playground_analysis_summary.setPlainText("File loaded. Run analysis to inspect telemetry.")
+        self.playground_table.setRowCount(0)
+        self.append_console(f"Playground loaded WAV file: {loaded.path}")
+        self.update_playground_controls()
+
+    def update_playground_controls(self) -> None:
+        has_file = self._playground_audio_file is not None
+        live_running = self._playground_live_running
+        self.playground_browse_button.setEnabled(not live_running)
+        self.playground_load_button.setEnabled(not live_running)
+        self.playground_file_path.setEnabled(not live_running)
+        self.playground_analyze_button.setEnabled(has_file and not live_running)
+        self.playground_preview_button.setEnabled(has_file and SOUNDDEVICE_AVAILABLE and not live_running)
+        self.playground_preview_button.setText("Stop Preview" if self._playground_is_playing else "Preview Sound")
+        selected_device = self.selected_combo_device()
+        can_start_live = bool(
+            SOUNDDEVICE_AVAILABLE
+            and not live_running
+            and selected_device
+            and selected_device.is_monitorable
+        )
+        self.playground_live_start_button.setEnabled(can_start_live)
+        self.playground_live_stop_button.setEnabled(SOUNDDEVICE_AVAILABLE and live_running)
+        if not SOUNDDEVICE_AVAILABLE:
+            self.playground_playback_status.setText("Playback unavailable (sounddevice missing)")
+            self.playground_live_status.setText("Live report unavailable (sounddevice missing)")
+            self.playground_preview_button.setText("Preview Sound")
+
+    def toggle_playground_preview(self) -> None:
+        if self._playground_is_playing:
+            self.stop_playground_audio()
+            return
+        self.play_playground_audio()
+
+    def play_playground_audio(self) -> None:
+        if not SOUNDDEVICE_AVAILABLE:
+            QMessageBox.warning(self, "Playback unavailable", "sounddevice is not available.")
+            return
+        loaded = self._playground_audio_file
+        if loaded is None:
+            QMessageBox.information(self, "Playground", "Load a WAV file first.")
+            return
+        channel_idx = max(0, min(self.playground_channel_spin.value() - 1, loaded.channel_count - 1))
+        audio = loaded.samples[:, channel_idx]
+        try:
+            sd.play(audio, samplerate=loaded.sample_rate, blocking=False)
+        except Exception as exc:
+            QMessageBox.warning(self, "Playback failed", str(exc))
+            return
+        self._playground_is_playing = True
+        self._playground_started_at_monotonic = time.monotonic()
+        self._playground_play_duration_seconds = max(0.001, len(audio) / float(loaded.sample_rate))
+        self.playground_playback_timer.start(100)
+        self.playground_playback_status.setText("Playing")
+        self.update_playground_controls()
+
+    def stop_playground_audio(self) -> None:
+        if SOUNDDEVICE_AVAILABLE:
+            try:
+                sd.stop()
+            except Exception:
+                pass
+        self._playground_is_playing = False
+        self.playground_playback_timer.stop()
+        self.playground_playback_status.setText("Not playing")
+        self.playground_progress.setValue(0)
+        self.update_playground_controls()
+
+    def refresh_playground_playback_status(self) -> None:
+        if not self._playground_is_playing:
+            return
+        elapsed = max(0.0, time.monotonic() - self._playground_started_at_monotonic)
+        progress = min(1.0, elapsed / self._playground_play_duration_seconds)
+        self.playground_progress.setValue(int(round(progress * 1000)))
+        if elapsed >= self._playground_play_duration_seconds:
+            self.stop_playground_audio()
+
+    def run_playground_analysis(self) -> None:
+        if self._playground_live_running:
+            QMessageBox.information(self, "Playground", "Stop the live report before running file analysis.")
+            return
+        loaded = self._playground_audio_file
+        if loaded is None:
+            QMessageBox.information(self, "Playground", "Load a WAV file first.")
+            return
+
+        window_ms = int(self.playground_window_ms_spin.value())
+        step_ms = int(self.playground_step_ms_spin.value())
+        warmup_ms = int(self.playground_warmup_ms_spin.value())
+        channel_idx = max(0, self.playground_channel_spin.value() - 1)
+        expected_glitch = bool(int(self.playground_expected_combo.currentData() or 0))
+
+        self.playground_analysis_summary.setPlainText("Running analysis...")
+        self.playground_analyze_button.setEnabled(False)
+        self.playground_table.setSortingEnabled(False)
+        try:
+            result = analyze_wav_file(
+                loaded,
+                self.settings,
+                channel_index=channel_idx,
+                window_ms=window_ms,
+                step_ms=step_ms,
+                warmup_ms=warmup_ms,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Analysis failed", str(exc))
+            return
+        finally:
+            self.playground_analyze_button.setEnabled(True)
+            self.update_playground_controls()
+
+        report_stem = Path(result.file.path).stem
+        self.render_playground_result(
+            result,
+            expected_glitch=expected_glitch,
+            report_stem=report_stem,
+            source_label="file",
+        )
+
+    def start_live_playground_report(self) -> None:
+        if not SOUNDDEVICE_AVAILABLE:
+            QMessageBox.warning(self, "Live report unavailable", "sounddevice is not available.")
+            return
+        if self._playground_live_running:
+            return
+        if self._playground_is_playing:
+            self.stop_playground_audio()
+        selected_device = self.selected_combo_device()
+        if selected_device is None or not selected_device.is_monitorable:
+            QMessageBox.warning(self, "Live report", "Select a monitorable input/capture device first.")
+            return
+
+        channel_index = self.channel_combo.currentData()
+        channel_idx = int(channel_index if channel_index is not None else self.settings.selected_channel_index)
+        channel_idx = max(0, channel_idx)
+        channels = channel_idx + 1
+        sample_rate = int(round(float(selected_device.default_samplerate or 44100)))
+
+        with self._playground_live_lock:
+            self._playground_live_chunks = []
+        self._playground_live_sample_rate = sample_rate
+        self._playground_live_channel_index = channel_idx
+        self._playground_live_started_at_monotonic = time.monotonic()
+
+        try:
+            self._playground_live_stream = sd.InputStream(
+                device=selected_device.portaudio_index,
+                samplerate=sample_rate,
+                channels=channels,
+                blocksize=1024,
+                callback=self._playground_live_callback,
+            )
+            self._playground_live_stream.start()
+        except Exception as exc:
+            self._playground_live_stream = None
+            QMessageBox.warning(self, "Live report start failed", str(exc))
+            return
+
+        self._playground_live_running = True
+        self.playground_live_timer.start(200)
+        self.playground_live_status.setText("Recording live...")
+        self.append_console(
+            f"Playground live report started on {selected_device.full_label} "
+            f"(channel {channel_idx + 1}, {sample_rate} Hz)"
+        )
+        self.update_playground_controls()
+
+    def _playground_live_callback(self, indata, frames, time_info, status) -> None:
+        if not self._playground_live_running:
+            return
+        if status:
+            return
+        try:
+            if indata.ndim > 1:
+                idx = min(self._playground_live_channel_index, indata.shape[1] - 1)
+                audio_data = indata[:, idx]
+            else:
+                audio_data = indata
+            chunk = np.array(audio_data, dtype=np.float32, copy=True)
+            with self._playground_live_lock:
+                self._playground_live_chunks.append(chunk)
+        except Exception:
+            return
+
+    def refresh_live_playground_status(self) -> None:
+        if not self._playground_live_running:
+            return
+        elapsed = max(0.0, time.monotonic() - self._playground_live_started_at_monotonic)
+        self.playground_live_status.setText(f"Recording live... {elapsed:.1f}s")
+
+    def stop_live_playground_report(self, *, save_report: bool = True) -> None:
+        if not self._playground_live_running:
+            return
+        self._playground_live_running = False
+        self.playground_live_timer.stop()
+        stream = self._playground_live_stream
+        self._playground_live_stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+        with self._playground_live_lock:
+            chunks = list(self._playground_live_chunks)
+            self._playground_live_chunks = []
+        self.update_playground_controls()
+        self.playground_live_status.setText("Live report idle")
+
+        if not save_report:
+            return
+
+        if not chunks:
+            QMessageBox.information(self, "Live report", "No audio captured.")
+            return
+
+        captured = np.concatenate(chunks).astype(np.float32, copy=False)
+        if captured.size == 0:
+            QMessageBox.information(self, "Live report", "No audio captured.")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        live_stem = f"live_capture_{timestamp}"
+        loaded = LoadedWavFile(
+            path=f"{live_stem}.wav",
+            sample_rate=int(self._playground_live_sample_rate or 44100),
+            channel_count=1,
+            frame_count=int(captured.size),
+            duration_ms=int(round((captured.size / float(self._playground_live_sample_rate or 1)) * 1000.0)),
+            samples=captured.reshape(-1, 1),
+        )
+        window_ms = int(self.playground_window_ms_spin.value())
+        step_ms = int(self.playground_step_ms_spin.value())
+        warmup_ms = int(self.playground_warmup_ms_spin.value())
+        expected_glitch = bool(int(self.playground_expected_combo.currentData() or 0))
+        self.playground_analysis_summary.setPlainText("Running live capture analysis...")
+        try:
+            result = analyze_wav_file(
+                loaded,
+                self.settings,
+                channel_index=0,
+                window_ms=window_ms,
+                step_ms=step_ms,
+                warmup_ms=warmup_ms,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Live report analysis failed", str(exc))
+            return
+
+        self.render_playground_result(
+            result,
+            expected_glitch=expected_glitch,
+            report_stem=live_stem,
+            source_label="live",
+        )
+
+    def render_playground_result(
+        self,
+        result,
+        *,
+        expected_glitch: bool,
+        report_stem: str,
+        source_label: str,
+    ) -> None:
+        rows = result.rows
+        self.playground_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            values = [
+                str(row.index),
+                str(row.start_ms),
+                str(row.end_ms),
+                f"{row.rms_dbfs:.2f}",
+                f"{row.confidence_pct:.1f}",
+                "Y" if row.high_confidence else "",
+                "Y" if row.primary_hit else "",
+                "Y" if row.deduped_detection else "",
+                "Y" if row.suppressed_by_warmup else "",
+                row.methods,
+                f"{row.silence_ratio:.3f}",
+                str(row.gap_count),
+                f"{row.max_gap_ms:.1f}",
+                f"{row.envelope_score:.3f}",
+                f"{row.modulation_strength:.3f}",
+                f"{row.modulation_freq_hz:.2f}",
+                f"{row.modulation_depth:.3f}",
+                f"{row.modulation_peak_concentration:.3f}",
+                row.reasons,
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                self.playground_table.setItem(row_index, col, item)
+
+        self.playground_table.resizeColumnsToContents()
+        report_path = write_compact_report(
+            result,
+            self.settings,
+            reports_dir=Path.cwd() / "Reports",
+            expected_glitch=expected_glitch,
+            report_stem=report_stem,
+        )
+        detected_glitch = result.deduped_detection_count > 0
+        if expected_glitch and detected_glitch:
+            eval_label = "TP"
+        elif (not expected_glitch) and (not detected_glitch):
+            eval_label = "TN"
+        elif (not expected_glitch) and detected_glitch:
+            eval_label = "FP"
+        else:
+            eval_label = "FN"
+        self.playground_analysis_summary.setPlainText(
+            f"Source: {source_label} | Windows: {len(rows)} | High-conf windows: {result.high_confidence_count} | "
+            f"Dedup detections: {result.deduped_detection_count} | "
+            f"Warm-up suppressed: {result.warmup_suppressed_count} | "
+            f"Max conf: {result.max_confidence_pct:.1f}% | Avg conf: {result.average_confidence_pct:.1f}% | "
+            f"Outcome: {eval_label} | Report: {report_path}"
+        )
+        self.append_console(
+            f"Playground {source_label} analysis complete: {result.file.path} "
+            f"(channel {result.channel_index + 1}, window={result.window_ms}ms, step={result.step_ms}ms)"
+        )
+        self.append_console(
+            f"Playground expectation check: expected={'glitch' if expected_glitch else 'clean'}, "
+            f"detected={'glitch' if detected_glitch else 'clean'} ({eval_label})"
+        )
+        self.append_console(f"Playground report saved: {report_path}")
 
     def save_templates(self) -> None:
         templates = collect_templates_from_controls(self)
@@ -1027,6 +1424,8 @@ class MainWindow(QMainWindow):
         return f"[{at.strftime('%H:%M:%S')}] {message}"
 
     def closeEvent(self, event) -> None:
+        self.stop_live_playground_report(save_report=False)
+        self.stop_playground_audio()
         self.stop_meter_preview()
         self.command_service.stop()
         self.cancel_obs_auto_connect_retry()

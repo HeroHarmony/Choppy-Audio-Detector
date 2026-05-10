@@ -811,7 +811,11 @@ class MainWindow(QMainWindow):
             step_ms = int(live_analysis.production_step_ms())
             return max(100, window_ms), max(10, step_ms)
         except Exception:
-            return 2000, 200
+            return 1000, 50
+
+    def _playground_comparison_timing(self) -> tuple[int, int]:
+        """Legacy baseline timing kept for A/B comparison in Playground."""
+        return 2000, 200
 
     def update_playground_controls(self) -> None:
         file_count = len(self._playground_loaded_files)
@@ -819,7 +823,7 @@ class MainWindow(QMainWindow):
         batch_mode = file_count > 1
         live_running = self._playground_live_running
         analysis_running = self._playground_analysis_running
-        prod_window_ms, prod_step_ms = self._playground_prod_timing()
+        compare_window_ms, compare_step_ms = self._playground_comparison_timing()
         controls_locked = live_running or analysis_running
         self.playground_browse_button.setEnabled(not controls_locked)
         self.playground_load_button.setEnabled(not controls_locked)
@@ -829,8 +833,8 @@ class MainWindow(QMainWindow):
         self.playground_extended_report.setEnabled(has_file and not controls_locked)
         self.playground_also_prod_timing.setToolTip(
             "When enabled and current timing is not "
-            f"{prod_window_ms}/{prod_step_ms},\n"
-            "generate an additional report using live production timing."
+            f"{compare_window_ms}/{compare_step_ms},\n"
+            "generate an additional report using legacy comparison timing."
         )
         self.playground_analyze_button.setText("Analyze Batch" if batch_mode else "Analyze File")
         self.playground_analyze_button.setToolTip(
@@ -923,10 +927,10 @@ class MainWindow(QMainWindow):
         step_ms = int(self.playground_step_ms_spin.value())
         warmup_ms = int(self.playground_warmup_ms_spin.value())
         channel_idx = max(0, self.playground_channel_spin.value() - 1)
-        prod_window_ms, prod_step_ms = self._playground_prod_timing()
+        compare_window_ms, compare_step_ms = self._playground_comparison_timing()
         also_prod_timing = bool(self.playground_also_prod_timing.isChecked())
         run_prod_timing = also_prod_timing and (
-            window_ms != prod_window_ms or step_ms != prod_step_ms
+            window_ms != compare_window_ms or step_ms != compare_step_ms
         )
 
         batch_mode = len(loaded_files) > 1
@@ -954,8 +958,8 @@ class MainWindow(QMainWindow):
                         loaded,
                         self.settings,
                         channel_index=effective_channel_idx,
-                        window_ms=prod_window_ms,
-                        step_ms=prod_step_ms,
+                        window_ms=compare_window_ms,
+                        step_ms=compare_step_ms,
                         warmup_ms=warmup_ms,
                     )
                 inferred = self.infer_expected_outcome_from_filename(loaded.path)
@@ -1016,11 +1020,11 @@ class MainWindow(QMainWindow):
                 prod_result,
                 expected_glitch=expected_glitch,
                 report_stem=report_stem,
-                source_label="file-prod",
+                source_label="file-legacy",
                 update_ui=False,
             )
             self.playground_analysis_summary.setPlainText(
-                f"{self.playground_analysis_summary.toPlainText()} | Prod report: {prod_report_path}"
+                f"{self.playground_analysis_summary.toPlainText()} | Legacy report: {prod_report_path}"
             )
 
     def _play_playground_loaded_file(self, loaded: LoadedWavFile, channel_idx: int) -> None:
@@ -1224,7 +1228,7 @@ class MainWindow(QMainWindow):
                     prod_result,
                     expected_glitch=expected_glitch,
                     report_stem=report_stem,
-                    source_label="batch-file-prod",
+                    source_label="batch-file-legacy",
                     update_ui=False,
                 )
                 prod_report_paths.append(str(prod_report_path))
@@ -1235,7 +1239,7 @@ class MainWindow(QMainWindow):
             f"Reports: {len(primary_report_paths)}"
         )
         if prod_report_paths:
-            summary = f"{summary} | Prod reports: {len(prod_report_paths)}"
+            summary = f"{summary} | Legacy reports: {len(prod_report_paths)}"
         self.playground_analysis_summary.setPlainText(summary)
 
     def start_live_playground_report(self) -> None:
@@ -1357,10 +1361,10 @@ class MainWindow(QMainWindow):
         window_ms = int(self.playground_window_ms_spin.value())
         step_ms = int(self.playground_step_ms_spin.value())
         warmup_ms = int(self.playground_warmup_ms_spin.value())
-        prod_window_ms, prod_step_ms = self._playground_prod_timing()
+        compare_window_ms, compare_step_ms = self._playground_comparison_timing()
         also_prod_timing = bool(self.playground_also_prod_timing.isChecked())
         run_prod_timing = also_prod_timing and (
-            window_ms != prod_window_ms or step_ms != prod_step_ms
+            window_ms != compare_window_ms or step_ms != compare_step_ms
         )
         self.playground_analysis_summary.setPlainText("Running live capture analysis...")
         self._playground_analysis_running = True
@@ -1395,22 +1399,22 @@ class MainWindow(QMainWindow):
                     loaded,
                     self.settings,
                     channel_index=0,
-                    window_ms=prod_window_ms,
-                    step_ms=prod_step_ms,
+                    window_ms=compare_window_ms,
+                    step_ms=compare_step_ms,
                     warmup_ms=warmup_ms,
                 )
             except Exception as exc:
-                QMessageBox.warning(self, "Prod timing analysis failed", str(exc))
+                QMessageBox.warning(self, "Legacy timing analysis failed", str(exc))
                 return
             prod_report_path, _, _ = self.render_playground_result(
                 prod_result,
                 expected_glitch=expected_glitch,
                 report_stem=live_stem,
-                source_label="live-prod",
+                source_label="live-legacy",
                 update_ui=False,
             )
             self.playground_analysis_summary.setPlainText(
-                f"{self.playground_analysis_summary.toPlainText()} | Prod report: {prod_report_path}"
+                f"{self.playground_analysis_summary.toPlainText()} | Legacy report: {prod_report_path}"
             )
 
     def infer_expected_outcome_from_filename(self, path_text: str) -> tuple[bool, str] | None:

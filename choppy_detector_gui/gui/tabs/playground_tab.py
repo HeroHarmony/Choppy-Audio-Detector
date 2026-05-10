@@ -126,11 +126,11 @@ def build_playground_tab(window) -> None:
     window.playground_playback_status = QLabel("Not playing")
     controls_layout.addWidget(window.playground_playback_status, 1, 7, 1, 1)
 
-    window.playground_also_prod_timing = QCheckBox("Also run prod timing")
+    window.playground_also_prod_timing = QCheckBox("Also run legacy 2000/200")
     window.playground_also_prod_timing.setChecked(True)
     window.playground_also_prod_timing.setToolTip(
         "When enabled, generates an additional report using\n"
-        "the live production timing defaults."
+        "legacy comparison timing (window 2000 ms, step 200 ms)."
     )
     controls_layout.addWidget(window.playground_also_prod_timing, 2, 0, 1, 2)
 

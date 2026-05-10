@@ -179,6 +179,34 @@ QScrollBar::handle:vertical {
     background: #6a6a6a;
     min-height: 20px;
 }
+QProgressBar {
+    background-color: #2a2a2a;
+    color: #ececec;
+    border: 1px solid #5a5a5a;
+    border-radius: 3px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #2a82da;
+}
+QTableView, QTableWidget {
+    background-color: #3f3f3f;
+    alternate-background-color: #4a4a4a;
+    color: #ececec;
+    gridline-color: #5a5a5a;
+    selection-background-color: #2a82da;
+    selection-color: #ffffff;
+}
+QHeaderView::section {
+    background-color: #4d4d4d;
+    color: #ececec;
+    border: 1px solid #5a5a5a;
+    padding: 3px 6px;
+}
+QTableCornerButton::section {
+    background-color: #4d4d4d;
+    border: 1px solid #5a5a5a;
+}
 """
 
 OBS_AUTO_CONNECT_RETRY_DELAY_MS = 60_000

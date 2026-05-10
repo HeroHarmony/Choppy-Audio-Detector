@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QComboBox,
+    QCheckBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -99,22 +99,20 @@ def build_playground_tab(window) -> None:
     controls_layout.addWidget(QLabel("Warm-up Ignore (ms)"), 0, 6)
     controls_layout.addWidget(window.playground_warmup_ms_spin, 0, 7)
 
-    window.playground_expected_combo = QComboBox()
-    window.playground_expected_combo.addItem("No glitch expected", 0)
-    window.playground_expected_combo.addItem("Glitch expected", 1)
-    window.playground_expected_combo.setToolTip(
-        "Ground truth label for this sample.\n"
-        "Used to compute TN/TP/FP/FN in the summary and report."
+    window.playground_preview_on_done = QCheckBox("Preview on done")
+    window.playground_preview_on_done.setChecked(True)
+    window.playground_preview_on_done.setToolTip(
+        "When enabled, starts WAV preview after analysis finishes,\n"
+        "while you choose expected outcome in the result popup."
     )
-    controls_layout.addWidget(QLabel("Expected Outcome"), 1, 0)
-    controls_layout.addWidget(window.playground_expected_combo, 1, 1, 1, 2)
+    controls_layout.addWidget(window.playground_preview_on_done, 1, 0, 1, 2)
 
     window.playground_analyze_button = QPushButton("Analyze File")
     window.playground_analyze_button.clicked.connect(window.run_playground_analysis)
     window.playground_analyze_button.setToolTip(
         "Run offline detector analysis on the loaded WAV file and save a compact report."
     )
-    controls_layout.addWidget(window.playground_analyze_button, 1, 3, 1, 2)
+    controls_layout.addWidget(window.playground_analyze_button, 1, 2, 1, 2)
 
     window.playground_preview_button = QPushButton("Preview Sound")
     window.playground_preview_button.clicked.connect(window.toggle_playground_preview)
@@ -122,7 +120,7 @@ def build_playground_tab(window) -> None:
         "Toggle WAV preview playback.\n"
         "Click once to play, click again to stop."
     )
-    controls_layout.addWidget(window.playground_preview_button, 1, 5, 1, 2)
+    controls_layout.addWidget(window.playground_preview_button, 1, 4, 1, 3)
 
     window.playground_playback_status = QLabel("Not playing")
     controls_layout.addWidget(window.playground_playback_status, 1, 7, 1, 1)

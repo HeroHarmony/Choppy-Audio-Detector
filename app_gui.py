@@ -694,6 +694,7 @@ class MainWindow(QMainWindow):
         self.playground_browse_button.setEnabled(not live_running)
         self.playground_load_button.setEnabled(not live_running)
         self.playground_file_path.setEnabled(not live_running)
+        self.playground_preview_on_done.setEnabled(has_file and not live_running)
         self.playground_analyze_button.setEnabled(has_file and not live_running)
         self.playground_preview_button.setEnabled(has_file and SOUNDDEVICE_AVAILABLE and not live_running)
         self.playground_preview_button.setText("Stop Preview" if self._playground_is_playing else "Preview Sound")
@@ -773,7 +774,6 @@ class MainWindow(QMainWindow):
         step_ms = int(self.playground_step_ms_spin.value())
         warmup_ms = int(self.playground_warmup_ms_spin.value())
         channel_idx = max(0, self.playground_channel_spin.value() - 1)
-        expected_glitch = bool(int(self.playground_expected_combo.currentData() or 0))
 
         self.playground_analysis_summary.setPlainText("Running analysis...")
         self.playground_analyze_button.setEnabled(False)
@@ -794,6 +794,9 @@ class MainWindow(QMainWindow):
             self.playground_analyze_button.setEnabled(True)
             self.update_playground_controls()
 
+        expected_glitch = self.prompt_playground_expected_outcome(
+            allow_preview=bool(self.playground_preview_on_done.isChecked()),
+        )
         report_stem = Path(result.file.path).stem
         self.render_playground_result(
             result,
@@ -921,7 +924,6 @@ class MainWindow(QMainWindow):
         window_ms = int(self.playground_window_ms_spin.value())
         step_ms = int(self.playground_step_ms_spin.value())
         warmup_ms = int(self.playground_warmup_ms_spin.value())
-        expected_glitch = bool(int(self.playground_expected_combo.currentData() or 0))
         self.playground_analysis_summary.setPlainText("Running live capture analysis...")
         try:
             result = analyze_wav_file(
@@ -936,12 +938,34 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Live report analysis failed", str(exc))
             return
 
+        expected_glitch = self.prompt_playground_expected_outcome(allow_preview=False)
         self.render_playground_result(
             result,
             expected_glitch=expected_glitch,
             report_stem=live_stem,
             source_label="live",
         )
+
+    def prompt_playground_expected_outcome(self, *, allow_preview: bool) -> bool:
+        started_preview = False
+        if allow_preview and SOUNDDEVICE_AVAILABLE and self._playground_audio_file is not None:
+            self.stop_playground_audio()
+            self.play_playground_audio()
+            started_preview = self._playground_is_playing
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Expected Outcome")
+        box.setIcon(QMessageBox.Question)
+        box.setText("Analysis has finished. What is the expected output?")
+        no_btn = box.addButton("No glitch detected", QMessageBox.AcceptRole)
+        yes_btn = box.addButton("Glitch detected", QMessageBox.AcceptRole)
+        box.exec()
+        chosen = box.clickedButton()
+
+        if started_preview and self._playground_is_playing:
+            self.stop_playground_audio()
+
+        return bool(chosen == yes_btn)
 
     def render_playground_result(
         self,

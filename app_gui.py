@@ -860,12 +860,26 @@ class MainWindow(QMainWindow):
                 "Playground preview-on-done disabled because expected-outcome tag(s) were found in filename(s)."
             )
 
+        marker_loaded_count = sum(
+            1 for file in loaded_files if len(self._playground_markers_by_path.get(file.path, [])) > 0
+        )
+        baseline_loaded_count = len(self._playground_baseline_profiles_by_path)
         if len(loaded_files) == 1:
-            self.playground_analysis_summary.setPlainText("File loaded. Run analysis to inspect telemetry.")
+            summary = "File loaded."
+            if marker_loaded_count > 0:
+                summary = f"{summary} Markers loaded."
+            if baseline_loaded_count > 0:
+                summary = f"{summary} Baseline profile loaded."
+            summary = f"{summary} Run analysis to inspect telemetry."
+            self.playground_analysis_summary.setPlainText(summary)
         else:
-            self.playground_analysis_summary.setPlainText(
-                f"{len(loaded_files)} files loaded. Run batch analysis to inspect telemetry and save reports."
-            )
+            summary = f"{len(loaded_files)} files loaded."
+            if marker_loaded_count > 0:
+                summary = f"{summary} Markers loaded for {marker_loaded_count}/{len(loaded_files)} files."
+            if baseline_loaded_count > 0:
+                summary = f"{summary} Baseline profiles loaded for {baseline_loaded_count}/{len(loaded_files)} files."
+            summary = f"{summary} Run batch analysis to inspect telemetry and save reports."
+            self.playground_analysis_summary.setPlainText(summary)
         self.playground_table.setRowCount(0)
         self.update_playground_table_height()
         self.update_playground_marker_status()
@@ -873,7 +887,6 @@ class MainWindow(QMainWindow):
             f"Playground loaded {len(loaded_files)} WAV file(s): "
             + ", ".join(Path(file.path).name for file in loaded_files)
         )
-        baseline_loaded_count = len(self._playground_baseline_profiles_by_path)
         if baseline_loaded_count:
             self.append_console(
                 f"Playground loaded baseline profile sidecar(s): {baseline_loaded_count}"

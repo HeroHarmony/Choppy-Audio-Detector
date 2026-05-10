@@ -1,6 +1,6 @@
 # Playground Reference
 
-This page documents the Playground tab workflows for offline WAV testing and live-capture reporting.
+This page documents the Playground tab workflows for offline WAV testing and live-capture workflows.
 
 ## Purpose
 
@@ -10,11 +10,10 @@ Playground is for detector calibration and verification. It lets you:
 - Run optional second-pass analysis using production timing.
 - Preview audio before/after analysis.
 - Create compact report files in `Reports/`.
-- Capture live audio and export it as a report using the same detector pipeline.
+- Capture live audio to WAV and save a baseline sidecar for later analysis.
 
 ## Controls
 
-- `WAV path` + `Browse` + `Load`: Select and load a local WAV file.
 - `WAV path` + `Browse` + `Browse Batch...`: Select one or many local WAV files.
 - `Channel`: 1-based channel selector for multi-channel WAV input.
 - `Window (ms)`: Analysis window length in milliseconds.
@@ -26,7 +25,7 @@ Playground is for detector calibration and verification. It lets you:
 - `Analyze File`: Runs offline analysis for the loaded file.
 - `Analyze File` / `Analyze Batch`: Label changes automatically based on loaded file count.
 - `Preview Sound`: Toggle playback preview for loaded WAV.
-- `Start Live Report` / `Stop & Save Live Report`: Capture current monitored audio and generate report(s).
+- `Start Live Report` / `Stop & Save Live WAV`: Capture current monitored audio and save a WAV file (plus baseline sidecar when available).
 
 ## Analyze File Workflow
 
@@ -59,6 +58,7 @@ To skip the expected-outcome popup, include one of these tags in the WAV filenam
 
 - `[no glitch]` -> expected clean
 - `[glitch]` or `[glitchy]` -> expected glitch
+- `[continuous glitchy]` -> expected glitch (for sustained end-to-end choppiness)
 
 Notes:
 
@@ -71,9 +71,10 @@ Notes:
 
 1. Select a monitorable input/capture device on the `Main` tab.
 2. In Playground, click `Start Live Report`.
-3. When ready, click `Stop & Save Live Report`.
-4. Captured audio is analyzed and expected outcome is requested via popup.
-5. Report is written to `Reports/` (and optional prod-timing second report).
+3. When ready, click `Stop & Save Live WAV`.
+4. Choose where to save the captured WAV.
+5. A baseline sidecar (`.wav.baseline.json`) is saved next to the WAV when a running Main-tab baseline is available.
+6. Load the saved WAV in Playground and run normal file analysis/report workflow.
 
 ## Report Files
 

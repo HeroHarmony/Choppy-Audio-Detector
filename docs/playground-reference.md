@@ -15,6 +15,7 @@ Playground is for detector calibration and verification. It lets you:
 ## Controls
 
 - `WAV path` + `Browse` + `Load`: Select and load a local WAV file.
+- `WAV path` + `Browse` + `Browse Batch...`: Select one or many local WAV files.
 - `Channel`: 1-based channel selector for multi-channel WAV input.
 - `Window (ms)`: Analysis window length in milliseconds.
 - `Step (ms)`: Sliding step interval in milliseconds.
@@ -22,6 +23,7 @@ Playground is for detector calibration and verification. It lets you:
 - `Preview on done`: If enabled, starts preview playback when analysis completes.
 - `Also run prod timing`: If enabled and current timing differs from production timing, writes a second report using production timing.
 - `Analyze File`: Runs offline analysis for the loaded file.
+- `Analyze File` / `Analyze Batch`: Label changes automatically based on loaded file count.
 - `Preview Sound`: Toggle playback preview for loaded WAV.
 - `Start Live Report` / `Stop & Save Live Report`: Capture current monitored audio and generate report(s).
 
@@ -36,18 +38,33 @@ Playground is for detector calibration and verification. It lets you:
 5. Report is finalized only after expected outcome is known.
 6. If `Also run prod timing` is enabled and timing differs, a second report is generated.
 
+## Analyze Batch Workflow
+
+1. Click `Browse Batch...` and select multiple WAV files.
+2. The path input shows the selected list separated by `|`.
+3. `Analyze File` relabels to `Analyze Batch`.
+4. Click `Analyze Batch` to run analysis for each file first (reports are not finalized yet).
+5. A finalize popup opens with one row per analyzed file:
+- If filename tag already identifies expected outcome, that row is auto-labeled.
+- Otherwise select expected outcome from the row dropdown.
+- Each row has `Preview` to listen to that file.
+6. Click `Finalize Reports`:
+- If any row is still unset, the popup stays open and shows an error.
+- If all outcomes are set, reports are finalized and written.
+
 ## Filename Auto-Labeling
 
 To skip the expected-outcome popup, include one of these tags in the WAV filename:
 
 - `[no glitch]` -> expected clean
-- `[glitchy]` -> expected glitch
+- `[glitch]` or `[glitchy]` -> expected glitch
 
 Notes:
 
 - Matching is case-insensitive.
 - Minor separator variation inside the tag is accepted (space, `_`, or `-`), for example `[No_Glitch]`.
 - If no recognized tag is present, the popup is shown.
+- When one or more loaded filenames contain recognized tags, `Preview on done` is automatically unchecked when files are loaded.
 
 ## Live Report Workflow
 

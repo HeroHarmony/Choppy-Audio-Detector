@@ -20,14 +20,18 @@ try:
         QApplication,
         QCheckBox,
         QComboBox,
+        QDialog,
+        QDialogButtonBox,
         QDoubleSpinBox,
         QFileDialog,
+        QGridLayout,
         QHBoxLayout,
         QLabel,
         QMainWindow,
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QScrollArea,
         QSplashScreen,
         QSpinBox,
         QTableWidgetItem,
@@ -260,6 +264,7 @@ class MainWindow(QMainWindow):
         self.playground_live_timer = QTimer(self)
         self.playground_live_timer.timeout.connect(self.refresh_live_playground_status)
         self._playground_audio_file = None
+        self._playground_loaded_files: list[LoadedWavFile] = []
         self._playground_is_playing = False
         self._playground_started_at_monotonic = 0.0
         self._playground_play_duration_seconds = 0.0
@@ -270,6 +275,8 @@ class MainWindow(QMainWindow):
         self._playground_live_started_at_monotonic = 0.0
         self._playground_live_chunks: list[np.ndarray] = []
         self._playground_live_lock = threading.Lock()
+        self._playground_preview_active_path: str | None = None
+        self._playground_preview_active_channel_index: int = 0
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -656,43 +663,115 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        self.playground_file_path.setText(path)
-        self.load_playground_file(path)
+        self.load_playground_files([path])
+
+    def browse_playground_files_batch(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select WAV files",
+            "",
+            "WAV files (*.wav);;All files (*)",
+        )
+        if not paths:
+            return
+        self.load_playground_files(paths)
 
     def load_playground_file_clicked(self) -> None:
         path = self.playground_file_path.text().strip()
         if not path:
             QMessageBox.information(self, "Playground", "Choose a WAV file first.")
             return
-        self.load_playground_file(path)
+        parts = [piece.strip() for piece in re.split(r"[|,]", path) if piece.strip()]
+        if not parts:
+            QMessageBox.information(self, "Playground", "Choose a WAV file first.")
+            return
+        self.load_playground_files(parts)
 
     def load_playground_file(self, path: str) -> None:
+        self.load_playground_files([path])
+
+    def load_playground_files(self, paths: list[str]) -> None:
         self.stop_playground_audio()
-        try:
-            loaded = load_wav_file(path)
-        except Exception as exc:
-            QMessageBox.warning(self, "WAV load failed", str(exc))
-            self._playground_audio_file = None
-            self.update_playground_controls()
+        unique_paths: list[str] = []
+        for raw in paths:
+            normalized = str(raw).strip()
+            if not normalized:
+                continue
+            if normalized not in unique_paths:
+                unique_paths.append(normalized)
+        if not unique_paths:
             return
 
-        self._playground_audio_file = loaded
-        self.playground_file_path.setText(loaded.path)
-        self.playground_channel_spin.setRange(1, max(1, loaded.channel_count))
-        self.playground_channel_spin.setValue(min(self.playground_channel_spin.value(), loaded.channel_count))
-        self.playground_file_info.setPlainText(
-            f"{loaded.path} | {loaded.sample_rate} Hz | {loaded.channel_count} channel(s) | "
-            f"{loaded.duration_ms / 1000.0:.2f}s"
+        loaded_files: list[LoadedWavFile] = []
+        failures: list[tuple[str, str]] = []
+        for path in unique_paths:
+            try:
+                loaded_files.append(load_wav_file(path))
+            except Exception as exc:
+                failures.append((path, str(exc)))
+
+        if not loaded_files:
+            self._playground_audio_file = None
+            self._playground_loaded_files = []
+            self.update_playground_controls()
+            error_lines = "\n".join(f"{p}: {err}" for p, err in failures[:5])
+            QMessageBox.warning(self, "WAV load failed", error_lines or "No WAV files were loaded.")
+            return
+
+        self._playground_loaded_files = loaded_files
+        self._playground_audio_file = loaded_files[0]
+        self.playground_file_path.setText(" | ".join(file.path for file in loaded_files))
+
+        max_channel_count = max(file.channel_count for file in loaded_files)
+        self.playground_channel_spin.setRange(1, max(1, max_channel_count))
+        self.playground_channel_spin.setValue(min(self.playground_channel_spin.value(), max_channel_count))
+
+        if len(loaded_files) == 1:
+            loaded = loaded_files[0]
+            self.playground_file_info.setPlainText(
+                f"{loaded.path} | {loaded.sample_rate} Hz | {loaded.channel_count} channel(s) | "
+                f"{loaded.duration_ms / 1000.0:.2f}s"
+            )
+        else:
+            total_sec = sum(file.duration_ms for file in loaded_files) / 1000.0
+            sample_rates = sorted({file.sample_rate for file in loaded_files})
+            channel_counts = sorted({file.channel_count for file in loaded_files})
+            preview_names = ", ".join(Path(file.path).name for file in loaded_files[:3])
+            if len(loaded_files) > 3:
+                preview_names = f"{preview_names}, ..."
+            self.playground_file_info.setPlainText(
+                f"{len(loaded_files)} files loaded | Total duration: {total_sec:.2f}s | "
+                f"Sample rates: {sample_rates} | Channels: {channel_counts}\n"
+                f"{preview_names}"
+            )
+
+        tagged_count = sum(
+            1 for file in loaded_files if self.infer_expected_outcome_from_filename(file.path) is not None
         )
-        inferred = self.infer_expected_outcome_from_filename(loaded.path)
-        if inferred is not None and self.playground_preview_on_done.isChecked():
+        if tagged_count > 0 and self.playground_preview_on_done.isChecked():
             self.playground_preview_on_done.setChecked(False)
             self.append_console(
-                "Playground preview-on-done disabled because filename contains an expected-outcome tag."
+                "Playground preview-on-done disabled because expected-outcome tag(s) were found in filename(s)."
             )
-        self.playground_analysis_summary.setPlainText("File loaded. Run analysis to inspect telemetry.")
+
+        if len(loaded_files) == 1:
+            self.playground_analysis_summary.setPlainText("File loaded. Run analysis to inspect telemetry.")
+        else:
+            self.playground_analysis_summary.setPlainText(
+                f"{len(loaded_files)} files loaded. Run batch analysis to inspect telemetry and save reports."
+            )
         self.playground_table.setRowCount(0)
-        self.append_console(f"Playground loaded WAV file: {loaded.path}")
+        self.append_console(
+            f"Playground loaded {len(loaded_files)} WAV file(s): "
+            + ", ".join(Path(file.path).name for file in loaded_files)
+        )
+        if failures:
+            error_lines = "\n".join(f"{Path(p).name}: {err}" for p, err in failures[:5])
+            QMessageBox.warning(
+                self,
+                "Some files failed to load",
+                f"{len(failures)} file(s) failed and were skipped:\n{error_lines}",
+            )
         self.update_playground_controls()
 
     def _playground_prod_timing(self) -> tuple[int, int]:
@@ -706,7 +785,9 @@ class MainWindow(QMainWindow):
             return 2000, 200
 
     def update_playground_controls(self) -> None:
-        has_file = self._playground_audio_file is not None
+        file_count = len(self._playground_loaded_files)
+        has_file = file_count > 0
+        batch_mode = file_count > 1
         live_running = self._playground_live_running
         prod_window_ms, prod_step_ms = self._playground_prod_timing()
         self.playground_browse_button.setEnabled(not live_running)
@@ -719,8 +800,16 @@ class MainWindow(QMainWindow):
             f"{prod_window_ms}/{prod_step_ms},\n"
             "generate an additional report using live production timing."
         )
+        self.playground_analyze_button.setText("Analyze Batch" if batch_mode else "Analyze File")
+        self.playground_analyze_button.setToolTip(
+            "Run offline detector analysis on loaded WAV files and save compact report(s)."
+            if batch_mode
+            else "Run offline detector analysis on the loaded WAV file and save a compact report."
+        )
         self.playground_analyze_button.setEnabled(has_file and not live_running)
-        self.playground_preview_button.setEnabled(has_file and SOUNDDEVICE_AVAILABLE and not live_running)
+        self.playground_preview_button.setEnabled(
+            has_file and (not batch_mode) and SOUNDDEVICE_AVAILABLE and not live_running
+        )
         self.playground_preview_button.setText("Stop Preview" if self._playground_is_playing else "Preview Sound")
         selected_device = self.selected_combo_device()
         can_start_live = bool(
@@ -758,6 +847,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Playback failed", str(exc))
             return
         self._playground_is_playing = True
+        self._playground_preview_active_path = loaded.path
+        self._playground_preview_active_channel_index = channel_idx
         self._playground_started_at_monotonic = time.monotonic()
         self._playground_play_duration_seconds = max(0.001, len(audio) / float(loaded.sample_rate))
         self.playground_playback_timer.start(100)
@@ -771,6 +862,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._playground_is_playing = False
+        self._playground_preview_active_path = None
+        self._playground_preview_active_channel_index = 0
         self.playground_playback_timer.stop()
         self.playground_playback_status.setText("Not playing")
         self.playground_progress.setValue(0)
@@ -789,8 +882,8 @@ class MainWindow(QMainWindow):
         if self._playground_live_running:
             QMessageBox.information(self, "Playground", "Stop the live report before running file analysis.")
             return
-        loaded = self._playground_audio_file
-        if loaded is None:
+        loaded_files = list(self._playground_loaded_files)
+        if not loaded_files:
             QMessageBox.information(self, "Playground", "Load a WAV file first.")
             return
 
@@ -804,18 +897,45 @@ class MainWindow(QMainWindow):
             window_ms != prod_window_ms or step_ms != prod_step_ms
         )
 
-        self.playground_analysis_summary.setPlainText("Running analysis...")
+        batch_mode = len(loaded_files) > 1
+        self.playground_analysis_summary.setPlainText(
+            "Running batch analysis..." if batch_mode else "Running analysis..."
+        )
         self.playground_analyze_button.setEnabled(False)
         self.playground_table.setSortingEnabled(False)
         try:
-            result = analyze_wav_file(
-                loaded,
-                self.settings,
-                channel_index=channel_idx,
-                window_ms=window_ms,
-                step_ms=step_ms,
-                warmup_ms=warmup_ms,
-            )
+            analysis_rows: list[dict[str, object]] = []
+            for loaded in loaded_files:
+                effective_channel_idx = max(0, min(channel_idx, loaded.channel_count - 1))
+                result = analyze_wav_file(
+                    loaded,
+                    self.settings,
+                    channel_index=effective_channel_idx,
+                    window_ms=window_ms,
+                    step_ms=step_ms,
+                    warmup_ms=warmup_ms,
+                )
+                prod_result = None
+                if run_prod_timing:
+                    prod_result = analyze_wav_file(
+                        loaded,
+                        self.settings,
+                        channel_index=effective_channel_idx,
+                        window_ms=prod_window_ms,
+                        step_ms=prod_step_ms,
+                        warmup_ms=warmup_ms,
+                    )
+                inferred = self.infer_expected_outcome_from_filename(loaded.path)
+                analysis_rows.append(
+                    {
+                        "loaded": loaded,
+                        "result": result,
+                        "prod_result": prod_result,
+                        "effective_channel_idx": effective_channel_idx,
+                        "inferred_expected": inferred[0] if inferred is not None else None,
+                        "inferred_source": inferred[1] if inferred is not None else None,
+                    }
+                )
         except Exception as exc:
             QMessageBox.warning(self, "Analysis failed", str(exc))
             return
@@ -823,15 +943,32 @@ class MainWindow(QMainWindow):
             self.playground_analyze_button.setEnabled(True)
             self.update_playground_controls()
 
-        expected_glitch, auto_expected_source = self.resolve_playground_expected_outcome(
-            result.file.path,
-            allow_preview=bool(self.playground_preview_on_done.isChecked()),
-        )
-        if auto_expected_source is not None:
-            self.append_console(
-                f"Playground expected outcome auto-set from filename tag: "
-                f"{'glitch' if expected_glitch else 'clean'} ({auto_expected_source})"
+        if batch_mode:
+            self.finalize_batch_playground_analysis(
+                analysis_rows,
+                allow_preview=bool(self.playground_preview_on_done.isChecked()),
             )
+            return
+
+        row = analysis_rows[0]
+        result = row["result"]
+        assert result is not None
+        inferred_expected = row["inferred_expected"]
+        inferred_source = row["inferred_source"]
+        if inferred_expected is None:
+            expected_glitch = self.prompt_playground_expected_outcome(
+                allow_preview=bool(self.playground_preview_on_done.isChecked())
+            )
+        else:
+            expected_glitch = bool(inferred_expected)
+            if bool(self.playground_preview_on_done.isChecked()):
+                self._play_playground_loaded_file(row["loaded"], int(row["effective_channel_idx"]))
+            if inferred_source is not None:
+                self.append_console(
+                    f"Playground expected outcome auto-set from filename tag: "
+                    f"{'glitch' if expected_glitch else 'clean'} ({inferred_source})"
+                )
+
         report_stem = Path(result.file.path).stem
         self.render_playground_result(
             result,
@@ -840,19 +977,8 @@ class MainWindow(QMainWindow):
             source_label="file",
             update_ui=True,
         )
-        if run_prod_timing:
-            try:
-                prod_result = analyze_wav_file(
-                    loaded,
-                    self.settings,
-                    channel_index=channel_idx,
-                    window_ms=prod_window_ms,
-                    step_ms=prod_step_ms,
-                    warmup_ms=warmup_ms,
-                )
-            except Exception as exc:
-                QMessageBox.warning(self, "Prod timing analysis failed", str(exc))
-                return
+        prod_result = row["prod_result"]
+        if prod_result is not None:
             prod_report_path, _, _ = self.render_playground_result(
                 prod_result,
                 expected_glitch=expected_glitch,
@@ -863,6 +989,221 @@ class MainWindow(QMainWindow):
             self.playground_analysis_summary.setPlainText(
                 f"{self.playground_analysis_summary.toPlainText()} | Prod report: {prod_report_path}"
             )
+
+    def _play_playground_loaded_file(self, loaded: LoadedWavFile, channel_idx: int) -> None:
+        if not SOUNDDEVICE_AVAILABLE:
+            return
+        effective_channel_idx = max(0, min(int(channel_idx), loaded.channel_count - 1))
+        audio = loaded.samples[:, effective_channel_idx]
+        self.stop_playground_audio()
+        try:
+            sd.play(audio, samplerate=loaded.sample_rate, blocking=False)
+        except Exception:
+            return
+        self._playground_is_playing = True
+        self._playground_preview_active_path = loaded.path
+        self._playground_preview_active_channel_index = effective_channel_idx
+        self._playground_started_at_monotonic = time.monotonic()
+        self._playground_play_duration_seconds = max(0.001, len(audio) / float(loaded.sample_rate))
+        self.playground_playback_timer.start(100)
+        self.playground_playback_status.setText("Playing")
+        self.update_playground_controls()
+
+    def toggle_playground_loaded_file_preview(self, loaded: LoadedWavFile, channel_idx: int) -> None:
+        effective_channel_idx = max(0, min(int(channel_idx), loaded.channel_count - 1))
+        if (
+            self._playground_is_playing
+            and self._playground_preview_active_path == loaded.path
+            and self._playground_preview_active_channel_index == effective_channel_idx
+        ):
+            self.stop_playground_audio()
+            return
+        self._play_playground_loaded_file(loaded, effective_channel_idx)
+
+    def finalize_batch_playground_analysis(
+        self,
+        analysis_rows: list[dict[str, object]],
+        *,
+        allow_preview: bool,
+    ) -> None:
+        if not analysis_rows:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Finalize Batch Outcomes")
+        dialog.setModal(True)
+        dialog.resize(980, 520)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            QLabel(
+                "Batch analysis finished. Select expected outcomes for any unlabeled files, "
+                "then click Finalize Reports."
+            )
+        )
+
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        grid.setAlignment(Qt.AlignTop)
+        grid.addWidget(QLabel("File"), 0, 0)
+        grid.addWidget(QLabel("Expected"), 0, 1)
+        grid.addWidget(QLabel("Preview"), 0, 2)
+
+        pending_selectors: list[tuple[str, QComboBox]] = []
+        preview_rows: list[tuple[QPushButton, LoadedWavFile, int]] = []
+        for idx, row in enumerate(analysis_rows, start=1):
+            loaded = row["loaded"]
+            assert isinstance(loaded, LoadedWavFile)
+            file_name = Path(loaded.path).name
+            file_label = QLabel(file_name)
+            file_label.setToolTip(loaded.path)
+            file_label.setWordWrap(True)
+            grid.addWidget(file_label, idx, 0)
+
+            inferred_expected = row["inferred_expected"]
+            inferred_source = row["inferred_source"]
+            if inferred_expected is None:
+                selector = QComboBox()
+                selector.addItem("Choose...", None)
+                selector.addItem("No glitch detected", False)
+                selector.addItem("Glitch detected", True)
+                grid.addWidget(selector, idx, 1)
+                pending_selectors.append((loaded.path, selector))
+            else:
+                expected_text = "Glitch detected" if bool(inferred_expected) else "No glitch detected"
+                auto_label = QLabel(f"Auto ({inferred_source}): {expected_text}")
+                grid.addWidget(auto_label, idx, 1)
+                self.append_console(
+                    f"Batch expected outcome auto-set from filename tag: "
+                    f"{'glitch' if bool(inferred_expected) else 'clean'} "
+                    f"({inferred_source}) for {file_name}"
+                )
+
+            effective_channel_idx = int(row["effective_channel_idx"])
+            preview_button = QPushButton("Preview")
+            preview_rows.append((preview_button, loaded, effective_channel_idx))
+            grid.addWidget(preview_button, idx, 2)
+
+        grid.setRowStretch(len(analysis_rows) + 1, 1)
+
+        def refresh_preview_buttons() -> None:
+            for button, loaded, effective_channel_idx in preview_rows:
+                is_active = (
+                    self._playground_is_playing
+                    and self._playground_preview_active_path == loaded.path
+                    and self._playground_preview_active_channel_index == effective_channel_idx
+                )
+                button.setText("Stop" if is_active else "Preview")
+
+        for preview_button, loaded, effective_channel_idx in preview_rows:
+            preview_button.clicked.connect(
+                lambda _checked=False, lf=loaded, cidx=effective_channel_idx: (
+                    self.toggle_playground_loaded_file_preview(lf, cidx),
+                    refresh_preview_buttons(),
+                )
+            )
+
+        scroll.setWidget(container)
+        layout.addWidget(scroll, stretch=1)
+
+        button_box = QDialogButtonBox(dialog)
+        finalize_btn = button_box.addButton("Finalize Reports", QDialogButtonBox.AcceptRole)
+        cancel_btn = button_box.addButton(QDialogButtonBox.Cancel)
+        layout.addWidget(button_box)
+
+        def finalize_clicked() -> None:
+            for loaded_path, selector in pending_selectors:
+                value = selector.currentData()
+                if value is None:
+                    QMessageBox.warning(
+                        dialog,
+                        "Expected outcomes incomplete",
+                        f"There are still outcomes to identify. Missing: {Path(loaded_path).name}",
+                    )
+                    return
+            for row in analysis_rows:
+                inferred_expected = row["inferred_expected"]
+                if inferred_expected is not None:
+                    row["expected_glitch"] = bool(inferred_expected)
+                    continue
+                loaded = row["loaded"]
+                assert isinstance(loaded, LoadedWavFile)
+                chosen = None
+                for loaded_path, selector in pending_selectors:
+                    if loaded_path == loaded.path:
+                        chosen = selector.currentData()
+                        break
+                row["expected_glitch"] = bool(chosen)
+            dialog.accept()
+
+        finalize_btn.clicked.connect(finalize_clicked)
+        cancel_btn.clicked.connect(lambda: dialog.reject())
+        dialog.finished.connect(lambda _code: self.stop_playground_audio())
+        dialog.finished.connect(lambda _code: refresh_preview_buttons())
+
+        if allow_preview and SOUNDDEVICE_AVAILABLE:
+            first = analysis_rows[0]
+            loaded = first["loaded"]
+            assert isinstance(loaded, LoadedWavFile)
+            self._play_playground_loaded_file(loaded, int(first["effective_channel_idx"]))
+            refresh_preview_buttons()
+
+        if dialog.exec() != QDialog.Accepted:
+            self.playground_analysis_summary.setPlainText("Batch analysis canceled before report finalization.")
+            return
+
+        primary_report_paths: list[str] = []
+        prod_report_paths: list[str] = []
+        true_pos = 0
+        true_neg = 0
+        false_pos = 0
+        false_neg = 0
+        first_rendered = False
+        for row in analysis_rows:
+            expected_glitch = bool(row.get("expected_glitch", False))
+            result = row["result"]
+            assert result is not None
+            report_stem = Path(result.file.path).stem
+            report_path, eval_label, _ = self.render_playground_result(
+                result,
+                expected_glitch=expected_glitch,
+                report_stem=report_stem,
+                source_label="batch-file",
+                update_ui=not first_rendered,
+            )
+            first_rendered = True
+            primary_report_paths.append(str(report_path))
+            if eval_label == "TP":
+                true_pos += 1
+            elif eval_label == "TN":
+                true_neg += 1
+            elif eval_label == "FP":
+                false_pos += 1
+            elif eval_label == "FN":
+                false_neg += 1
+
+            prod_result = row["prod_result"]
+            if prod_result is not None:
+                prod_report_path, _, _ = self.render_playground_result(
+                    prod_result,
+                    expected_glitch=expected_glitch,
+                    report_stem=report_stem,
+                    source_label="batch-file-prod",
+                    update_ui=False,
+                )
+                prod_report_paths.append(str(prod_report_path))
+
+        summary = (
+            f"Batch complete: {len(analysis_rows)} files | "
+            f"TP: {true_pos} TN: {true_neg} FP: {false_pos} FN: {false_neg} | "
+            f"Reports: {len(primary_report_paths)}"
+        )
+        if prod_report_paths:
+            summary = f"{summary} | Prod reports: {len(prod_report_paths)}"
+        self.playground_analysis_summary.setPlainText(summary)
 
     def start_live_playground_report(self) -> None:
         if not SOUNDDEVICE_AVAILABLE:
@@ -1040,8 +1381,8 @@ class MainWindow(QMainWindow):
 
         if re.search(r"\[(?:\s*no[\s_-]*glitch\s*)\]", lowered):
             return False, "[no glitch]"
-        if re.search(r"\[(?:\s*glitchy\s*)\]", lowered):
-            return True, "[glitchy]"
+        if re.search(r"\[(?:\s*glitch(?:y)?\s*)\]", lowered):
+            return True, "[glitch]"
         return None
 
     def resolve_playground_expected_outcome(

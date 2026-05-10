@@ -35,17 +35,18 @@ def build_playground_tab(window) -> None:
     window.playground_file_path.setPlaceholderText("Select a .wav file to test")
     window.playground_file_path.setToolTip(
         "Path to a local PCM WAV file for offline analysis.\n"
-        "Use Browse or paste a full path, then click Load."
+        "Use Browse for single-file mode, Browse Batch for multi-file mode,\n"
+        "or paste one or more full paths separated by | or ,"
     )
     file_row.addWidget(window.playground_file_path, stretch=1)
     window.playground_browse_button = QPushButton("Browse")
     window.playground_browse_button.clicked.connect(window.browse_playground_file)
     window.playground_browse_button.setToolTip("Open a file picker to choose a WAV file.")
     file_row.addWidget(window.playground_browse_button)
-    window.playground_load_button = QPushButton("Load")
-    window.playground_load_button.clicked.connect(window.load_playground_file_clicked)
+    window.playground_load_button = QPushButton("Browse Batch...")
+    window.playground_load_button.clicked.connect(window.browse_playground_files_batch)
     window.playground_load_button.setToolTip(
-        "Load the selected WAV file and show file details in the Playground."
+        "Open a file picker to choose multiple WAV files for batch analysis."
     )
     file_row.addWidget(window.playground_load_button)
     layout.addLayout(file_row)

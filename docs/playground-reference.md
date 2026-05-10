@@ -21,7 +21,8 @@ Playground is for detector calibration and verification. It lets you:
 - `Step (ms)`: Sliding step interval in milliseconds.
 - `Warm-up Ignore (ms)`: Initial analysis duration where detections are suppressed.
 - `Preview on done`: If enabled, starts preview playback when analysis completes.
-- `Also run prod timing`: If enabled and current timing differs from production timing, writes a second report using production timing.
+- `Also run prod timing`: If enabled (default `on`) and current timing differs from production timing, writes a second report using production timing.
+- `Extended report`: If enabled (default `on`), includes deeper diagnostics for thresholds, clusters, and method transitions.
 - `Analyze File`: Runs offline analysis for the loaded file.
 - `Analyze File` / `Analyze Batch`: Label changes automatically based on loaded file count.
 - `Preview Sound`: Toggle playback preview for loaded WAV.

@@ -70,9 +70,9 @@ def resolve_alert_cooldown_ms():
 # Configuration
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 4096  # Larger chunks for stability
-BUFFER_DURATION = 2.0  # Longer buffer for better analysis
+BUFFER_DURATION = 1.0  # Production analysis window (seconds)
 BUFFER_SIZE = int(SAMPLE_RATE * BUFFER_DURATION)
-DETECTION_LOOP_INTERVAL_SEC = 0.2  # 5Hz analysis cadence
+DETECTION_LOOP_INTERVAL_SEC = 0.05  # 20Hz analysis cadence (50ms step)
 
 
 def production_window_ms() -> int:
@@ -784,38 +784,88 @@ class BalancedChoppyDetector:
                     # More strict evaluation for silence gaps
                     gap_count = len(result.get('gaps', []))
                     silence_ratio = result['score']
+                    window_ms = int(getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms())
                     max_gap_ms = max(
                         (float(gap.get('duration_ms', 0.0)) for gap in result.get('gaps', [])),
                         default=0.0,
                     )
+                    mod = results.get('amplitude_modulation', {}) if isinstance(results, dict) else {}
+                    mod_strength = float(mod.get('score', 0.0) or 0.0)
+                    mod_depth = float(mod.get('depth', 0.0) or 0.0)
+                    mod_peak_concentration = float(mod.get('peak_concentration', 0.0) or 0.0)
+                    mod_corroborated_strong = (
+                        mod_strength >= 5.0 and
+                        mod_depth >= 0.55 and
+                        mod_peak_concentration >= 0.20
+                    )
+                    mod_corroborated_medium = (
+                        mod_strength >= 4.6 and
+                        mod_depth >= 0.50 and
+                        mod_peak_concentration >= 0.095
+                    )
                     
                     if silence_ratio > 0.8:  # Extreme silence
-                        confidence += 0.9
-                        reasons.append(f"Extreme silence ({silence_ratio:.1%})")
+                        if gap_count >= THRESHOLDS['suspicious_gap_count'] or mod_corroborated_strong:
+                            if (
+                                window_ms >= 1600
+                                and not mod_corroborated_strong
+                                and max_gap_ms < 500.0
+                            ):
+                                confidence += 0.72
+                                reasons.append(
+                                    f"High silence in long window ({silence_ratio:.1%}) without strong corroboration"
+                                )
+                            else:
+                                confidence += 0.9
+                                reasons.append(f"Extreme silence ({silence_ratio:.1%})")
+                        else:
+                            confidence += 0.70
+                            reasons.append(f"High silence without corroboration ({silence_ratio:.1%})")
                     elif max_gap_ms >= 500.0:
-                        # A single very long dropout is usually a real stream fault.
-                        confidence += 0.85
-                        reasons.append(f"Severe long audio gap ({max_gap_ms:.0f}ms)")
+                        if gap_count >= THRESHOLDS['suspicious_gap_count'] or mod_corroborated_strong:
+                            confidence += 0.85
+                            reasons.append(f"Severe long audio gap ({max_gap_ms:.0f}ms)")
+                        elif mod_corroborated_medium and silence_ratio <= 0.80:
+                            confidence += 0.76
+                            reasons.append(
+                                f"Long audio gap ({max_gap_ms:.0f}ms) corroborated by modulation texture"
+                            )
+                        else:
+                            confidence += 0.70
+                            reasons.append(f"Isolated long audio gap ({max_gap_ms:.0f}ms)")
                     elif gap_count >= THRESHOLDS['suspicious_gap_count']:
-                        confidence += 0.8
-                        reasons.append(f"{gap_count} significant gaps detected")
+                        if (
+                            window_ms >= 1600
+                            and max_gap_ms < 350.0
+                            and not mod_corroborated_strong
+                        ):
+                            confidence += 0.70
+                            reasons.append(f"{gap_count} significant gaps in long window")
+                        elif max_gap_ms >= 250.0 or mod_corroborated_strong:
+                            confidence += 0.8
+                            reasons.append(f"{gap_count} significant gaps detected")
+                        else:
+                            confidence += 0.72
+                            reasons.append(f"{gap_count} short-to-medium gaps detected")
                     elif max_gap_ms >= 250.0:
-                        confidence += 0.7
+                        confidence += 0.62
                         reasons.append(f"Very long audio gap ({max_gap_ms:.0f}ms)")
                     elif max_gap_ms > 200.0:
-                        confidence += 0.6
+                        confidence += 0.55
                         reasons.append("Long audio gap detected")
                     elif silence_ratio >= (THRESHOLDS['silence_ratio'] + 0.03):
-                        mod = results.get('amplitude_modulation', {}) if isinstance(results, dict) else {}
-                        mod_strength = float(mod.get('score', 0.0) or 0.0)
-                        mod_depth = float(mod.get('depth', 0.0) or 0.0)
-                        if mod_strength >= 5.0 and mod_depth >= 0.55:
+                        if mod_corroborated_strong:
                             confidence += 0.75
                             reasons.append(
                                 f"Sustained high silence ({silence_ratio:.1%}) with modulation stress"
                             )
+                        elif mod_corroborated_medium and silence_ratio <= 0.75:
+                            confidence += 0.75
+                            reasons.append(
+                                f"Sustained high silence ({silence_ratio:.1%}) with mild modulation corroboration"
+                            )
                         else:
-                            confidence += 0.62
+                            confidence += 0.58
                             reasons.append(f"Sustained high silence ({silence_ratio:.1%})")
                     elif gap_count > 0 and silence_ratio > 0.4:
                         confidence += 0.5
@@ -885,6 +935,26 @@ class BalancedChoppyDetector:
         if results.get('amplitude_modulation', {}).get('choppy', False) and strong_method_hit:
             confidence = min(confidence + 0.10, 1.0)
             reasons.append("Modulation pattern corroborates primary detector")
+
+        # Long-window guardrail: prevent silence-only scoring in 2000ms windows
+        # from reaching high-confidence without corroboration.
+        silence_result = results.get('silence_gaps', {}) if isinstance(results, dict) else {}
+        if isinstance(silence_result, dict) and silence_result.get('choppy', False):
+            window_ms = int(getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms())
+            envelope_hit = bool(results.get('envelope_discontinuity', {}).get('choppy', False))
+            mod = results.get('amplitude_modulation', {}) if isinstance(results, dict) else {}
+            mod_strength = float(mod.get('score', 0.0) or 0.0)
+            mod_depth = float(mod.get('depth', 0.0) or 0.0)
+            mod_peak_concentration = float(mod.get('peak_concentration', 0.0) or 0.0)
+            mod_medium = (
+                mod_strength >= 4.6 and
+                mod_depth >= 0.50 and
+                mod_peak_concentration >= 0.095
+            )
+            if window_ms >= 1600 and not envelope_hit and not mod_medium:
+                if confidence > 0.72:
+                    confidence = 0.72
+                    reasons.append("Long-window silence-only guardrail applied")
 
         return min(confidence, 1.0), "; ".join(reasons)
         
@@ -1137,6 +1207,8 @@ class BalancedChoppyDetector:
         last_detection_time = 0
         detection_cooldown = 0.5  # Don't spam detections
         silence_persistence_hits = deque(maxlen=32)
+        burst_cluster_hits = deque(maxlen=64)
+        long_window_sparse_burst_hits = deque(maxlen=64)
         
         print("Listening for streaming audio glitches...")
         print("Building baseline audio profile...")
@@ -1224,31 +1296,109 @@ class BalancedChoppyDetector:
                 results = self.analyze_audio(audio)
 
                 # Assess confidence
+                self._analysis_window_ms = int(round((len(audio) / float(self.sample_rate or 1)) * 1000.0))
                 confidence, reasons = self.assess_glitch_confidence(results)
                 silence_result = results.get('silence_gaps', {}) if isinstance(results, dict) else {}
                 silence_choppy = bool(silence_result.get('choppy', False))
                 silence_ratio = float(silence_result.get('score', 0.0) or 0.0)
+                silence_gaps = silence_result.get('gaps', []) if isinstance(silence_result, dict) else []
+                silence_gap_count = len(silence_gaps)
+                silence_max_gap_ms = max(
+                    (float(gap.get('duration_ms', 0.0) or 0.0) for gap in silence_gaps),
+                    default=0.0,
+                )
+                mod_result = results.get('amplitude_modulation', {}) if isinstance(results, dict) else {}
+                mod_strength = float(mod_result.get('score', 0.0) or 0.0)
+                mod_depth = float(mod_result.get('depth', 0.0) or 0.0)
+                mod_peak_concentration = float(mod_result.get('peak_concentration', 0.0) or 0.0)
                 envelope_hit = bool(results.get('envelope_discontinuity', {}).get('choppy', False))
                 modulation_hit = bool(results.get('amplitude_modulation', {}).get('choppy', False))
                 persistence_promoted = False
+                severe_silence_ratio = max(float(THRESHOLDS['silence_ratio']) + 0.08, 0.68)
+                severe_gap_pattern = (
+                    silence_ratio >= severe_silence_ratio
+                    and silence_max_gap_ms >= 250.0
+                    and silence_gap_count >= 2
+                )
+                extreme_gap_pattern = silence_ratio >= 0.85 and silence_max_gap_ms >= 500.0
+                modulation_gap_pattern = (
+                    silence_max_gap_ms >= 500.0
+                    and float(results.get('amplitude_modulation', {}).get('score', 0.0) or 0.0) >= 4.8
+                    and float(results.get('amplitude_modulation', {}).get('depth', 0.0) or 0.0) >= 0.50
+                    and float(results.get('amplitude_modulation', {}).get('peak_concentration', 0.0) or 0.0) >= 0.16
+                )
+                persistence_block_long_window = (
+                    int(getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms()) >= 1600
+                    and not modulation_hit
+                    and (
+                        silence_ratio >= 0.88 and silence_gap_count >= 2
+                        or confidence >= 0.70
+                    )
+                )
                 persistence_candidate = (
                     silence_choppy
-                    and silence_ratio >= (float(THRESHOLDS['silence_ratio']) + 0.01)
                     and not envelope_hit
                     and 0.55 <= confidence < 0.75
+                    and not persistence_block_long_window
+                    and (severe_gap_pattern or extreme_gap_pattern or modulation_gap_pattern)
                 )
                 while silence_persistence_hits and (current_time - silence_persistence_hits[0]) > 2.5:
                     silence_persistence_hits.popleft()
                 if persistence_candidate:
-                    silence_persistence_hits.append(current_time)
+                    if not silence_persistence_hits or (current_time - silence_persistence_hits[-1]) >= 0.45:
+                        silence_persistence_hits.append(current_time)
                 if len(silence_persistence_hits) >= 3:
                     if modulation_hit:
                         confidence = max(confidence, 0.80)
-                        reasons = f"{reasons}; Persistent silence-gap pattern corroborated by modulation"
+                        reasons = f"{reasons}; Persistent severe silence-gap pattern corroborated by modulation"
                     else:
                         confidence = max(confidence, 0.78)
-                        reasons = f"{reasons}; Persistent silence-gap pattern"
+                        reasons = f"{reasons}; Persistent severe silence-gap pattern"
                     persistence_promoted = True
+
+                # Cluster lift: repeated near-threshold burst windows (common in real glitch bursts).
+                burst_candidate = (
+                    silence_choppy
+                    and not envelope_hit
+                    and 0.66 <= confidence < 0.75
+                    and 0.52 <= silence_ratio <= 0.85
+                    and silence_gap_count <= 2
+                    and mod_strength >= 4.6
+                    and mod_depth >= 0.45
+                )
+                while burst_cluster_hits and (current_time - burst_cluster_hits[0]) > 2.2:
+                    burst_cluster_hits.popleft()
+                if burst_candidate:
+                    if not burst_cluster_hits or (current_time - burst_cluster_hits[-1]) >= 0.12:
+                        burst_cluster_hits.append(current_time)
+                if len(burst_cluster_hits) >= 3:
+                    confidence = max(confidence, 0.77)
+                    reasons = f"{reasons}; Repeated near-threshold burst cluster"
+
+                # 2000ms micro-lift for sparse-gap burst clusters.
+                # Target: recover long-window bursty glitches (Sample 7 style) without
+                # reintroducing long-window speech false positives.
+                long_window_sparse_candidate = (
+                    int(getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms()) >= 1600
+                    and silence_choppy
+                    and not envelope_hit
+                    and 0.68 <= confidence < 0.75
+                    and 0.52 <= silence_ratio <= 0.85
+                    and mod_strength >= 5.0
+                    and mod_depth >= 0.45
+                    and mod_peak_concentration >= 0.07
+                )
+                while long_window_sparse_burst_hits and (current_time - long_window_sparse_burst_hits[0]) > 2.8:
+                    long_window_sparse_burst_hits.popleft()
+                if long_window_sparse_candidate:
+                    if (
+                        not long_window_sparse_burst_hits
+                        or (current_time - long_window_sparse_burst_hits[-1]) >= 0.15
+                    ):
+                        long_window_sparse_burst_hits.append(current_time)
+                if len(long_window_sparse_burst_hits) >= 4:
+                    confidence = max(confidence, 0.76)
+                    reasons = f"{reasons}; Long-window sparse-gap burst cluster"
 
                 self.recent_analysis_windows += 1
                 if results and 0 < confidence < 0.75:

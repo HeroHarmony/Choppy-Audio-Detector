@@ -68,11 +68,13 @@ def write_compact_report(
     reports_dir: Path,
     expected_glitch: bool,
     report_stem: str | None = None,
+    extended_report: bool = False,
 ) -> Path:
     report_text = build_compact_report(
         result,
         settings,
         expected_glitch=expected_glitch,
+        extended_report=extended_report,
     )
     reports_dir.mkdir(parents=True, exist_ok=True)
     stem = report_stem.strip() if isinstance(report_stem, str) else ""
@@ -89,6 +91,7 @@ def build_compact_report(
     settings: AppSettings,
     *,
     expected_glitch: bool,
+    extended_report: bool = False,
 ) -> str:
     rows = result.rows
     high_conf_rows = [r for r in rows if r.high_confidence]
@@ -231,6 +234,123 @@ def build_compact_report(
         f"top_windows={top_windows_text}",
         f"low_windows={low_windows_text}",
     ]
+
+    if extended_report:
+        near_threshold_rows = [
+            r for r in rows if (65.0 <= float(r.confidence_pct) < 75.0)
+        ]
+        near_threshold_text = ";".join(
+            f"{r.start_ms}-{r.end_ms}@{r.confidence_pct:.1f}%|{r.methods or '-'}"
+            for r in near_threshold_rows[:300]
+        ) or "none"
+        high_conf_windows_text = ";".join(
+            f"{r.start_ms}-{r.end_ms}@{r.confidence_pct:.1f}%|{r.methods or '-'}"
+            for r in high_conf_rows[:500]
+        ) or "none"
+
+        # Group adjacent near/high windows into coarse burst clusters.
+        cluster_source = sorted(
+            [r for r in rows if float(r.confidence_pct) >= 65.0],
+            key=lambda r: r.start_ms,
+        )
+        cluster_items: list[str] = []
+        if cluster_source:
+            cluster_start = cluster_source[0].start_ms
+            cluster_end = cluster_source[0].end_ms
+            cluster_count = 1
+            cluster_peak = float(cluster_source[0].confidence_pct)
+            cluster_silence_sum = float(cluster_source[0].silence_ratio)
+            for row in cluster_source[1:]:
+                if row.start_ms - cluster_end <= 1000:
+                    cluster_end = max(cluster_end, row.end_ms)
+                    cluster_count += 1
+                    cluster_peak = max(cluster_peak, float(row.confidence_pct))
+                    cluster_silence_sum += float(row.silence_ratio)
+                    continue
+                cluster_items.append(
+                    f"{cluster_start}-{cluster_end}|n:{cluster_count}|peak:{cluster_peak:.1f}|sil_avg:{(cluster_silence_sum / max(1, cluster_count)):.3f}"
+                )
+                cluster_start = row.start_ms
+                cluster_end = row.end_ms
+                cluster_count = 1
+                cluster_peak = float(row.confidence_pct)
+                cluster_silence_sum = float(row.silence_ratio)
+            cluster_items.append(
+                f"{cluster_start}-{cluster_end}|n:{cluster_count}|peak:{cluster_peak:.1f}|sil_avg:{(cluster_silence_sum / max(1, cluster_count)):.3f}"
+            )
+        cluster_summary_text = ";".join(cluster_items[:200]) or "none"
+
+        method_transitions: dict[str, int] = {}
+        prev_method_key: str | None = None
+        for row in rows:
+            method_key = row.methods or "-"
+            if prev_method_key is not None:
+                key = f"{prev_method_key}->{method_key}"
+                method_transitions[key] = method_transitions.get(key, 0) + 1
+            prev_method_key = method_key
+        transition_text = ",".join(
+            f"{k}:{method_transitions[k]}"
+            for k in sorted(method_transitions, key=lambda x: method_transitions[x], reverse=True)[:25]
+        ) or "none"
+
+        top_negative_rows = sorted(
+            [r for r in rows if not r.high_confidence and float(r.confidence_pct) > 0.0],
+            key=lambda r: r.confidence_pct,
+            reverse=True,
+        )[:25]
+        top_negative_text = ";".join(
+            f"{r.start_ms}-{r.end_ms}@{r.confidence_pct:.1f}%|{r.methods or '-'}"
+            for r in top_negative_rows
+        ) or "none"
+
+        def range_text(values: np.ndarray) -> str:
+            if values.size == 0:
+                return "min:0,p50:0,p90:0,p99:0,max:0"
+            return (
+                f"min:{float(np.min(values)):.4f},"
+                f"p50:{float(np.percentile(values, 50)):.4f},"
+                f"p90:{float(np.percentile(values, 90)):.4f},"
+                f"p99:{float(np.percentile(values, 99)):.4f},"
+                f"max:{float(np.max(values)):.4f}"
+            )
+
+        method_presence = {
+            "silence_gaps": sum(1 for r in rows if "silence_gaps" in (r.methods or "")),
+            "silence_gaps_persistent": sum(1 for r in rows if "silence_gaps_persistent" in (r.methods or "")),
+            "envelope_discontinuity": sum(1 for r in rows if "envelope_discontinuity" in (r.methods or "")),
+            "amplitude_modulation": sum(1 for r in rows if "amplitude_modulation" in (r.methods or "")),
+        }
+        promotion_audit = (
+            f"persistent_rows:{method_presence['silence_gaps_persistent']},"
+            f"silence_rows:{method_presence['silence_gaps']},"
+            f"envelope_rows:{method_presence['envelope_discontinuity']},"
+            f"mod_rows:{method_presence['amplitude_modulation']}"
+        )
+
+        lines.extend(
+            [
+                "extended=1",
+                f"high_conf_windows={high_conf_windows_text}",
+                f"near_threshold_windows={near_threshold_text}",
+                f"cluster_summary={cluster_summary_text}",
+                f"method_transition_counts={transition_text}",
+                f"top_negative_windows={top_negative_text}",
+                (
+                    "raw_feature_ranges="
+                    f"silence[{range_text(silence_values)}],"
+                    f"gap_count[{range_text(gap_counts)}],"
+                    f"gap_max_ms[{range_text(gap_max_values)}],"
+                    f"envelope[{range_text(envelope_values)}],"
+                    f"mod_strength[{range_text(modulation_strength_values)}],"
+                    f"mod_depth[{range_text(modulation_depth_values)}],"
+                    f"mod_conc[{range_text(modulation_conc_values)}]"
+                ),
+                f"promotion_audit={promotion_audit}",
+            ]
+        )
+    else:
+        lines.append("extended=0")
+
     return "\n".join(lines) + "\n"
 
 
@@ -421,6 +541,8 @@ def analyze_wav_file(
     deduped_detection_count = 0
     confidences: list[float] = []
     silence_persistence_hits_ms: list[int] = []
+    burst_cluster_hits_ms: list[int] = []
+    long_window_sparse_burst_hits_ms: list[int] = []
     last_detection_ms = -10_000_000
     last_detection_signature = ""
     dedup_window_ms = float(live_analysis.ALERT_CONFIG.get("event_dedup_seconds", 0.9)) * 1000.0
@@ -434,32 +556,106 @@ def analyze_wav_file(
             continue
 
         results = detector.analyze_audio(window)
+        detector._analysis_window_ms = int(window_ms)
         confidence, reasons = detector.assess_glitch_confidence(results)
         silence_result = results.get("silence_gaps", {}) if isinstance(results, dict) else {}
         silence_choppy = bool((silence_result or {}).get("choppy", False))
         silence_ratio = float((silence_result or {}).get("score", 0.0) or 0.0)
+        silence_gaps = silence_result.get("gaps", []) if isinstance(silence_result, dict) else []
+        silence_gap_count = len(silence_gaps)
+        silence_max_gap_ms = max(
+            (float(gap.get("duration_ms", 0.0) or 0.0) for gap in silence_gaps),
+            default=0.0,
+        )
         envelope_hit = bool((results.get("envelope_discontinuity", {}) or {}).get("choppy", False))
         modulation_hit = bool((results.get("amplitude_modulation", {}) or {}).get("choppy", False))
         persistence_promoted = False
         start_ms = int(round((start / loaded.sample_rate) * 1000.0))
         end_ms = int(round((end / loaded.sample_rate) * 1000.0))
+        severe_silence_ratio = max(float(live_analysis.THRESHOLDS.get("silence_ratio", 0.60)) + 0.08, 0.68)
+        severe_gap_pattern = (
+            silence_ratio >= severe_silence_ratio
+            and silence_max_gap_ms >= 250.0
+            and silence_gap_count >= 2
+        )
+        extreme_gap_pattern = silence_ratio >= 0.85 and silence_max_gap_ms >= 500.0
+        modulation_gap_pattern = (
+            silence_max_gap_ms >= 500.0
+            and float((results.get("amplitude_modulation", {}) or {}).get("score", 0.0) or 0.0) >= 4.8
+            and float((results.get("amplitude_modulation", {}) or {}).get("depth", 0.0) or 0.0) >= 0.50
+            and float((results.get("amplitude_modulation", {}) or {}).get("peak_concentration", 0.0) or 0.0) >= 0.16
+        )
+        persistence_block_long_window = (
+            int(window_ms) >= 1600
+            and not modulation_hit
+            and (
+                silence_ratio >= 0.88 and silence_gap_count >= 2
+                or confidence >= 0.70
+            )
+        )
         persistence_candidate = (
             silence_choppy
-            and silence_ratio >= (float(live_analysis.THRESHOLDS.get("silence_ratio", 0.60)) + 0.01)
             and not envelope_hit
             and 0.55 <= confidence < 0.75
+            and not persistence_block_long_window
+            and (severe_gap_pattern or extreme_gap_pattern or modulation_gap_pattern)
         )
         silence_persistence_hits_ms = [t for t in silence_persistence_hits_ms if (start_ms - t) <= 2500]
         if persistence_candidate:
-            silence_persistence_hits_ms.append(start_ms)
+            if not silence_persistence_hits_ms or (start_ms - silence_persistence_hits_ms[-1]) >= 450:
+                silence_persistence_hits_ms.append(start_ms)
         if len(silence_persistence_hits_ms) >= 3:
             if modulation_hit:
                 confidence = max(confidence, 0.80)
-                reasons = f"{reasons}; Persistent silence-gap pattern corroborated by modulation"
+                reasons = f"{reasons}; Persistent severe silence-gap pattern corroborated by modulation"
             else:
                 confidence = max(confidence, 0.78)
-                reasons = f"{reasons}; Persistent silence-gap pattern"
+                reasons = f"{reasons}; Persistent severe silence-gap pattern"
             persistence_promoted = True
+
+        mod_result = results.get("amplitude_modulation", {}) if isinstance(results, dict) else {}
+        mod_strength = float((mod_result or {}).get("score", 0.0) or 0.0)
+        mod_depth = float((mod_result or {}).get("depth", 0.0) or 0.0)
+        mod_peak_concentration = float((mod_result or {}).get("peak_concentration", 0.0) or 0.0)
+        burst_candidate = (
+            silence_choppy
+            and not envelope_hit
+            and 0.66 <= confidence < 0.75
+            and 0.52 <= silence_ratio <= 0.85
+            and silence_gap_count <= 2
+            and mod_strength >= 4.6
+            and mod_depth >= 0.45
+        )
+        burst_cluster_hits_ms = [t for t in burst_cluster_hits_ms if (start_ms - t) <= 2200]
+        if burst_candidate:
+            if not burst_cluster_hits_ms or (start_ms - burst_cluster_hits_ms[-1]) >= 120:
+                burst_cluster_hits_ms.append(start_ms)
+        if len(burst_cluster_hits_ms) >= 3:
+            confidence = max(confidence, 0.77)
+            reasons = f"{reasons}; Repeated near-threshold burst cluster"
+
+        long_window_sparse_candidate = (
+            int(window_ms) >= 1600
+            and silence_choppy
+            and not envelope_hit
+            and 0.68 <= confidence < 0.75
+            and 0.52 <= silence_ratio <= 0.85
+            and mod_strength >= 5.0
+            and mod_depth >= 0.45
+            and mod_peak_concentration >= 0.07
+        )
+        long_window_sparse_burst_hits_ms = [
+            t for t in long_window_sparse_burst_hits_ms if (start_ms - t) <= 2800
+        ]
+        if long_window_sparse_candidate:
+            if (
+                not long_window_sparse_burst_hits_ms
+                or (start_ms - long_window_sparse_burst_hits_ms[-1]) >= 150
+            ):
+                long_window_sparse_burst_hits_ms.append(start_ms)
+        if len(long_window_sparse_burst_hits_ms) >= 4:
+            confidence = max(confidence, 0.76)
+            reasons = f"{reasons}; Long-window sparse-gap burst cluster"
 
         confidence_pct = float(round(confidence * 100.0, 1))
         confidences.append(confidence_pct)

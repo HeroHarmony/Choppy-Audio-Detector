@@ -127,28 +127,37 @@ def build_playground_tab(window) -> None:
     controls_layout.addWidget(window.playground_playback_status, 1, 7, 1, 1)
 
     window.playground_also_prod_timing = QCheckBox("Also run prod timing")
+    window.playground_also_prod_timing.setChecked(True)
     window.playground_also_prod_timing.setToolTip(
         "When enabled, generates an additional report using\n"
         "the live production timing defaults."
     )
     controls_layout.addWidget(window.playground_also_prod_timing, 2, 0, 1, 2)
 
+    window.playground_extended_report = QCheckBox("Extended report")
+    window.playground_extended_report.setChecked(True)
+    window.playground_extended_report.setToolTip(
+        "When enabled, include deeper diagnostics in report output\n"
+        "(near-threshold windows, clusters, feature ranges, and transition summaries)."
+    )
+    controls_layout.addWidget(window.playground_extended_report, 2, 2, 1, 2)
+
     window.playground_live_start_button = QPushButton("Start Live Report")
     window.playground_live_start_button.clicked.connect(window.start_live_playground_report)
     window.playground_live_start_button.setToolTip(
         "Start recording live audio from the currently selected input device/channel."
     )
-    controls_layout.addWidget(window.playground_live_start_button, 2, 2, 1, 2)
+    controls_layout.addWidget(window.playground_live_start_button, 3, 2, 1, 2)
 
     window.playground_live_stop_button = QPushButton("Stop & Save Live Report")
     window.playground_live_stop_button.clicked.connect(window.stop_live_playground_report)
     window.playground_live_stop_button.setToolTip(
         "Stop live recording, analyze captured audio, and save a compact report."
     )
-    controls_layout.addWidget(window.playground_live_stop_button, 2, 4, 1, 3)
+    controls_layout.addWidget(window.playground_live_stop_button, 3, 4, 1, 3)
 
     window.playground_live_status = QLabel("Live report idle")
-    controls_layout.addWidget(window.playground_live_status, 2, 7, 1, 1)
+    controls_layout.addWidget(window.playground_live_status, 3, 7, 1, 1)
 
     layout.addWidget(controls)
 

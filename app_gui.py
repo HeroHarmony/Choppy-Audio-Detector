@@ -826,6 +826,7 @@ class MainWindow(QMainWindow):
         self.playground_file_path.setEnabled(not controls_locked)
         self.playground_preview_on_done.setEnabled(has_file and not controls_locked)
         self.playground_also_prod_timing.setEnabled(has_file and not controls_locked)
+        self.playground_extended_report.setEnabled(has_file and not controls_locked)
         self.playground_also_prod_timing.setToolTip(
             "When enabled and current timing is not "
             f"{prod_window_ms}/{prod_step_ms},\n"
@@ -1502,6 +1503,7 @@ class MainWindow(QMainWindow):
             reports_dir=Path.cwd() / "Reports",
             expected_glitch=expected_glitch,
             report_stem=report_stem,
+            extended_report=bool(self.playground_extended_report.isChecked()),
         )
         detected_glitch = result.deduped_detection_count > 0
         if expected_glitch and detected_glitch:

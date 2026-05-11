@@ -564,6 +564,24 @@ class MainWindow(QMainWindow):
             ("subtle_sparse_guard_window_seconds", "Guard horizon for subtle sparse candidate volume.", "float", 5.0, 300.0, 0.5),
             ("subtle_sparse_guard_max_candidates", "Max subtle sparse candidates allowed in guard horizon.", "int", 1, 50, 1),
             ("subtle_sparse_promotion_conf", "Confidence assigned when subtle sparse promotion triggers.", "float", 0.0, 1.0, 0.01),
+            ("modulation_mid_silence_min_strength", "Minimum modulation strength for mid-silence modulation promotion.", "float", 0.0, 30.0, 0.1),
+            ("modulation_mid_silence_min_depth", "Minimum modulation depth for mid-silence modulation promotion.", "float", 0.0, 1.0, 0.01),
+            ("modulation_mid_silence_min_concentration", "Minimum modulation peak concentration for mid-silence modulation promotion.", "float", 0.0, 1.0, 0.01),
+            ("modulation_mid_silence_min_silence_ratio", "Minimum local silence ratio required for mid-silence modulation promotion.", "float", 0.0, 1.0, 0.01),
+            ("modulation_mid_silence_max_silence_ratio", "Maximum local silence ratio allowed for mid-silence modulation promotion.", "float", 0.0, 1.0, 0.01),
+            ("modulation_mid_silence_max_gap_count", "Maximum silence-gap count allowed for mid-silence modulation promotion.", "int", 0, 10, 1),
+            ("modulation_mid_silence_promotion_conf", "Confidence assigned when mid-silence modulation promotion triggers.", "float", 0.0, 1.0, 0.01),
+            ("modulation_burst_min_strength", "Minimum modulation strength for repeated modulation-burst candidates.", "float", 0.0, 30.0, 0.1),
+            ("modulation_burst_min_depth", "Minimum modulation depth for repeated modulation-burst candidates.", "float", 0.0, 1.0, 0.01),
+            ("modulation_burst_min_concentration", "Minimum modulation peak concentration for repeated modulation-burst candidates.", "float", 0.0, 1.0, 0.01),
+            ("modulation_burst_max_silence_ratio", "Maximum local silence ratio allowed for repeated modulation-burst candidates.", "float", 0.0, 1.0, 0.01),
+            ("modulation_burst_max_gap_count", "Maximum silence-gap count allowed for repeated modulation-burst candidates.", "int", 0, 10, 1),
+            ("modulation_burst_window_seconds", "Rolling horizon for repeated modulation-burst accumulation.", "float", 0.2, 30.0, 0.1),
+            ("modulation_burst_hits_required", "Distinct hits required for repeated modulation-burst promotion.", "int", 2, 20, 1),
+            ("modulation_burst_spacing_seconds", "Minimum spacing between repeated modulation-burst hits.", "float", 0.05, 5.0, 0.01),
+            ("modulation_burst_guard_window_seconds", "Guard horizon for repeated modulation-burst candidate volume.", "float", 1.0, 120.0, 0.5),
+            ("modulation_burst_guard_max_candidates", "Maximum modulation-burst candidates allowed in the guard horizon.", "int", 1, 100, 1),
+            ("modulation_burst_promotion_conf", "Confidence assigned when repeated modulation-burst promotion triggers.", "float", 0.0, 1.0, 0.01),
         )
 
     def methods_schema(self):
@@ -1111,7 +1129,7 @@ class MainWindow(QMainWindow):
                 for file in self._playground_loaded_files
             )
             self.playground_marker_status.setText(
-                f"Batch markers: {total_markers} across {files_with_markers}/{len(self._playground_loaded_files)} files"
+                f"Markers: {total_markers} | {files_with_markers}/{len(self._playground_loaded_files)} files"
             )
             return
         markers = self._playground_current_markers()

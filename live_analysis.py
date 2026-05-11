@@ -202,6 +202,24 @@ THRESHOLDS = {
     'subtle_sparse_guard_window_seconds': 45.0,  # Guard horizon for subtle sparse candidate volume
     'subtle_sparse_guard_max_candidates': 4,  # Max subtle sparse candidates allowed in guard horizon
     'subtle_sparse_promotion_conf': 0.76,  # Promoted confidence for subtle sparse pattern
+    'modulation_mid_silence_min_strength': 6.0,  # Minimum modulation strength for mid-silence modulation promotion
+    'modulation_mid_silence_min_depth': 0.44,  # Minimum modulation depth for mid-silence modulation promotion
+    'modulation_mid_silence_min_concentration': 0.20,  # Minimum modulation concentration for mid-silence modulation promotion
+    'modulation_mid_silence_min_silence_ratio': 0.22,  # Minimum silence ratio required for mid-silence modulation promotion
+    'modulation_mid_silence_max_silence_ratio': 0.55,  # Maximum silence ratio allowed for mid-silence modulation promotion
+    'modulation_mid_silence_max_gap_count': 0,  # Maximum silence-gap count for mid-silence modulation promotion
+    'modulation_mid_silence_promotion_conf': 0.76,  # Promoted confidence for mid-silence modulation pattern
+    'modulation_burst_min_strength': 8.5,  # Minimum modulation strength for repeated modulation-burst promotion
+    'modulation_burst_min_depth': 0.44,  # Minimum modulation depth for repeated modulation-burst promotion
+    'modulation_burst_min_concentration': 0.20,  # Minimum modulation concentration for repeated modulation-burst promotion
+    'modulation_burst_max_silence_ratio': 0.35,  # Max silence ratio for repeated modulation-burst candidates
+    'modulation_burst_max_gap_count': 1,  # Max silence-gap count for repeated modulation-burst candidates
+    'modulation_burst_window_seconds': 2.8,  # Rolling horizon for modulation-burst accumulation
+    'modulation_burst_hits_required': 3,  # Distinct hits required for modulation-burst promotion
+    'modulation_burst_spacing_seconds': 0.18,  # Minimum spacing between modulation-burst hits
+    'modulation_burst_guard_window_seconds': 20.0,  # Guard horizon for modulation-burst candidate volume
+    'modulation_burst_guard_max_candidates': 10,  # Max modulation-burst candidates allowed in guard horizon
+    'modulation_burst_promotion_conf': 0.76,  # Promoted confidence for modulation-burst pattern
 }
 
 def list_audio_devices():
@@ -1405,6 +1423,8 @@ class BalancedChoppyDetector:
         compact_silence_modulation_feature_hits = deque(maxlen=128)
         subtle_sparse_hits = deque(maxlen=32)
         subtle_sparse_candidate_hits = deque(maxlen=128)
+        modulation_burst_hits = deque(maxlen=64)
+        modulation_burst_candidate_hits = deque(maxlen=128)
         recent_modulation_hits = deque(maxlen=64)
         subtle_modulation_hits = deque(maxlen=96)
         
@@ -1554,6 +1574,8 @@ class BalancedChoppyDetector:
                 persistence_promoted = False
                 burst_episode_promoted = False
                 subtle_sparse_promoted = False
+                modulation_mid_silence_promoted = False
+                modulation_burst_promoted = False
                 subtle_modulation_promoted = False
                 severe_silence_ratio = max(float(THRESHOLDS['silence_ratio']) + 0.08, 0.68)
                 severe_gap_pattern = (
@@ -1837,6 +1859,119 @@ class BalancedChoppyDetector:
                     reasons = f"{reasons}; Compact repeated silence-gap burst"
                     compact_silence_cluster_promoted = True
 
+                modulation_mid_silence_min_strength = float(
+                    THRESHOLDS.get('modulation_mid_silence_min_strength', 6.0)
+                )
+                modulation_mid_silence_min_depth = float(
+                    THRESHOLDS.get('modulation_mid_silence_min_depth', 0.44)
+                )
+                modulation_mid_silence_min_concentration = float(
+                    THRESHOLDS.get('modulation_mid_silence_min_concentration', 0.20)
+                )
+                modulation_mid_silence_min_silence_ratio = float(
+                    THRESHOLDS.get('modulation_mid_silence_min_silence_ratio', 0.22)
+                )
+                modulation_mid_silence_max_silence_ratio = float(
+                    THRESHOLDS.get('modulation_mid_silence_max_silence_ratio', 0.55)
+                )
+                modulation_mid_silence_max_gap_count = max(
+                    0, int(THRESHOLDS.get('modulation_mid_silence_max_gap_count', 0))
+                )
+                modulation_mid_silence_promotion_conf = float(
+                    THRESHOLDS.get('modulation_mid_silence_promotion_conf', 0.76)
+                )
+                modulation_mid_silence_candidate = (
+                    current_window_ms < 1600
+                    and not silence_choppy
+                    and not envelope_hit
+                    and modulation_hit
+                    and modulation_mid_silence_min_silence_ratio <= silence_ratio <= modulation_mid_silence_max_silence_ratio
+                    and silence_gap_count <= modulation_mid_silence_max_gap_count
+                    and mod_strength >= modulation_mid_silence_min_strength
+                    and mod_depth >= modulation_mid_silence_min_depth
+                    and mod_peak_concentration >= modulation_mid_silence_min_concentration
+                )
+                if modulation_mid_silence_candidate:
+                    confidence = max(confidence, modulation_mid_silence_promotion_conf)
+                    reasons = f"{reasons}; Mid-silence modulation burst"
+                    modulation_mid_silence_promoted = True
+
+                modulation_burst_min_strength = float(
+                    THRESHOLDS.get('modulation_burst_min_strength', 8.5)
+                )
+                modulation_burst_min_depth = float(
+                    THRESHOLDS.get('modulation_burst_min_depth', 0.44)
+                )
+                modulation_burst_min_concentration = float(
+                    THRESHOLDS.get('modulation_burst_min_concentration', 0.20)
+                )
+                modulation_burst_max_silence_ratio = float(
+                    THRESHOLDS.get('modulation_burst_max_silence_ratio', 0.35)
+                )
+                modulation_burst_max_gap_count = max(
+                    0, int(THRESHOLDS.get('modulation_burst_max_gap_count', 1))
+                )
+                modulation_burst_window_seconds = max(
+                    0.2, float(THRESHOLDS.get('modulation_burst_window_seconds', 2.8))
+                )
+                modulation_burst_hits_required = max(
+                    2, int(THRESHOLDS.get('modulation_burst_hits_required', 3))
+                )
+                modulation_burst_spacing_seconds = max(
+                    0.05, float(THRESHOLDS.get('modulation_burst_spacing_seconds', 0.18))
+                )
+                modulation_burst_guard_window_seconds = max(
+                    modulation_burst_window_seconds,
+                    float(THRESHOLDS.get('modulation_burst_guard_window_seconds', 20.0))
+                )
+                modulation_burst_guard_max_candidates = max(
+                    modulation_burst_hits_required,
+                    int(THRESHOLDS.get('modulation_burst_guard_max_candidates', 10))
+                )
+                modulation_burst_promotion_conf = float(
+                    THRESHOLDS.get('modulation_burst_promotion_conf', 0.76)
+                )
+                modulation_burst_candidate = (
+                    current_window_ms < 1600
+                    and not silence_choppy
+                    and not envelope_hit
+                    and modulation_hit
+                    and silence_ratio <= modulation_burst_max_silence_ratio
+                    and silence_gap_count <= modulation_burst_max_gap_count
+                    and mod_strength >= modulation_burst_min_strength
+                    and mod_depth >= modulation_burst_min_depth
+                    and mod_peak_concentration >= modulation_burst_min_concentration
+                )
+                while modulation_burst_hits and (
+                    current_time - modulation_burst_hits[0]
+                ) > modulation_burst_window_seconds:
+                    modulation_burst_hits.popleft()
+                while modulation_burst_candidate_hits and (
+                    current_time - modulation_burst_candidate_hits[0]
+                ) > modulation_burst_guard_window_seconds:
+                    modulation_burst_candidate_hits.popleft()
+                if modulation_burst_candidate:
+                    if (
+                        not modulation_burst_candidate_hits
+                        or (current_time - modulation_burst_candidate_hits[-1]) >= modulation_burst_spacing_seconds
+                    ):
+                        modulation_burst_candidate_hits.append(current_time)
+                    if (
+                        not modulation_burst_hits
+                        or (current_time - modulation_burst_hits[-1]) >= modulation_burst_spacing_seconds
+                    ):
+                        modulation_burst_hits.append(current_time)
+                if len(modulation_burst_candidate_hits) > modulation_burst_guard_max_candidates:
+                    modulation_burst_hits.clear()
+                if (
+                    modulation_burst_candidate
+                    and len(modulation_burst_candidate_hits) <= modulation_burst_guard_max_candidates
+                    and len(modulation_burst_hits) >= modulation_burst_hits_required
+                ):
+                    confidence = max(confidence, modulation_burst_promotion_conf)
+                    reasons = f"{reasons}; Repeated strong modulation burst"
+                    modulation_burst_promoted = True
+
                 subtle_sparse_min_conf = float(THRESHOLDS.get('subtle_sparse_min_conf', 0.68))
                 subtle_sparse_max_conf = float(THRESHOLDS.get('subtle_sparse_max_conf', 0.75))
                 subtle_sparse_min_silence_ratio = float(THRESHOLDS.get('subtle_sparse_min_silence_ratio', 0.65))
@@ -2030,6 +2165,10 @@ class BalancedChoppyDetector:
                     active_methods = tuple(sorted(set(active_methods) | {"subtle_sparse_cluster"}))
                 if compact_silence_cluster_promoted:
                     active_methods = tuple(sorted(set(active_methods) | {"compact_silence_cluster"}))
+                if modulation_mid_silence_promoted:
+                    active_methods = tuple(sorted(set(active_methods) | {"modulation_mid_silence_cluster"}))
+                if modulation_burst_promoted:
+                    active_methods = tuple(sorted(set(active_methods) | {"modulation_burst_cluster"}))
                 if burst_episode_promoted:
                     active_methods = tuple(sorted(set(active_methods) | {"burst_episode_cluster"}))
                 if subtle_modulation_promoted:

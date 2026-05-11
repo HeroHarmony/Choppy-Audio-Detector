@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
@@ -223,7 +224,8 @@ def build_playground_tab(window) -> None:
     window.playground_clear_markers_button = QPushButton("Clear Markers")
     window.playground_clear_markers_button.clicked.connect(window.clear_playground_markers)
     window.playground_clear_markers_button.setToolTip("Remove all markers for the currently loaded WAV file.")
-    window.playground_clear_markers_button.setMaximumWidth(115)
+    window.playground_clear_markers_button.setText("Clear All")
+    window.playground_clear_markers_button.setMaximumWidth(90)
     marker_row.addWidget(window.playground_clear_markers_button)
 
     marker_row.addWidget(QLabel("Latency"))
@@ -235,7 +237,7 @@ def build_playground_tab(window) -> None:
     window.playground_marker_latency_ms_spin.setToolTip(
         "Compensate human click reaction time when adding markers."
     )
-    window.playground_marker_latency_ms_spin.setMaximumWidth(95)
+    window.playground_marker_latency_ms_spin.setMaximumWidth(72)
     marker_row.addWidget(window.playground_marker_latency_ms_spin)
 
     marker_row.addWidget(QLabel("Match"))
@@ -247,7 +249,7 @@ def build_playground_tab(window) -> None:
     window.playground_marker_match_ms_spin.setToolTip(
         "Marker comparison radius used in report alignment metrics."
     )
-    window.playground_marker_match_ms_spin.setMaximumWidth(95)
+    window.playground_marker_match_ms_spin.setMaximumWidth(72)
     marker_row.addWidget(window.playground_marker_match_ms_spin)
 
     marker_row.addStretch(1)
@@ -262,6 +264,10 @@ def build_playground_tab(window) -> None:
     window.playground_file_info = QPlainTextEdit("No file loaded")
     window.playground_file_info.setReadOnly(True)
     window.playground_file_info.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+    window.playground_file_info.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    file_info_text_option = QTextOption()
+    file_info_text_option.setWrapMode(QTextOption.WrapAnywhere)
+    window.playground_file_info.document().setDefaultTextOption(file_info_text_option)
     window.playground_file_info.setMaximumHeight(58)
     window.playground_file_info.setToolTip("Loaded file metadata.")
     layout.addWidget(window.playground_file_info)
@@ -272,6 +278,10 @@ def build_playground_tab(window) -> None:
     window.playground_analysis_summary = QPlainTextEdit("No analysis yet")
     window.playground_analysis_summary.setReadOnly(True)
     window.playground_analysis_summary.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+    window.playground_analysis_summary.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    summary_text_option = QTextOption()
+    summary_text_option.setWrapMode(QTextOption.WrapAnywhere)
+    window.playground_analysis_summary.document().setDefaultTextOption(summary_text_option)
     window.playground_analysis_summary.setMaximumHeight(76)
     window.playground_analysis_summary.setToolTip("Most recent analysis/result summary.")
     layout.addWidget(window.playground_analysis_summary)

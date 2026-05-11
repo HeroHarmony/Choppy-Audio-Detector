@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 import json
 import struct
+import threading
 import wave
 
 import numpy as np
@@ -763,6 +764,7 @@ def analyze_wav_file(
     step_ms: int,
     warmup_ms: int,
     baseline_profile: dict | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> PlaygroundAnalysisResult:
     import live_analysis
 
@@ -803,6 +805,8 @@ def analyze_wav_file(
     row_index = 1
     max_start = max(0, total_samples - window_samples)
     for start in range(0, max_start + 1, step_samples):
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("Playground analysis canceled.")
         end = start + window_samples
         window = mono[start:end]
         if len(window) == 0:

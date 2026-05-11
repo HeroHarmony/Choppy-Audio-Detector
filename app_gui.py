@@ -325,6 +325,9 @@ class MainWindow(QMainWindow):
         self._playground_live_lock = threading.Lock()
         self._playground_analysis_running = False
         self._playground_analysis_thread: threading.Thread | None = None
+        self._playground_analysis_cancel_event = threading.Event()
+        self._playground_analysis_cancel_requested = False
+        self._playground_analysis_run_id = 0
         self._playground_preview_active_path: str | None = None
         self._playground_preview_active_channel_index: int = 0
         self._playground_markers_by_path: dict[str, list[int]] = {}
@@ -1120,13 +1123,18 @@ class MainWindow(QMainWindow):
             f"{compare_window_ms}/{compare_step_ms},\n"
             "generate an additional report using legacy comparison timing."
         )
-        self.playground_analyze_button.setText("Analyze Batch" if batch_mode else "Analyze File")
-        self.playground_analyze_button.setToolTip(
-            "Run offline detector analysis on loaded WAV files and save compact report(s)."
-            if batch_mode
-            else "Run offline detector analysis on the loaded WAV file and save a compact report."
-        )
-        self.playground_analyze_button.setEnabled(has_file and not controls_locked)
+        if analysis_running:
+            self.playground_analyze_button.setText("Cancel Analysis")
+            self.playground_analyze_button.setToolTip("Cancel the in-progress offline analysis and skip report generation.")
+            self.playground_analyze_button.setEnabled(True)
+        else:
+            self.playground_analyze_button.setText("Analyze Batch" if batch_mode else "Analyze File")
+            self.playground_analyze_button.setToolTip(
+                "Run offline detector analysis on loaded WAV files and save compact report(s)."
+                if batch_mode
+                else "Run offline detector analysis on the loaded WAV file and save a compact report."
+            )
+            self.playground_analyze_button.setEnabled(has_file and not controls_locked)
         self.playground_preview_button.setEnabled(
             has_file and (not batch_mode) and SOUNDDEVICE_AVAILABLE and not controls_locked
         )
@@ -1356,6 +1364,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Playground", "Stop the live report before running file analysis.")
             return
         if self._playground_analysis_running:
+            self.cancel_playground_analysis()
             return
         loaded_files = list(self._playground_loaded_files)
         if not loaded_files:
@@ -1376,10 +1385,15 @@ class MainWindow(QMainWindow):
         self.playground_analysis_summary.setPlainText(
             "Running batch analysis..." if batch_mode else "Running analysis..."
         )
+        self._playground_analysis_run_id += 1
+        run_id = self._playground_analysis_run_id
+        self._playground_analysis_cancel_event.clear()
+        self._playground_analysis_cancel_requested = False
         self._playground_analysis_running = True
         self.playground_table.setSortingEnabled(False)
         self.update_playground_controls()
         worker_payload = {
+            "run_id": run_id,
             "loaded_files": loaded_files,
             "window_ms": window_ms,
             "step_ms": step_ms,
@@ -1399,8 +1413,17 @@ class MainWindow(QMainWindow):
         )
         self._playground_analysis_thread.start()
 
+    def cancel_playground_analysis(self) -> None:
+        if not self._playground_analysis_running:
+            return
+        self._playground_analysis_cancel_requested = True
+        self._playground_analysis_cancel_event.set()
+        self.playground_analysis_summary.setPlainText("Cancelling analysis...")
+        self.update_playground_controls()
+
     def _run_playground_analysis_worker(self, payload: dict[str, object]) -> None:
         try:
+            run_id = int(payload.get("run_id", 0))
             loaded_files = list(payload.get("loaded_files", []))
             window_ms = int(payload.get("window_ms", 1000))
             step_ms = int(payload.get("step_ms", 50))
@@ -1414,6 +1437,11 @@ class MainWindow(QMainWindow):
 
             analysis_rows: list[dict[str, object]] = []
             for loaded in loaded_files:
+                if self._playground_analysis_cancel_event.is_set():
+                    self.signals.playground_analysis_done.emit(
+                        {"run_id": run_id, "cancelled": True, "rows": []}
+                    )
+                    return
                 if not isinstance(loaded, LoadedWavFile):
                     continue
                 effective_channel_idx = max(0, min(channel_idx, loaded.channel_count - 1))
@@ -1425,9 +1453,15 @@ class MainWindow(QMainWindow):
                     step_ms=step_ms,
                     warmup_ms=warmup_ms,
                     baseline_profile=baseline_profiles.get(loaded.path),
+                    cancel_event=self._playground_analysis_cancel_event,
                 )
                 prod_result = None
                 if run_prod_timing:
+                    if self._playground_analysis_cancel_event.is_set():
+                        self.signals.playground_analysis_done.emit(
+                            {"run_id": run_id, "cancelled": True, "rows": []}
+                        )
+                        return
                     prod_result = analyze_wav_file(
                         loaded,
                         self.settings,
@@ -1436,6 +1470,7 @@ class MainWindow(QMainWindow):
                         step_ms=compare_step_ms,
                         warmup_ms=warmup_ms,
                         baseline_profile=baseline_profiles.get(loaded.path),
+                        cancel_event=self._playground_analysis_cancel_event,
                     )
                 inferred = self.infer_expected_outcome_from_filename(loaded.path)
                 analysis_rows.append(
@@ -1449,21 +1484,44 @@ class MainWindow(QMainWindow):
                         "markers_ms": list(markers_by_path.get(loaded.path, [])),
                     }
                 )
-            self.signals.playground_analysis_done.emit(analysis_rows)
+            self.signals.playground_analysis_done.emit(
+                {"run_id": run_id, "cancelled": False, "rows": analysis_rows}
+            )
+        except InterruptedError:
+            run_id = int(payload.get("run_id", 0))
+            self.signals.playground_analysis_done.emit(
+                {"run_id": run_id, "cancelled": True, "rows": []}
+            )
         except Exception as exc:
             self.signals.playground_analysis_failed.emit(str(exc))
 
     def _on_playground_analysis_failed(self, message: str) -> None:
         self._playground_analysis_running = False
         self._playground_analysis_thread = None
+        self._playground_analysis_cancel_event.clear()
+        self._playground_analysis_cancel_requested = False
         self.update_playground_controls()
         QMessageBox.warning(self, "Analysis failed", message)
 
     def _on_playground_analysis_done(self, analysis_rows_obj: object) -> None:
-        analysis_rows = list(analysis_rows_obj) if isinstance(analysis_rows_obj, list) else []
+        run_id = self._playground_analysis_run_id
+        cancelled = False
+        if isinstance(analysis_rows_obj, dict):
+            run_id = int(analysis_rows_obj.get("run_id", self._playground_analysis_run_id))
+            cancelled = bool(analysis_rows_obj.get("cancelled", False))
+            analysis_rows = list(analysis_rows_obj.get("rows", []))
+        else:
+            analysis_rows = list(analysis_rows_obj) if isinstance(analysis_rows_obj, list) else []
+        if run_id != self._playground_analysis_run_id:
+            return
         self._playground_analysis_running = False
         self._playground_analysis_thread = None
+        self._playground_analysis_cancel_event.clear()
+        self._playground_analysis_cancel_requested = False
         self.update_playground_controls()
+        if cancelled:
+            self.playground_analysis_summary.setPlainText("Analysis canceled. No reports created.")
+            return
         if not analysis_rows:
             QMessageBox.warning(self, "Analysis failed", "No analysis rows were produced.")
             return

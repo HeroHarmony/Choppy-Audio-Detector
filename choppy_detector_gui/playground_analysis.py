@@ -379,6 +379,20 @@ def build_compact_report(
             f"burst_episode_min_gap_ms:{thresholds.get('burst_episode_min_gap_ms')},"
             f"burst_episode_max_density_per_second:{thresholds.get('burst_episode_max_density_per_second')},"
             f"burst_episode_promotion_conf:{thresholds.get('burst_episode_promotion_conf')},"
+            f"burst_episode_max_span_seconds:{thresholds.get('burst_episode_max_span_seconds')},"
+            f"burst_episode_guard_window_seconds:{thresholds.get('burst_episode_guard_window_seconds')},"
+            f"burst_episode_guard_max_candidates:{thresholds.get('burst_episode_guard_max_candidates')},"
+            f"subtle_sparse_min_conf:{thresholds.get('subtle_sparse_min_conf')},"
+            f"subtle_sparse_max_conf:{thresholds.get('subtle_sparse_max_conf')},"
+            f"subtle_sparse_min_silence_ratio:{thresholds.get('subtle_sparse_min_silence_ratio')},"
+            f"subtle_sparse_max_silence_ratio:{thresholds.get('subtle_sparse_max_silence_ratio')},"
+            f"subtle_sparse_min_gap_ms:{thresholds.get('subtle_sparse_min_gap_ms')},"
+            f"subtle_sparse_recent_mod_window_seconds:{thresholds.get('subtle_sparse_recent_mod_window_seconds')},"
+            f"subtle_sparse_hits_required:{thresholds.get('subtle_sparse_hits_required')},"
+            f"subtle_sparse_max_span_seconds:{thresholds.get('subtle_sparse_max_span_seconds')},"
+            f"subtle_sparse_guard_window_seconds:{thresholds.get('subtle_sparse_guard_window_seconds')},"
+            f"subtle_sparse_guard_max_candidates:{thresholds.get('subtle_sparse_guard_max_candidates')},"
+            f"subtle_sparse_promotion_conf:{thresholds.get('subtle_sparse_promotion_conf')},"
             f"envelope_discontinuity:{thresholds.get('envelope_discontinuity')},"
             f"modulation_strength:{thresholds.get('modulation_strength')},"
             f"modulation_depth:{thresholds.get('modulation_depth')},"
@@ -557,6 +571,7 @@ def build_compact_report(
             "silence_gaps_persistent": sum(1 for r in rows if "silence_gaps_persistent" in (r.methods or "")),
             "envelope_discontinuity": sum(1 for r in rows if "envelope_discontinuity" in (r.methods or "")),
             "amplitude_modulation": sum(1 for r in rows if "amplitude_modulation" in (r.methods or "")),
+            "subtle_sparse_cluster": sum(1 for r in rows if "subtle_sparse_cluster" in (r.methods or "")),
             "subtle_modulation_cluster": sum(1 for r in rows if "subtle_modulation_cluster" in (r.methods or "")),
             "burst_episode_cluster": sum(1 for r in rows if "burst_episode_cluster" in (r.methods or "")),
         }
@@ -565,6 +580,7 @@ def build_compact_report(
             f"silence_rows:{method_presence['silence_gaps']},"
             f"envelope_rows:{method_presence['envelope_discontinuity']},"
             f"mod_rows:{method_presence['amplitude_modulation']},"
+            f"subtle_sparse_rows:{method_presence['subtle_sparse_cluster']},"
             f"subtle_rows:{method_presence['subtle_modulation_cluster']},"
             f"burst_episode_rows:{method_presence['burst_episode_cluster']}"
         )
@@ -797,6 +813,10 @@ def analyze_wav_file(
     burst_cluster_hits_ms: list[int] = []
     long_window_sparse_burst_hits_ms: list[int] = []
     burst_episode_hits_ms: list[int] = []
+    burst_episode_candidate_hits_ms: list[int] = []
+    subtle_sparse_hits_ms: list[int] = []
+    subtle_sparse_candidate_hits_ms: list[int] = []
+    recent_modulation_hits_ms: list[int] = []
     subtle_modulation_hits_ms: list[int] = []
     last_detection_ms = -10_000_000
     last_detection_signature = ""
@@ -827,6 +847,7 @@ def analyze_wav_file(
         envelope_hit = bool((results.get("envelope_discontinuity", {}) or {}).get("choppy", False))
         modulation_hit = bool((results.get("amplitude_modulation", {}) or {}).get("choppy", False))
         persistence_promoted = False
+        subtle_sparse_promoted = False
         burst_episode_promoted = False
         subtle_modulation_promoted = False
         start_ms = int(round((start / loaded.sample_rate) * 1000.0))
@@ -848,6 +869,20 @@ def analyze_wav_file(
         mod_strength = float((mod_result or {}).get("score", 0.0) or 0.0)
         mod_depth = float((mod_result or {}).get("depth", 0.0) or 0.0)
         mod_peak_concentration = float((mod_result or {}).get("peak_concentration", 0.0) or 0.0)
+        if modulation_hit:
+            recent_modulation_hits_ms.append(start_ms)
+        recent_mod_window_ms = max(
+            100,
+            int(
+                round(
+                    float(live_analysis.THRESHOLDS.get("subtle_sparse_recent_mod_window_seconds", 1.5))
+                    * 1000.0
+                )
+            ),
+        )
+        recent_modulation_hits_ms = [
+            t for t in recent_modulation_hits_ms if (start_ms - t) <= recent_mod_window_ms
+        ]
         persistence_block_long_window = (
             int(window_ms) >= 1600
             and not modulation_hit
@@ -948,7 +983,74 @@ def analyze_wav_file(
                 )
                 reasons = f"{reasons}; Uncorroborated long-window sparse cluster capped"
 
+        subtle_sparse_min_conf = float(live_analysis.THRESHOLDS.get("subtle_sparse_min_conf", 0.68))
+        subtle_sparse_max_conf = float(live_analysis.THRESHOLDS.get("subtle_sparse_max_conf", 0.75))
+        subtle_sparse_min_silence_ratio = float(
+            live_analysis.THRESHOLDS.get("subtle_sparse_min_silence_ratio", 0.65)
+        )
+        subtle_sparse_max_silence_ratio = float(
+            live_analysis.THRESHOLDS.get("subtle_sparse_max_silence_ratio", 0.82)
+        )
+        subtle_sparse_min_gap_ms = float(live_analysis.THRESHOLDS.get("subtle_sparse_min_gap_ms", 500.0))
+        subtle_sparse_hits_required = max(1, int(live_analysis.THRESHOLDS.get("subtle_sparse_hits_required", 2)))
+        subtle_sparse_max_span_ms = max(
+            50,
+            int(round(float(live_analysis.THRESHOLDS.get("subtle_sparse_max_span_seconds", 0.8)) * 1000.0)),
+        )
+        subtle_sparse_guard_window_ms = max(
+            5000,
+            int(
+                round(
+                    float(live_analysis.THRESHOLDS.get("subtle_sparse_guard_window_seconds", 45.0))
+                    * 1000.0
+                )
+            ),
+        )
+        subtle_sparse_guard_max_candidates = max(
+            1, int(live_analysis.THRESHOLDS.get("subtle_sparse_guard_max_candidates", 4))
+        )
+        subtle_sparse_promotion_conf = float(
+            live_analysis.THRESHOLDS.get("subtle_sparse_promotion_conf", 0.76)
+        )
+        subtle_sparse_candidate = (
+            int(window_ms) < 1600
+            and silence_choppy
+            and not envelope_hit
+            and subtle_sparse_min_conf <= confidence < subtle_sparse_max_conf
+            and subtle_sparse_min_silence_ratio <= silence_ratio <= subtle_sparse_max_silence_ratio
+            and silence_max_gap_ms >= subtle_sparse_min_gap_ms
+            and bool(recent_modulation_hits_ms)
+        )
+        subtle_sparse_hits_ms = [t for t in subtle_sparse_hits_ms if (start_ms - t) <= subtle_sparse_guard_window_ms]
+        subtle_sparse_candidate_hits_ms = [
+            t for t in subtle_sparse_candidate_hits_ms if (start_ms - t) <= subtle_sparse_guard_window_ms
+        ]
+        if subtle_sparse_candidate:
+            if (
+                not subtle_sparse_candidate_hits_ms
+                or (start_ms - subtle_sparse_candidate_hits_ms[-1]) >= 180
+            ):
+                subtle_sparse_candidate_hits_ms.append(start_ms)
+            if not subtle_sparse_hits_ms or (start_ms - subtle_sparse_hits_ms[-1]) >= 180:
+                subtle_sparse_hits_ms.append(start_ms)
+        if len(subtle_sparse_candidate_hits_ms) > subtle_sparse_guard_max_candidates:
+            subtle_sparse_hits_ms = []
+        subtle_sparse_hit_count = len(subtle_sparse_hits_ms)
+        subtle_sparse_span_ms = (
+            (subtle_sparse_hits_ms[-1] - subtle_sparse_hits_ms[0]) if subtle_sparse_hit_count >= 2 else 0
+        )
+        if (
+            subtle_sparse_candidate
+            and len(subtle_sparse_candidate_hits_ms) <= subtle_sparse_guard_max_candidates
+            and subtle_sparse_hit_count >= subtle_sparse_hits_required
+            and subtle_sparse_span_ms <= subtle_sparse_max_span_ms
+        ):
+            confidence = max(confidence, subtle_sparse_promotion_conf)
+            reasons = f"{reasons}; Subtle sparse low-ambient pattern"
+            subtle_sparse_promoted = True
+
         if bool(live_analysis.ALERT_CONFIG.get("enable_burst_episode_promotion", False)):
+            current_window_ms = int(window_ms)
             episode_min_conf = float(live_analysis.THRESHOLDS.get("burst_episode_min_conf", 0.68))
             episode_max_conf = float(live_analysis.THRESHOLDS.get("burst_episode_max_conf", 0.75))
             episode_min_gap_ms = float(live_analysis.THRESHOLDS.get("burst_episode_min_gap_ms", 500.0))
@@ -960,19 +1062,50 @@ def analyze_wav_file(
                 0.05, float(live_analysis.THRESHOLDS.get("burst_episode_max_density_per_second", 0.55))
             )
             episode_promotion_conf = float(live_analysis.THRESHOLDS.get("burst_episode_promotion_conf", 0.76))
+            episode_max_span_ms = max(
+                100, int(round(float(live_analysis.THRESHOLDS.get("burst_episode_max_span_seconds", 3.0)) * 1000.0))
+            )
+            episode_guard_window_ms = max(
+                5000,
+                int(round(float(live_analysis.THRESHOLDS.get("burst_episode_guard_window_seconds", 20.0)) * 1000.0)),
+            )
+            episode_guard_max_candidates = max(
+                4, int(live_analysis.THRESHOLDS.get("burst_episode_guard_max_candidates", 10))
+            )
             episode_candidate = (
+                current_window_ms >= 1600
+                and
                 silence_choppy
                 and not envelope_hit
                 and episode_min_conf <= confidence < episode_max_conf
                 and silence_max_gap_ms >= episode_min_gap_ms
             )
             burst_episode_hits_ms = [t for t in burst_episode_hits_ms if (start_ms - t) <= episode_window_ms]
+            burst_episode_candidate_hits_ms = [
+                t for t in burst_episode_candidate_hits_ms if (start_ms - t) <= episode_guard_window_ms
+            ]
             if episode_candidate:
+                if (
+                    not burst_episode_candidate_hits_ms
+                    or (start_ms - burst_episode_candidate_hits_ms[-1]) >= 180
+                ):
+                    burst_episode_candidate_hits_ms.append(start_ms)
                 if not burst_episode_hits_ms or (start_ms - burst_episode_hits_ms[-1]) >= 180:
                     burst_episode_hits_ms.append(start_ms)
+            if len(burst_episode_candidate_hits_ms) > episode_guard_max_candidates:
+                burst_episode_hits_ms = []
             hit_count = len(burst_episode_hits_ms)
+            burst_span_ms = (
+                (burst_episode_hits_ms[-1] - burst_episode_hits_ms[0]) if hit_count >= 2 else 0
+            )
             density_per_second = hit_count / max((episode_window_ms / 1000.0), 0.001)
-            if hit_count >= episode_hits_required and density_per_second <= episode_max_density:
+            if (
+                episode_candidate
+                and len(burst_episode_candidate_hits_ms) <= episode_guard_max_candidates
+                and hit_count >= episode_hits_required
+                and burst_span_ms <= episode_max_span_ms
+                and density_per_second <= episode_max_density
+            ):
                 confidence = max(confidence, episode_promotion_conf)
                 reasons = f"{reasons}; Sparse burst-episode pattern"
                 burst_episode_promoted = True
@@ -1034,6 +1167,8 @@ def analyze_wav_file(
         )
         if persistence_promoted:
             active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
+        if subtle_sparse_promoted:
+            active_methods = tuple(sorted(set(active_methods) | {"subtle_sparse_cluster"}))
         if burst_episode_promoted:
             active_methods = tuple(sorted(set(active_methods) | {"burst_episode_cluster"}))
         if subtle_modulation_promoted:

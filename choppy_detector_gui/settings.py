@@ -78,6 +78,20 @@ DEFAULT_THRESHOLDS = {
     "burst_episode_min_gap_ms": 500,
     "burst_episode_max_density_per_second": 0.55,
     "burst_episode_promotion_conf": 0.76,
+    "burst_episode_max_span_seconds": 3.0,
+    "burst_episode_guard_window_seconds": 20.0,
+    "burst_episode_guard_max_candidates": 10,
+    "subtle_sparse_min_conf": 0.68,
+    "subtle_sparse_max_conf": 0.75,
+    "subtle_sparse_min_silence_ratio": 0.65,
+    "subtle_sparse_max_silence_ratio": 0.82,
+    "subtle_sparse_min_gap_ms": 500,
+    "subtle_sparse_recent_mod_window_seconds": 1.5,
+    "subtle_sparse_hits_required": 2,
+    "subtle_sparse_max_span_seconds": 0.8,
+    "subtle_sparse_guard_window_seconds": 45.0,
+    "subtle_sparse_guard_max_candidates": 4,
+    "subtle_sparse_promotion_conf": 0.76,
 }
 
 

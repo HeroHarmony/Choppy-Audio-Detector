@@ -167,6 +167,20 @@ THRESHOLDS = {
     'burst_episode_min_gap_ms': 500,  # Minimum max-gap signal for burst-episode candidate
     'burst_episode_max_density_per_second': 0.55,  # Reject dense continuous patterns (speech/ambience)
     'burst_episode_promotion_conf': 0.76,  # Promoted confidence when burst-episode evidence passes
+    'burst_episode_max_span_seconds': 3.0,  # Require promoted burst episodes to remain time-compact
+    'burst_episode_guard_window_seconds': 20.0,  # Guard horizon for burst-episode candidate volume
+    'burst_episode_guard_max_candidates': 10,  # Max candidates allowed within guard horizon
+    'subtle_sparse_min_conf': 0.68,  # Lower bound for short-window subtle sparse candidates
+    'subtle_sparse_max_conf': 0.75,  # Upper bound (exclusive) for short-window subtle sparse candidates
+    'subtle_sparse_min_silence_ratio': 0.65,  # Minimum local silence ratio for subtle sparse candidates
+    'subtle_sparse_max_silence_ratio': 0.82,  # Maximum local silence ratio for subtle sparse candidates
+    'subtle_sparse_min_gap_ms': 500,  # Minimum max-gap signal for subtle sparse candidates
+    'subtle_sparse_recent_mod_window_seconds': 1.5,  # Nearby modulation corroboration horizon
+    'subtle_sparse_hits_required': 2,  # Distinct hits required for subtle sparse promotion
+    'subtle_sparse_max_span_seconds': 0.8,  # Require subtle sparse promoted cluster to stay compact
+    'subtle_sparse_guard_window_seconds': 45.0,  # Guard horizon for subtle sparse candidate volume
+    'subtle_sparse_guard_max_candidates': 4,  # Max subtle sparse candidates allowed in guard horizon
+    'subtle_sparse_promotion_conf': 0.76,  # Promoted confidence for subtle sparse pattern
 }
 
 def list_audio_devices():
@@ -1361,6 +1375,10 @@ class BalancedChoppyDetector:
         burst_cluster_hits = deque(maxlen=64)
         long_window_sparse_burst_hits = deque(maxlen=64)
         burst_episode_hits = deque(maxlen=128)
+        burst_episode_candidate_hits = deque(maxlen=256)
+        subtle_sparse_hits = deque(maxlen=32)
+        subtle_sparse_candidate_hits = deque(maxlen=128)
+        recent_modulation_hits = deque(maxlen=64)
         subtle_modulation_hits = deque(maxlen=96)
         
         print("Listening for streaming audio glitches...")
@@ -1508,6 +1526,7 @@ class BalancedChoppyDetector:
                 modulation_hit = bool(results.get('amplitude_modulation', {}).get('choppy', False))
                 persistence_promoted = False
                 burst_episode_promoted = False
+                subtle_sparse_promoted = False
                 subtle_modulation_promoted = False
                 severe_silence_ratio = max(float(THRESHOLDS['silence_ratio']) + 0.08, 0.68)
                 severe_gap_pattern = (
@@ -1522,6 +1541,15 @@ class BalancedChoppyDetector:
                     and float(results.get('amplitude_modulation', {}).get('depth', 0.0) or 0.0) >= 0.50
                     and float(results.get('amplitude_modulation', {}).get('peak_concentration', 0.0) or 0.0) >= 0.16
                 )
+                if modulation_hit:
+                    recent_modulation_hits.append(current_time)
+                recent_mod_window_seconds = max(
+                    0.1, float(THRESHOLDS.get('subtle_sparse_recent_mod_window_seconds', 1.5))
+                )
+                while recent_modulation_hits and (
+                    current_time - recent_modulation_hits[0]
+                ) > recent_mod_window_seconds:
+                    recent_modulation_hits.popleft()
                 persistence_block_long_window = (
                     int(getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms()) >= 1600
                     and not modulation_hit
@@ -1624,6 +1652,68 @@ class BalancedChoppyDetector:
                         )
                         reasons = f"{reasons}; Uncorroborated long-window sparse cluster capped"
 
+                current_window_ms = int(
+                    getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms()
+                )
+                subtle_sparse_min_conf = float(THRESHOLDS.get('subtle_sparse_min_conf', 0.68))
+                subtle_sparse_max_conf = float(THRESHOLDS.get('subtle_sparse_max_conf', 0.75))
+                subtle_sparse_min_silence_ratio = float(THRESHOLDS.get('subtle_sparse_min_silence_ratio', 0.65))
+                subtle_sparse_max_silence_ratio = float(THRESHOLDS.get('subtle_sparse_max_silence_ratio', 0.82))
+                subtle_sparse_min_gap_ms = float(THRESHOLDS.get('subtle_sparse_min_gap_ms', 500.0))
+                subtle_sparse_hits_required = max(1, int(THRESHOLDS.get('subtle_sparse_hits_required', 2)))
+                subtle_sparse_max_span_seconds = max(
+                    0.05, float(THRESHOLDS.get('subtle_sparse_max_span_seconds', 0.8))
+                )
+                subtle_sparse_guard_window_seconds = max(
+                    5.0, float(THRESHOLDS.get('subtle_sparse_guard_window_seconds', 45.0))
+                )
+                subtle_sparse_guard_max_candidates = max(
+                    1, int(THRESHOLDS.get('subtle_sparse_guard_max_candidates', 4))
+                )
+                subtle_sparse_promotion_conf = float(
+                    THRESHOLDS.get('subtle_sparse_promotion_conf', 0.76)
+                )
+                subtle_sparse_candidate = (
+                    current_window_ms < 1600
+                    and silence_choppy
+                    and not envelope_hit
+                    and subtle_sparse_min_conf <= confidence < subtle_sparse_max_conf
+                    and subtle_sparse_min_silence_ratio <= silence_ratio <= subtle_sparse_max_silence_ratio
+                    and silence_max_gap_ms >= subtle_sparse_min_gap_ms
+                    and bool(recent_modulation_hits)
+                )
+                while subtle_sparse_hits and (
+                    current_time - subtle_sparse_hits[0]
+                ) > subtle_sparse_guard_window_seconds:
+                    subtle_sparse_hits.popleft()
+                while subtle_sparse_candidate_hits and (
+                    current_time - subtle_sparse_candidate_hits[0]
+                ) > subtle_sparse_guard_window_seconds:
+                    subtle_sparse_candidate_hits.popleft()
+                if subtle_sparse_candidate:
+                    if (
+                        not subtle_sparse_candidate_hits
+                        or (current_time - subtle_sparse_candidate_hits[-1]) >= 0.18
+                    ):
+                        subtle_sparse_candidate_hits.append(current_time)
+                    if not subtle_sparse_hits or (current_time - subtle_sparse_hits[-1]) >= 0.18:
+                        subtle_sparse_hits.append(current_time)
+                if len(subtle_sparse_candidate_hits) > subtle_sparse_guard_max_candidates:
+                    subtle_sparse_hits.clear()
+                subtle_sparse_hit_count = len(subtle_sparse_hits)
+                subtle_sparse_span_seconds = (
+                    (subtle_sparse_hits[-1] - subtle_sparse_hits[0]) if subtle_sparse_hit_count >= 2 else 0.0
+                )
+                if (
+                    subtle_sparse_candidate
+                    and len(subtle_sparse_candidate_hits) <= subtle_sparse_guard_max_candidates
+                    and subtle_sparse_hit_count >= subtle_sparse_hits_required
+                    and subtle_sparse_span_seconds <= subtle_sparse_max_span_seconds
+                ):
+                    confidence = max(confidence, subtle_sparse_promotion_conf)
+                    reasons = f"{reasons}; Subtle sparse low-ambient pattern"
+                    subtle_sparse_promoted = True
+
                 if bool(ALERT_CONFIG.get('enable_burst_episode_promotion', False)):
                     episode_min_conf = float(THRESHOLDS.get('burst_episode_min_conf', 0.68))
                     episode_max_conf = float(THRESHOLDS.get('burst_episode_max_conf', 0.75))
@@ -1634,7 +1724,18 @@ class BalancedChoppyDetector:
                         0.05, float(THRESHOLDS.get('burst_episode_max_density_per_second', 0.55))
                     )
                     episode_promotion_conf = float(THRESHOLDS.get('burst_episode_promotion_conf', 0.76))
+                    episode_max_span_seconds = max(
+                        0.1, float(THRESHOLDS.get('burst_episode_max_span_seconds', 3.0))
+                    )
+                    episode_guard_window_seconds = max(
+                        5.0, float(THRESHOLDS.get('burst_episode_guard_window_seconds', 20.0))
+                    )
+                    episode_guard_max_candidates = max(
+                        4, int(THRESHOLDS.get('burst_episode_guard_max_candidates', 10))
+                    )
                     episode_candidate = (
+                        current_window_ms >= 1600
+                        and
                         silence_choppy
                         and not envelope_hit
                         and episode_min_conf <= confidence < episode_max_conf
@@ -1642,12 +1743,32 @@ class BalancedChoppyDetector:
                     )
                     while burst_episode_hits and (current_time - burst_episode_hits[0]) > episode_window_seconds:
                         burst_episode_hits.popleft()
+                    while burst_episode_candidate_hits and (
+                        current_time - burst_episode_candidate_hits[0]
+                    ) > episode_guard_window_seconds:
+                        burst_episode_candidate_hits.popleft()
                     if episode_candidate:
+                        if (
+                            not burst_episode_candidate_hits
+                            or (current_time - burst_episode_candidate_hits[-1]) >= 0.18
+                        ):
+                            burst_episode_candidate_hits.append(current_time)
                         if not burst_episode_hits or (current_time - burst_episode_hits[-1]) >= 0.18:
                             burst_episode_hits.append(current_time)
+                    if len(burst_episode_candidate_hits) > episode_guard_max_candidates:
+                        burst_episode_hits.clear()
                     hit_count = len(burst_episode_hits)
+                    burst_span_seconds = (
+                        (burst_episode_hits[-1] - burst_episode_hits[0]) if hit_count >= 2 else 0.0
+                    )
                     density_per_second = hit_count / max(episode_window_seconds, 0.001)
-                    if hit_count >= episode_hits_required and density_per_second <= episode_max_density:
+                    if (
+                        episode_candidate
+                        and len(burst_episode_candidate_hits) <= episode_guard_max_candidates
+                        and hit_count >= episode_hits_required
+                        and burst_span_seconds <= episode_max_span_seconds
+                        and density_per_second <= episode_max_density
+                    ):
                         confidence = max(confidence, episode_promotion_conf)
                         reasons = f"{reasons}; Sparse burst-episode pattern"
                         burst_episode_promoted = True
@@ -1723,6 +1844,8 @@ class BalancedChoppyDetector:
                 active_methods = tuple(sorted(method for method, result in results.items() if result.get('choppy')))
                 if persistence_promoted:
                     active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
+                if subtle_sparse_promoted:
+                    active_methods = tuple(sorted(set(active_methods) | {"subtle_sparse_cluster"}))
                 if burst_episode_promoted:
                     active_methods = tuple(sorted(set(active_methods) | {"burst_episode_cluster"}))
                 if subtle_modulation_promoted:
@@ -1765,8 +1888,12 @@ class BalancedChoppyDetector:
                 ]
                 if persistence_promoted:
                     active_methods = sorted(set(active_methods) | {"silence_gaps_persistent"})
+                if subtle_sparse_promoted:
+                    active_methods = sorted(set(active_methods) | {"subtle_sparse_cluster"})
                 if burst_episode_promoted:
                     active_methods = sorted(set(active_methods) | {"burst_episode_cluster"})
+                if subtle_modulation_promoted:
+                    active_methods = sorted(set(active_methods) | {"subtle_modulation_cluster"})
                 should_alert, detection_count, time_span, cooldown_remaining, alert_path, burst_count = self.should_send_alert()
                 self.emit_event(
                     "glitch.detected",

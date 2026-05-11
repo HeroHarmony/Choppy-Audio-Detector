@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
             ),
             (
                 "enable_burst_episode_promotion",
-                "Enable experimental sparse burst-episode promotion path.",
+                "Enable experimental sparse burst-episode promotion path (long-window analysis only).",
                 "bool",
                 0,
                 1,
@@ -523,6 +523,20 @@ class MainWindow(QMainWindow):
             ("burst_episode_min_gap_ms", "Minimum max-gap size for burst-episode candidates.", "int", 50, 3000, 10),
             ("burst_episode_max_density_per_second", "Maximum burst-episode hit density per second.", "float", 0.05, 5.0, 0.01),
             ("burst_episode_promotion_conf", "Confidence assigned when burst-episode promotion triggers.", "float", 0.0, 1.0, 0.01),
+            ("burst_episode_max_span_seconds", "Maximum allowed time span for a promoted burst-episode cluster.", "float", 0.2, 10.0, 0.1),
+            ("burst_episode_guard_window_seconds", "Guard horizon for burst-episode candidate volume.", "float", 5.0, 120.0, 0.5),
+            ("burst_episode_guard_max_candidates", "Max burst-episode candidates allowed in guard horizon.", "int", 4, 200, 1),
+            ("subtle_sparse_min_conf", "Minimum near-threshold confidence for subtle sparse candidates.", "float", 0.0, 1.0, 0.01),
+            ("subtle_sparse_max_conf", "Maximum near-threshold confidence (exclusive) for subtle sparse candidates.", "float", 0.0, 1.0, 0.01),
+            ("subtle_sparse_min_silence_ratio", "Minimum local silence ratio for subtle sparse candidates.", "float", 0.0, 1.0, 0.01),
+            ("subtle_sparse_max_silence_ratio", "Maximum local silence ratio for subtle sparse candidates.", "float", 0.0, 1.0, 0.01),
+            ("subtle_sparse_min_gap_ms", "Minimum max-gap size for subtle sparse candidates.", "int", 50, 3000, 10),
+            ("subtle_sparse_recent_mod_window_seconds", "Nearby modulation corroboration horizon for subtle sparse candidates.", "float", 0.1, 10.0, 0.1),
+            ("subtle_sparse_hits_required", "Distinct hits required for subtle sparse promotion.", "int", 1, 20, 1),
+            ("subtle_sparse_max_span_seconds", "Maximum allowed time span for a subtle sparse promoted cluster.", "float", 0.1, 10.0, 0.1),
+            ("subtle_sparse_guard_window_seconds", "Guard horizon for subtle sparse candidate volume.", "float", 5.0, 300.0, 0.5),
+            ("subtle_sparse_guard_max_candidates", "Max subtle sparse candidates allowed in guard horizon.", "int", 1, 50, 1),
+            ("subtle_sparse_promotion_conf", "Confidence assigned when subtle sparse promotion triggers.", "float", 0.0, 1.0, 0.01),
         )
 
     def methods_schema(self):

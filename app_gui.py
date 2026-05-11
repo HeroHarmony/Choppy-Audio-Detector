@@ -326,6 +326,8 @@ class MainWindow(QMainWindow):
         self._playground_preview_start_offset_ms = 0
         self._playground_live_chunks: list[np.ndarray] = []
         self._playground_live_lock = threading.Lock()
+        self._playground_live_peak_dbfs = -120.0
+        self._playground_live_rms_dbfs = -120.0
         self._playground_analysis_running = False
         self._playground_analysis_thread: threading.Thread | None = None
         self._playground_analysis_cancel_event = threading.Event()
@@ -1184,7 +1186,7 @@ class MainWindow(QMainWindow):
         if not SOUNDDEVICE_AVAILABLE:
             self.playground_live_status.setText("Live report unavailable (sounddevice missing)")
             self._reset_playground_preview_meters()
-        self.playground_peak_meter.setEnabled(has_file)
+        self.playground_peak_meter.setEnabled((has_file or live_running) and not analysis_running)
         self.update_playground_marker_status()
 
     def _smooth_playground_levels(self, peak_dbfs: float, rms_dbfs: float) -> tuple[float, float]:
@@ -1906,6 +1908,9 @@ class MainWindow(QMainWindow):
 
         with self._playground_live_lock:
             self._playground_live_chunks = []
+        self._playground_live_peak_dbfs = -120.0
+        self._playground_live_rms_dbfs = -120.0
+        self._reset_playground_preview_meters()
         self._playground_live_sample_rate = sample_rate
         self._playground_live_channel_index = channel_idx
         self._playground_live_started_at_monotonic = time.monotonic()
@@ -1946,8 +1951,18 @@ class MainWindow(QMainWindow):
             else:
                 audio_data = indata
             chunk = np.array(audio_data, dtype=np.float32, copy=True)
+            if int(chunk.size) > 0:
+                rms = float(np.sqrt(np.mean(chunk**2)))
+                peak = float(np.max(np.abs(chunk)))
+                rms_dbfs = max(-120.0, min(0.0, 20.0 * math.log10(rms + 1e-12)))
+                peak_dbfs = max(-120.0, min(0.0, 20.0 * math.log10(peak + 1e-12)))
+            else:
+                rms_dbfs = -120.0
+                peak_dbfs = -120.0
             with self._playground_live_lock:
                 self._playground_live_chunks.append(chunk)
+                self._playground_live_peak_dbfs = peak_dbfs
+                self._playground_live_rms_dbfs = rms_dbfs
         except Exception:
             return
 
@@ -1956,6 +1971,10 @@ class MainWindow(QMainWindow):
             return
         elapsed = max(0.0, time.monotonic() - self._playground_live_started_at_monotonic)
         self.playground_live_status.setText(f"Recording live... {elapsed:.1f}s")
+        with self._playground_live_lock:
+            peak_dbfs = float(self._playground_live_peak_dbfs)
+            rms_dbfs = float(self._playground_live_rms_dbfs)
+        self._set_playground_preview_meters(peak_dbfs, rms_dbfs)
 
     def stop_live_playground_report(self, *, save_report: bool = True, resume_main_monitoring: bool = True) -> None:
         if not self._playground_live_running:
@@ -1977,8 +1996,11 @@ class MainWindow(QMainWindow):
         with self._playground_live_lock:
             chunks = list(self._playground_live_chunks)
             self._playground_live_chunks = []
+            self._playground_live_peak_dbfs = -120.0
+            self._playground_live_rms_dbfs = -120.0
         self.update_playground_controls()
         self.playground_live_status.setText("Live report idle")
+        self._reset_playground_preview_meters()
 
         if not save_report:
             if resume_main_monitoring:

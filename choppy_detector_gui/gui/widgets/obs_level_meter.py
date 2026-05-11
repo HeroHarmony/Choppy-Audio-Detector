@@ -57,44 +57,66 @@ class ObsLevelMeter(QWidget):
         # Keep left/right padding so edge tick labels are not clipped.
         inner_rect = full_rect.adjusted(18, 0, -18, 0)
         meter_rect = QRectF(inner_rect.x(), inner_rect.y(), inner_rect.width(), 20)
+        disabled = not self.isEnabled()
+
+        if disabled:
+            dark_green = QColor("#3a3a3a")
+            dark_yellow = QColor("#484848")
+            dark_red = QColor("#555555")
+            fill_green = QColor("#6e6e6e")
+            fill_yellow = QColor("#828282")
+            fill_red = QColor("#989898")
+            line_color = QColor("#9a9a9a")
+            text_color = QColor("#a5a5a5")
+            overlay_color = QColor("#d0d0d0")
+        else:
+            dark_green = QColor("#154e1f")
+            dark_yellow = QColor("#5c5712")
+            dark_red = QColor("#5a1818")
+            fill_green = QColor("#28c840")
+            fill_yellow = QColor("#d8d230")
+            fill_red = QColor("#e05050")
+            line_color = QColor("#d0d0d0")
+            text_color = QColor("#bdbdbd")
+            overlay_color = QColor("#000000")
 
         # Background zones: dark green, dark yellow, dark red.
         green_end = meter_rect.width() * self._db_to_ratio(self._yellow_start_db)
         yellow_end = meter_rect.width() * self._db_to_ratio(self._red_start_db)
-        self._fill_segment(painter, meter_rect, 0.0, green_end, QColor("#154e1f"))
-        self._fill_segment(painter, meter_rect, green_end, yellow_end, QColor("#5c5712"))
-        self._fill_segment(painter, meter_rect, yellow_end, meter_rect.width(), QColor("#5a1818"))
+        self._fill_segment(painter, meter_rect, 0.0, green_end, dark_green)
+        self._fill_segment(painter, meter_rect, green_end, yellow_end, dark_yellow)
+        self._fill_segment(painter, meter_rect, yellow_end, meter_rect.width(), dark_red)
 
         fill_ratio = max(0.0, min(1.0, (self._dbfs - self._scale_min_db) / (self._scale_max_db - self._scale_min_db)))
         fill_width = meter_rect.width() * fill_ratio
         if fill_width <= 0:
-            self._draw_zone_lines(painter, meter_rect)
+            self._draw_zone_lines(painter, meter_rect, line_color)
             if self._show_ruler:
-                self._draw_db_ruler(painter, full_rect, meter_rect)
+                self._draw_db_ruler(painter, full_rect, meter_rect, text_color)
             return
 
-        self._fill_segment(painter, meter_rect, 0.0, min(fill_width, green_end), QColor("#28c840"))
+        self._fill_segment(painter, meter_rect, 0.0, min(fill_width, green_end), fill_green)
         if fill_width > green_end:
-            self._fill_segment(painter, meter_rect, green_end, min(fill_width, yellow_end), QColor("#d8d230"))
+            self._fill_segment(painter, meter_rect, green_end, min(fill_width, yellow_end), fill_yellow)
         if fill_width > yellow_end:
-            self._fill_segment(painter, meter_rect, yellow_end, fill_width, QColor("#e05050"))
+            self._fill_segment(painter, meter_rect, yellow_end, fill_width, fill_red)
 
         # Current level indicator.
         marker_x = meter_rect.x() + fill_width
-        painter.setPen(QColor("#f5f5f5"))
+        painter.setPen(QColor("#cfcfcf") if disabled else QColor("#f5f5f5"))
         painter.drawLine(int(marker_x), int(meter_rect.y()), int(marker_x), int(meter_rect.y() + meter_rect.height()))
 
         if self._peak_hold_dbfs > self._scale_min_db:
             hold_ratio = self._db_to_ratio(self._peak_hold_dbfs)
             hold_x = meter_rect.x() + meter_rect.width() * hold_ratio
-            painter.setPen(QColor("#ffffff"))
+            painter.setPen(QColor("#d8d8d8") if disabled else QColor("#ffffff"))
             painter.drawLine(int(hold_x), int(meter_rect.y() - 1), int(hold_x), int(meter_rect.y() + meter_rect.height() + 1))
 
-        self._draw_zone_lines(painter, meter_rect)
+        self._draw_zone_lines(painter, meter_rect, line_color)
         if self._show_ruler:
-            self._draw_db_ruler(painter, full_rect, meter_rect)
+            self._draw_db_ruler(painter, full_rect, meter_rect, text_color)
         if self._overlay_label:
-            painter.setPen(QColor("#000000"))
+            painter.setPen(overlay_color)
             painter.drawText(int(meter_rect.x() + 6), int(meter_rect.y() + 14), self._overlay_label)
 
     def _fill_segment(self, painter: QPainter, rect, start: float, end: float, color: QColor) -> None:
@@ -103,18 +125,18 @@ class ObsLevelMeter(QWidget):
             return
         painter.fillRect(QRectF(rect.x() + start, rect.y(), width, rect.height()), color)
 
-    def _draw_zone_lines(self, painter: QPainter, rect: QRectF) -> None:
-        painter.setPen(QColor("#d0d0d0"))
+    def _draw_zone_lines(self, painter: QPainter, rect: QRectF, color: QColor) -> None:
+        painter.setPen(color)
         for ratio in (self._db_to_ratio(self._yellow_start_db), self._db_to_ratio(self._red_start_db)):
             x = rect.x() + rect.width() * ratio
             painter.drawLine(int(x), rect.y(), int(x), rect.y() + rect.height())
 
-    def _draw_db_ruler(self, painter: QPainter, full_rect: QRectF, meter_rect: QRectF) -> None:
+    def _draw_db_ruler(self, painter: QPainter, full_rect: QRectF, meter_rect: QRectF, color: QColor) -> None:
         tick_values = tuple(range(-60, 1, 6))
         tick_top = meter_rect.y() + meter_rect.height() + 3
         tick_bottom = tick_top + 5
         label_y = tick_bottom + 12
-        painter.setPen(QColor("#bdbdbd"))
+        painter.setPen(color)
         for db_value in tick_values:
             ratio = self._db_to_ratio(float(db_value))
             x = meter_rect.x() + meter_rect.width() * ratio

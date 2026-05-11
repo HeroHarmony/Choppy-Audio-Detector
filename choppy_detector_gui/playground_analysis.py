@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -91,6 +92,100 @@ class BurstAlignmentSummary:
     detector_bursts_outside_human: int
 
 
+@dataclass
+class LoopAlertProjection:
+    trigger: bool
+    mode: str
+    first_alert_ms: int
+    loop_duration_ms: int
+    qualifying_events_per_loop: int
+
+
+def _project_loop_alert(result: PlaygroundAnalysisResult, settings: AppSettings) -> LoopAlertProjection:
+    events_template = sorted(
+        (
+            int(row.start_ms),
+            float(row.confidence_pct),
+        )
+        for row in result.rows
+        if row.deduped_detection and row.high_confidence and not row.suppressed_by_warmup
+    )
+    if not events_template:
+        return LoopAlertProjection(
+            trigger=False,
+            mode="none",
+            first_alert_ms=-1,
+            loop_duration_ms=max(1, int(result.file.duration_ms)),
+            qualifying_events_per_loop=0,
+        )
+
+    alert = settings.advanced_alert_config if isinstance(settings.advanced_alert_config, dict) else {}
+    confidence_threshold = float(alert.get("confidence_threshold", 70.0))
+    detection_window_ms = int(round(float(alert.get("detection_window_seconds", 120.0)) * 1000.0))
+    detections_for_alert = max(1, int(alert.get("detections_for_alert", 6)))
+    fast_min_conf = float(alert.get("fast_alert_min_confidence", 75.0))
+    fast_window_ms = int(round(float(alert.get("fast_alert_window_seconds", 15.0)) * 1000.0))
+    fast_burst_required = max(1, int(alert.get("fast_alert_burst_detections", 4)))
+    clean_reset_ms = int(round(float(alert.get("clean_audio_reset_seconds", 60.0)) * 1000.0))
+
+    loop_duration_ms = max(1, int(result.file.duration_ms))
+    horizon_ms = min(
+        3_600_000,
+        max(loop_duration_ms * 20, detection_window_ms * 4, fast_window_ms * 10),
+    )
+    max_loops = max(1, int(math.ceil(horizon_ms / loop_duration_ms)) + 1)
+
+    repeated_events: list[tuple[int, float]] = []
+    for loop_idx in range(max_loops):
+        loop_offset = loop_idx * loop_duration_ms
+        for start_ms, conf_pct in events_template:
+            event_time_ms = start_ms + loop_offset
+            if event_time_ms > horizon_ms:
+                break
+            repeated_events.append((event_time_ms, conf_pct))
+        if repeated_events and repeated_events[-1][0] > horizon_ms:
+            break
+
+    standard_hits: deque[int] = deque()
+    fast_hits: deque[int] = deque()
+    for event_time_ms, conf_pct in repeated_events:
+        if conf_pct >= fast_min_conf:
+            fast_hits.append(event_time_ms)
+            while fast_hits and (event_time_ms - fast_hits[0]) > fast_window_ms:
+                fast_hits.popleft()
+            if len(fast_hits) >= fast_burst_required:
+                return LoopAlertProjection(
+                    trigger=True,
+                    mode="fast",
+                    first_alert_ms=event_time_ms,
+                    loop_duration_ms=loop_duration_ms,
+                    qualifying_events_per_loop=sum(1 for _, c in events_template if c >= confidence_threshold),
+                )
+
+        if conf_pct >= confidence_threshold:
+            if standard_hits and clean_reset_ms > 0 and (event_time_ms - standard_hits[-1]) > clean_reset_ms:
+                standard_hits.clear()
+            standard_hits.append(event_time_ms)
+            while standard_hits and (event_time_ms - standard_hits[0]) > detection_window_ms:
+                standard_hits.popleft()
+            if len(standard_hits) >= detections_for_alert:
+                return LoopAlertProjection(
+                    trigger=True,
+                    mode="standard",
+                    first_alert_ms=event_time_ms,
+                    loop_duration_ms=loop_duration_ms,
+                    qualifying_events_per_loop=sum(1 for _, c in events_template if c >= confidence_threshold),
+                )
+
+    return LoopAlertProjection(
+        trigger=False,
+        mode="none",
+        first_alert_ms=-1,
+        loop_duration_ms=loop_duration_ms,
+        qualifying_events_per_loop=sum(1 for _, c in events_template if c >= confidence_threshold),
+    )
+
+
 def write_compact_report(
     result: PlaygroundAnalysisResult,
     settings: AppSettings,
@@ -173,6 +268,10 @@ def build_compact_report(
         outcome = "FP"
     else:
         outcome = "FN"
+    loop_projection = _project_loop_alert(result, settings)
+    loop_projection_pass = (
+        loop_projection.trigger if expected_glitch else (not loop_projection.trigger)
+    )
 
     confidence_values = np.array([float(r.confidence_pct) for r in rows], dtype=np.float64)
     nonzero_conf = int(np.sum(confidence_values > 0.0))
@@ -246,6 +345,15 @@ def build_compact_report(
             f"expectation=expected_glitch:{1 if expected_glitch else 0},"
             f"detected_glitch:{1 if detected_glitch else 0},outcome:{outcome}"
         ),
+        (
+            "loop_alert_projection="
+            f"trigger:{1 if loop_projection.trigger else 0},"
+            f"mode:{loop_projection.mode},"
+            f"first_alert_ms:{loop_projection.first_alert_ms},"
+            f"events_per_loop:{loop_projection.qualifying_events_per_loop},"
+            f"loop_duration_ms:{loop_projection.loop_duration_ms},"
+            f"judgement:{'pass' if loop_projection_pass else 'fail'}"
+        ),
         f"active_methods={active_methods}",
         (
             "thresholds="
@@ -253,6 +361,16 @@ def build_compact_report(
             f"silence_ratio:{thresholds.get('silence_ratio')},"
             f"gap_duration_ms:{thresholds.get('gap_duration_ms')},"
             f"suspicious_gap_count:{thresholds.get('suspicious_gap_count')},"
+            f"silence_guardrail_cap:{thresholds.get('silence_guardrail_cap')},"
+            f"silence_extreme_ratio:{thresholds.get('silence_extreme_ratio')},"
+            f"silence_extreme_gap_ms:{thresholds.get('silence_extreme_gap_ms')},"
+            f"silence_extreme_gap_count_offset:{thresholds.get('silence_extreme_gap_count_offset')},"
+            f"silence_require_modulation_hit:{1 if bool(thresholds.get('silence_require_modulation_hit')) else 0},"
+            f"silence_persistence_require_modulation_hit:{1 if bool(thresholds.get('silence_persistence_require_modulation_hit')) else 0},"
+            f"burst_promotion_require_modulation_hit:{1 if bool(thresholds.get('burst_promotion_require_modulation_hit')) else 0},"
+            f"long_window_sparse_promotion_require_modulation_hit:{1 if bool(thresholds.get('long_window_sparse_promotion_require_modulation_hit')) else 0},"
+            f"burst_promotion_uncorroborated_cap:{thresholds.get('burst_promotion_uncorroborated_cap')},"
+            f"long_window_sparse_uncorroborated_cap:{thresholds.get('long_window_sparse_uncorroborated_cap')},"
             f"envelope_discontinuity:{thresholds.get('envelope_discontinuity')},"
             f"modulation_strength:{thresholds.get('modulation_strength')},"
             f"modulation_depth:{thresholds.get('modulation_depth')},"
@@ -703,6 +821,10 @@ def analyze_wav_file(
             and float((results.get("amplitude_modulation", {}) or {}).get("depth", 0.0) or 0.0) >= 0.50
             and float((results.get("amplitude_modulation", {}) or {}).get("peak_concentration", 0.0) or 0.0) >= 0.16
         )
+        mod_result = results.get("amplitude_modulation", {}) if isinstance(results, dict) else {}
+        mod_strength = float((mod_result or {}).get("score", 0.0) or 0.0)
+        mod_depth = float((mod_result or {}).get("depth", 0.0) or 0.0)
+        mod_peak_concentration = float((mod_result or {}).get("peak_concentration", 0.0) or 0.0)
         persistence_block_long_window = (
             int(window_ms) >= 1600
             and not modulation_hit
@@ -711,11 +833,22 @@ def analyze_wav_file(
                 or confidence >= 0.70
             )
         )
+        mod_hit_required_for_persistence = bool(
+            live_analysis.THRESHOLDS.get("silence_persistence_require_modulation_hit", True)
+        )
+        mod_corroborated_for_persistence = (
+            (modulation_hit or not mod_hit_required_for_persistence)
+            and
+            mod_strength >= 4.8
+            and mod_depth >= 0.50
+            and mod_peak_concentration >= 0.12
+        )
         persistence_candidate = (
             silence_choppy
             and not envelope_hit
             and 0.55 <= confidence < 0.75
             and not persistence_block_long_window
+            and mod_corroborated_for_persistence
             and (severe_gap_pattern or extreme_gap_pattern or modulation_gap_pattern)
         )
         silence_persistence_hits_ms = [t for t in silence_persistence_hits_ms if (start_ms - t) <= 2500]
@@ -731,10 +864,6 @@ def analyze_wav_file(
                 reasons = f"{reasons}; Persistent severe silence-gap pattern"
             persistence_promoted = True
 
-        mod_result = results.get("amplitude_modulation", {}) if isinstance(results, dict) else {}
-        mod_strength = float((mod_result or {}).get("score", 0.0) or 0.0)
-        mod_depth = float((mod_result or {}).get("depth", 0.0) or 0.0)
-        mod_peak_concentration = float((mod_result or {}).get("peak_concentration", 0.0) or 0.0)
         burst_candidate = (
             silence_choppy
             and not envelope_hit
@@ -744,13 +873,22 @@ def analyze_wav_file(
             and mod_strength >= 4.3
             and mod_depth >= 0.45
         )
+        burst_require_mod_hit = bool(live_analysis.THRESHOLDS.get("burst_promotion_require_modulation_hit", True))
+        burst_is_corroborated = modulation_hit or not burst_require_mod_hit
         burst_cluster_hits_ms = [t for t in burst_cluster_hits_ms if (start_ms - t) <= 2200]
-        if burst_candidate:
+        if burst_candidate and burst_is_corroborated:
             if not burst_cluster_hits_ms or (start_ms - burst_cluster_hits_ms[-1]) >= 120:
                 burst_cluster_hits_ms.append(start_ms)
         if len(burst_cluster_hits_ms) >= 3:
-            confidence = max(confidence, 0.77)
-            reasons = f"{reasons}; Repeated near-threshold burst cluster"
+            if burst_is_corroborated:
+                confidence = max(confidence, 0.77)
+                reasons = f"{reasons}; Repeated near-threshold burst cluster"
+            else:
+                confidence = min(
+                    max(confidence, 0.74),
+                    float(live_analysis.THRESHOLDS.get("burst_promotion_uncorroborated_cap", 0.74)),
+                )
+                reasons = f"{reasons}; Uncorroborated burst cluster capped"
 
         long_window_sparse_candidate = (
             int(window_ms) >= 1600
@@ -763,18 +901,29 @@ def analyze_wav_file(
             and mod_depth >= 0.45
             and mod_peak_concentration >= 0.05
         )
+        long_window_sparse_require_mod_hit = bool(
+            live_analysis.THRESHOLDS.get("long_window_sparse_promotion_require_modulation_hit", True)
+        )
+        long_window_sparse_corroborated = modulation_hit or not long_window_sparse_require_mod_hit
         long_window_sparse_burst_hits_ms = [
             t for t in long_window_sparse_burst_hits_ms if (start_ms - t) <= 2800
         ]
-        if long_window_sparse_candidate:
+        if long_window_sparse_candidate and long_window_sparse_corroborated:
             if (
                 not long_window_sparse_burst_hits_ms
                 or (start_ms - long_window_sparse_burst_hits_ms[-1]) >= 150
             ):
                 long_window_sparse_burst_hits_ms.append(start_ms)
         if len(long_window_sparse_burst_hits_ms) >= 2:
-            confidence = max(confidence, 0.76)
-            reasons = f"{reasons}; Long-window sparse-gap burst cluster"
+            if long_window_sparse_corroborated:
+                confidence = max(confidence, 0.76)
+                reasons = f"{reasons}; Long-window sparse-gap burst cluster"
+            else:
+                confidence = min(
+                    max(confidence, 0.74),
+                    float(live_analysis.THRESHOLDS.get("long_window_sparse_uncorroborated_cap", 0.74)),
+                )
+                reasons = f"{reasons}; Uncorroborated long-window sparse cluster capped"
 
         if bool(live_analysis.ALERT_CONFIG.get("enable_subtle_modulation_promotion", False)):
             # Subtle low-ambient path:

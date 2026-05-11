@@ -60,6 +60,16 @@ DEFAULT_THRESHOLDS = {
     "min_audio_level": 0.005,
     "max_normal_gaps": 2,
     "suspicious_gap_count": 4,
+    "silence_guardrail_cap": 0.72,
+    "silence_extreme_ratio": 0.92,
+    "silence_extreme_gap_ms": 800,
+    "silence_extreme_gap_count_offset": 2,
+    "silence_require_modulation_hit": True,
+    "silence_persistence_require_modulation_hit": True,
+    "burst_promotion_require_modulation_hit": True,
+    "long_window_sparse_promotion_require_modulation_hit": True,
+    "burst_promotion_uncorroborated_cap": 0.74,
+    "long_window_sparse_uncorroborated_cap": 0.74,
 }
 
 

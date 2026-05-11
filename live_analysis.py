@@ -149,6 +149,16 @@ THRESHOLDS = {
     'min_audio_level': 0.005,      # Minimum RMS to even analyze
     'max_normal_gaps': 2,          # Max gaps allowed in normal audio
     'suspicious_gap_count': 4,     # Number of gaps that suggests real problems
+    'silence_guardrail_cap': 0.72,  # Max confidence for uncorroborated silence-only hits
+    'silence_extreme_ratio': 0.92,  # Extreme silence ratio escape hatch
+    'silence_extreme_gap_ms': 800,  # Extreme max-gap escape hatch
+    'silence_extreme_gap_count_offset': 2,  # Extra gaps above suspicious count for escape hatch
+    'silence_require_modulation_hit': True,  # Require modulation detector hit for silence corroboration
+    'silence_persistence_require_modulation_hit': True,  # Require modulation hit for persistence promotion
+    'burst_promotion_require_modulation_hit': True,  # Require modulation hit for burst-cluster promotion
+    'long_window_sparse_promotion_require_modulation_hit': True,  # Require modulation hit for long-window sparse promotion
+    'burst_promotion_uncorroborated_cap': 0.74,  # Cap for uncorroborated burst promotion
+    'long_window_sparse_uncorroborated_cap': 0.74,  # Cap for uncorroborated long-window sparse promotion
 }
 
 def list_audio_devices():
@@ -887,15 +897,19 @@ class BalancedChoppyDetector:
                         default=0.0,
                     )
                     mod = results.get('amplitude_modulation', {}) if isinstance(results, dict) else {}
+                    mod_is_choppy = bool(mod.get('choppy', False))
                     mod_strength = float(mod.get('score', 0.0) or 0.0)
                     mod_depth = float(mod.get('depth', 0.0) or 0.0)
                     mod_peak_concentration = float(mod.get('peak_concentration', 0.0) or 0.0)
+                    require_mod_hit = bool(THRESHOLDS.get('silence_require_modulation_hit', True))
                     mod_corroborated_strong = (
+                        (mod_is_choppy or not require_mod_hit) and
                         mod_strength >= 5.0 and
                         mod_depth >= 0.55 and
                         mod_peak_concentration >= 0.20
                     )
                     mod_corroborated_medium = (
+                        (mod_is_choppy or not require_mod_hit) and
                         mod_strength >= 4.6 and
                         mod_depth >= 0.50 and
                         mod_peak_concentration >= 0.095
@@ -1033,25 +1047,46 @@ class BalancedChoppyDetector:
             confidence = min(confidence + 0.10, 1.0)
             reasons.append("Modulation pattern corroborates primary detector")
 
-        # Long-window guardrail: prevent silence-only scoring in 2000ms windows
-        # from reaching high-confidence without corroboration.
+        # Guardrail: prevent silence-only scoring from reaching high-confidence
+        # without corroboration, except for truly extreme patterns.
         silence_result = results.get('silence_gaps', {}) if isinstance(results, dict) else {}
         if isinstance(silence_result, dict) and silence_result.get('choppy', False):
             window_ms = int(getattr(self, "_analysis_window_ms", production_window_ms()) or production_window_ms())
             envelope_hit = bool(results.get('envelope_discontinuity', {}).get('choppy', False))
+            gap_count = len(silence_result.get('gaps', []))
+            silence_ratio = float(silence_result.get('score', 0.0) or 0.0)
+            max_gap_ms = max(
+                (float(gap.get('duration_ms', 0.0) or 0.0) for gap in silence_result.get('gaps', [])),
+                default=0.0,
+            )
             mod = results.get('amplitude_modulation', {}) if isinstance(results, dict) else {}
             mod_strength = float(mod.get('score', 0.0) or 0.0)
             mod_depth = float(mod.get('depth', 0.0) or 0.0)
             mod_peak_concentration = float(mod.get('peak_concentration', 0.0) or 0.0)
+            mod_is_choppy = bool(mod.get('choppy', False))
+            require_mod_hit = bool(THRESHOLDS.get('silence_require_modulation_hit', True))
             mod_medium = (
+                (mod_is_choppy or not require_mod_hit) and
                 mod_strength >= 4.6 and
                 mod_depth >= 0.50 and
                 mod_peak_concentration >= 0.095
             )
-            if window_ms >= 1600 and not envelope_hit and not mod_medium:
-                if confidence > 0.72:
-                    confidence = 0.72
-                    reasons.append("Long-window silence-only guardrail applied")
+            severe_uncorroborated = (
+                silence_ratio >= float(THRESHOLDS.get('silence_extreme_ratio', 0.92))
+                and max_gap_ms >= float(THRESHOLDS.get('silence_extreme_gap_ms', 800.0))
+                and gap_count >= max(
+                    int(THRESHOLDS['suspicious_gap_count']) + int(THRESHOLDS.get('silence_extreme_gap_count_offset', 2)),
+                    6,
+                )
+            )
+            if not envelope_hit and not mod_medium and not severe_uncorroborated:
+                guardrail_cap = float(THRESHOLDS.get('silence_guardrail_cap', 0.72))
+                if confidence > guardrail_cap:
+                    confidence = guardrail_cap
+                    if window_ms >= 1600:
+                        reasons.append("Long-window silence-only guardrail applied")
+                    else:
+                        reasons.append("Silence-only guardrail applied")
 
         return min(confidence, 1.0), "; ".join(reasons)
         
@@ -1457,6 +1492,9 @@ class BalancedChoppyDetector:
                 mod_strength = float(mod_result.get('score', 0.0) or 0.0)
                 mod_depth = float(mod_result.get('depth', 0.0) or 0.0)
                 mod_peak_concentration = float(mod_result.get('peak_concentration', 0.0) or 0.0)
+                mod_hit_required_for_persistence = bool(
+                    THRESHOLDS.get('silence_persistence_require_modulation_hit', True)
+                )
                 envelope_hit = bool(results.get('envelope_discontinuity', {}).get('choppy', False))
                 modulation_hit = bool(results.get('amplitude_modulation', {}).get('choppy', False))
                 persistence_promoted = False
@@ -1482,11 +1520,19 @@ class BalancedChoppyDetector:
                         or confidence >= 0.70
                     )
                 )
+                mod_corroborated_for_persistence = (
+                    (modulation_hit or not mod_hit_required_for_persistence)
+                    and
+                    mod_strength >= 4.8
+                    and mod_depth >= 0.50
+                    and mod_peak_concentration >= 0.12
+                )
                 persistence_candidate = (
                     silence_choppy
                     and not envelope_hit
                     and 0.55 <= confidence < 0.75
                     and not persistence_block_long_window
+                    and mod_corroborated_for_persistence
                     and (severe_gap_pattern or extreme_gap_pattern or modulation_gap_pattern)
                 )
                 while silence_persistence_hits and (current_time - silence_persistence_hits[0]) > 2.5:
@@ -1513,14 +1559,23 @@ class BalancedChoppyDetector:
                     and mod_strength >= 4.3
                     and mod_depth >= 0.45
                 )
+                burst_require_mod_hit = bool(THRESHOLDS.get('burst_promotion_require_modulation_hit', True))
+                burst_is_corroborated = modulation_hit or not burst_require_mod_hit
                 while burst_cluster_hits and (current_time - burst_cluster_hits[0]) > 2.2:
                     burst_cluster_hits.popleft()
-                if burst_candidate:
+                if burst_candidate and burst_is_corroborated:
                     if not burst_cluster_hits or (current_time - burst_cluster_hits[-1]) >= 0.12:
                         burst_cluster_hits.append(current_time)
                 if len(burst_cluster_hits) >= 3:
-                    confidence = max(confidence, 0.77)
-                    reasons = f"{reasons}; Repeated near-threshold burst cluster"
+                    if burst_is_corroborated:
+                        confidence = max(confidence, 0.77)
+                        reasons = f"{reasons}; Repeated near-threshold burst cluster"
+                    else:
+                        confidence = min(
+                            max(confidence, 0.74),
+                            float(THRESHOLDS.get('burst_promotion_uncorroborated_cap', 0.74)),
+                        )
+                        reasons = f"{reasons}; Uncorroborated burst cluster capped"
 
                 # 2000ms micro-lift for sparse-gap burst clusters.
                 # Target: recover long-window bursty glitches (Sample 7 style) without
@@ -1536,17 +1591,28 @@ class BalancedChoppyDetector:
                     and mod_depth >= 0.45
                     and mod_peak_concentration >= 0.05
                 )
+                long_window_sparse_require_mod_hit = bool(
+                    THRESHOLDS.get('long_window_sparse_promotion_require_modulation_hit', True)
+                )
+                long_window_sparse_corroborated = modulation_hit or not long_window_sparse_require_mod_hit
                 while long_window_sparse_burst_hits and (current_time - long_window_sparse_burst_hits[0]) > 2.8:
                     long_window_sparse_burst_hits.popleft()
-                if long_window_sparse_candidate:
+                if long_window_sparse_candidate and long_window_sparse_corroborated:
                     if (
                         not long_window_sparse_burst_hits
                         or (current_time - long_window_sparse_burst_hits[-1]) >= 0.15
                     ):
                         long_window_sparse_burst_hits.append(current_time)
                 if len(long_window_sparse_burst_hits) >= 2:
-                    confidence = max(confidence, 0.76)
-                    reasons = f"{reasons}; Long-window sparse-gap burst cluster"
+                    if long_window_sparse_corroborated:
+                        confidence = max(confidence, 0.76)
+                        reasons = f"{reasons}; Long-window sparse-gap burst cluster"
+                    else:
+                        confidence = min(
+                            max(confidence, 0.74),
+                            float(THRESHOLDS.get('long_window_sparse_uncorroborated_cap', 0.74)),
+                        )
+                        reasons = f"{reasons}; Uncorroborated long-window sparse cluster capped"
 
                 if bool(ALERT_CONFIG.get('enable_subtle_modulation_promotion', False)):
                     # Subtle low-ambient path:

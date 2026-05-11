@@ -495,6 +495,16 @@ class MainWindow(QMainWindow):
             ("min_audio_level", "Minimum RMS needed before analysis runs.", "float", 0.0, 1.0, 0.0005),
             ("max_normal_gaps", "Normal gaps allowed before suspicious.", "int", 0, 20, 1),
             ("suspicious_gap_count", "Significant gap count considered suspicious.", "int", 1, 30, 1),
+            ("silence_guardrail_cap", "Max confidence for silence-only windows without corroboration.", "float", 0.0, 1.0, 0.01),
+            ("silence_extreme_ratio", "Silence ratio escape-hatch for extreme uncorroborated dropouts.", "float", 0.0, 1.0, 0.01),
+            ("silence_extreme_gap_ms", "Max-gap escape-hatch threshold in milliseconds.", "int", 100, 4000, 10),
+            ("silence_extreme_gap_count_offset", "Extra gaps above suspicious count for escape hatch.", "int", 0, 20, 1),
+            ("silence_require_modulation_hit", "Require modulation detector hit for silence corroboration.", "bool", 0, 1, 1),
+            ("silence_persistence_require_modulation_hit", "Require modulation hit for persistence promotion.", "bool", 0, 1, 1),
+            ("burst_promotion_require_modulation_hit", "Require modulation hit for burst-cluster promotion.", "bool", 0, 1, 1),
+            ("long_window_sparse_promotion_require_modulation_hit", "Require modulation hit for long-window sparse promotion.", "bool", 0, 1, 1),
+            ("burst_promotion_uncorroborated_cap", "Cap for uncorroborated burst-cluster promotion confidence.", "float", 0.0, 1.0, 0.01),
+            ("long_window_sparse_uncorroborated_cap", "Cap for uncorroborated long-window sparse promotion confidence.", "float", 0.0, 1.0, 0.01),
         )
 
     def methods_schema(self):

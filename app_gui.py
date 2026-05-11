@@ -734,8 +734,10 @@ class MainWindow(QMainWindow):
             self.update_device_controls()
             return
         self.save_main_settings()
-        if not self.settings.keep_preview_while_monitoring:
-            self.stop_meter_preview()
+        # Avoid concurrent input streams on the same device while monitoring.
+        # Some Core Audio devices (e.g., Continuity/iPhone mic) can starve
+        # one stream's callbacks when two InputStreams run at once.
+        self.stop_meter_preview()
         self._last_audio_level_seen_at = None
         self._monitoring_started_at = datetime.now()
         self._audio_watchdog_warned = False
@@ -748,8 +750,8 @@ class MainWindow(QMainWindow):
             self.update_device_controls()
             self.status_label.setText("Stopped")
             return
-        if self.settings.keep_preview_while_monitoring:
-            QTimer.singleShot(700, self.ensure_meter_preview_stream)
+        # While monitoring, meter updates come from runtime audio callbacks.
+        # Keep-preview mode only affects display behavior, not opening a second stream.
 
     def stop_monitoring(self) -> None:
         self._monitoring_ui_active = False
@@ -771,8 +773,7 @@ class MainWindow(QMainWindow):
             self.update_device_controls()
             return
         self.save_main_settings()
-        if not self.settings.keep_preview_while_monitoring:
-            self.stop_meter_preview()
+        self.stop_meter_preview()
         self._last_audio_level_seen_at = None
         self._monitoring_started_at = datetime.now()
         self._audio_watchdog_warned = False
@@ -785,8 +786,7 @@ class MainWindow(QMainWindow):
             self.update_device_controls()
             self.status_label.setText("Stopped")
             return
-        if self.settings.keep_preview_while_monitoring:
-            QTimer.singleShot(700, self.ensure_meter_preview_stream)
+        # Do not spawn a second preview capture stream while monitoring.
 
     def relearn_baseline(self) -> None:
         ok, message = self.runtime.rebuild_baseline(source="gui")
@@ -2988,6 +2988,13 @@ class MainWindow(QMainWindow):
             return f"Baseline relearn requested ({source})."
         if event_type == "baseline.rebuild_failed":
             return f"Baseline relearn failed: {data.get('error')}"
+        if event_type == "clip.captured":
+            user = str(data.get("user") or "unknown")
+            seconds = data.get("seconds")
+            return f"Clip captured by {user}: {data.get('wav_path')} ({seconds}s)"
+        if event_type == "clip.capture_failed":
+            user = str(data.get("user") or "unknown")
+            return f"Clip capture failed for {user}: {data.get('error') or data.get('reason')}"
         if event_type == "audio.callback_started":
             return "Audio callbacks started."
         if "error" in data:
@@ -3178,11 +3185,18 @@ class MainWindow(QMainWindow):
         return self._display_peak_dbfs, self._display_rms_dbfs
 
     def refresh_meter_preview_ui(self) -> None:
-        if self.runtime.is_running and not self.settings.keep_preview_while_monitoring:
+        if self.runtime.is_running:
+            levels = self.runtime.latest_audio_levels()
             self.update_meter_display_mode()
+            if levels is None:
+                return
+            peak_dbfs = float(levels.get("peak_dbfs", -120.0))
+            rms_dbfs = float(levels.get("rms_dbfs", -120.0))
+            smooth_peak_dbfs, smooth_rms_dbfs = self._smooth_display_levels(peak_dbfs, rms_dbfs)
+            self.peak_meter.set_level_dbfs(smooth_peak_dbfs, peak_source=True)
+            self.rms_meter.set_level_dbfs(smooth_rms_dbfs, peak_source=False)
+            self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS")
             return
-        if self.runtime.is_running and self.settings.keep_preview_while_monitoring:
-            self.ensure_meter_preview_stream()
         if self._meter_preview_stream is None:
             self.update_meter_display_mode()
             return
@@ -3199,11 +3213,8 @@ class MainWindow(QMainWindow):
         self.level_text.setText(f"Peak {peak_dbfs:.1f} dBFS | RMS {rms_dbfs:.1f} dBFS")
 
     def update_meter_display_mode(self) -> None:
-        preview_disabled = self.runtime.is_running and not self.settings.keep_preview_while_monitoring
-        self.peak_meter.setEnabled(not preview_disabled)
-        self.rms_meter.setEnabled(not preview_disabled)
-        if preview_disabled:
-            self.level_text.setText("Preview disabled while monitoring")
+        self.peak_meter.setEnabled(True)
+        self.rms_meter.setEnabled(True)
 
     def ensure_meter_preview_stream(self) -> None:
         """Keep preview stream alive when experimental mode is enabled."""

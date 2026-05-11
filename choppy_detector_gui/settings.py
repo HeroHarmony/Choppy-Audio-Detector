@@ -144,6 +144,7 @@ class ChatCommandSettings:
     list_devices_command: str = "!choppy devices"
     fix_command: str = "!choppy fix"
     rebuild_command: str = "!choppy rebuild"
+    clip_command: str = "!choppy clip"
     switch_device_command_prefix: str = "!choppy device"
     rebuild_response_template: str = "Baseline relearn started."
     allowed_chat_users: list[str] = field(default_factory=list)
@@ -167,6 +168,7 @@ class ChatCommandSettings:
             list_devices_command=str(data.get("list_devices_command") or cls.list_devices_command),
             fix_command=str(data.get("fix_command") or cls.fix_command),
             rebuild_command=str(data.get("rebuild_command") or cls.rebuild_command),
+            clip_command=str(data.get("clip_command") or cls.clip_command),
             switch_device_command_prefix=str(
                 data.get("switch_device_command_prefix") or cls.switch_device_command_prefix
             ),
@@ -267,6 +269,7 @@ class AppSettings:
     smooth_preview_meter: bool = True
     preview_meter_fps: int = 20
     dark_mode_enabled: bool = True
+    enable_clip_capture_buffer: bool = False
     advanced_alert_config: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_ALERT_CONFIG))
     advanced_thresholds: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_THRESHOLDS))
     detection_methods: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_APPROACHES))
@@ -291,6 +294,7 @@ class AppSettings:
         self.smooth_preview_meter = bool(self.smooth_preview_meter)
         self.preview_meter_fps = min(60, max(5, int(self.preview_meter_fps or 20)))
         self.dark_mode_enabled = bool(self.dark_mode_enabled)
+        self.enable_clip_capture_buffer = bool(self.enable_clip_capture_buffer)
         self.advanced_alert_config = _merge_numeric_dict(DEFAULT_ALERT_CONFIG, self.advanced_alert_config)
         self.advanced_thresholds = _merge_numeric_dict(DEFAULT_THRESHOLDS, self.advanced_thresholds)
         self.detection_methods = _merge_bool_dict(DEFAULT_APPROACHES, self.detection_methods)
@@ -335,6 +339,10 @@ class AppSettings:
             str(self.chat_commands.rebuild_command or ChatCommandSettings.rebuild_command).strip()
             or ChatCommandSettings.rebuild_command
         )
+        self.chat_commands.clip_command = (
+            str(self.chat_commands.clip_command or ChatCommandSettings.clip_command).strip()
+            or ChatCommandSettings.clip_command
+        )
         self.chat_commands.rebuild_response_template = (
             str(self.chat_commands.rebuild_response_template or ChatCommandSettings.rebuild_response_template).strip()
             or ChatCommandSettings.rebuild_response_template
@@ -374,6 +382,7 @@ class AppSettings:
             smooth_preview_meter=bool(data.get("smooth_preview_meter", True)),
             preview_meter_fps=int(data.get("preview_meter_fps") or 20),
             dark_mode_enabled=bool(data.get("dark_mode_enabled", True)),
+            enable_clip_capture_buffer=bool(data.get("enable_clip_capture_buffer", False)),
             advanced_alert_config=dict(data.get("advanced_alert_config") or DEFAULT_ALERT_CONFIG),
             advanced_thresholds=dict(data.get("advanced_thresholds") or DEFAULT_THRESHOLDS),
             detection_methods=dict(data.get("detection_methods") or DEFAULT_APPROACHES),

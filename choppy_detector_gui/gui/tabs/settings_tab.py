@@ -68,6 +68,8 @@ def build_settings_tab(window) -> None:
     general_form.addRow("Preview mode", window.keep_preview_while_monitoring)
     window.dark_mode_enabled = QCheckBox("Enable dark mode")
     general_form.addRow("Theme", window.dark_mode_enabled)
+    window.enable_clip_capture_buffer = QCheckBox("Enable !choppy clip rolling capture")
+    general_form.addRow("Clip capture buffer", window.enable_clip_capture_buffer)
     window.smooth_preview_meter = QCheckBox("Smooth preview animation")
     general_form.addRow("Meter smoothing", window.smooth_preview_meter)
     window.preview_meter_fps = QSpinBox()
@@ -120,6 +122,7 @@ def build_settings_tab(window) -> None:
     window.list_devices_command = QLineEdit()
     window.fix_command = QLineEdit()
     window.rebuild_command = QLineEdit()
+    window.clip_command = QLineEdit()
     window.switch_device_command_prefix = QLineEdit()
     for cmd_input in (
         window.start_command,
@@ -129,6 +132,7 @@ def build_settings_tab(window) -> None:
         window.list_devices_command,
         window.fix_command,
         window.rebuild_command,
+        window.clip_command,
         window.switch_device_command_prefix,
     ):
         cmd_input.setMinimumWidth(150)
@@ -139,6 +143,7 @@ def build_settings_tab(window) -> None:
     commands_form.addRow("List devices command", window.list_devices_command)
     commands_form.addRow("Refresh OBS Source", window.fix_command)
     commands_form.addRow("Rebuild baseline", window.rebuild_command)
+    commands_form.addRow("Capture clip", window.clip_command)
     commands_form.addRow("Switch device prefix", window.switch_device_command_prefix)
 
     window.allowed_chat_users = QPlainTextEdit()

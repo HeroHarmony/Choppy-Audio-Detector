@@ -181,7 +181,23 @@ class TwitchCommandService:
                 user=message.username,
                 action=command.action,
             )
-            response = self.execute_command(command.action, command.device_number, message.username)
+            try:
+                response = self.execute_command(command.action, command.device_number, message.username)
+            except Exception as exc:
+                self.emit(
+                    "chat_commands.command_error",
+                    user=message.username,
+                    action=command.action,
+                    error=str(exc),
+                )
+                self.file_logger.log(
+                    "error",
+                    "chat_commands.command_error",
+                    user=message.username,
+                    action=command.action,
+                    error=str(exc),
+                )
+                response = "Command failed due to an internal error."
             if response and self.settings.chat_commands.send_command_responses:
                 self.send_response(response)
 
@@ -221,6 +237,11 @@ class TwitchCommandService:
             if ok:
                 return self._render_rebuild_response(username=username)
             return f"Could not rebuild baseline: {message}"
+        if action == "capture_clip":
+            ok, message = self.runtime.capture_clip(source="twitch", user=username)
+            if ok:
+                return message
+            return f"Could not capture clip: {message}"
         return ""
 
     def _render_rebuild_response(self, *, username: str) -> str:

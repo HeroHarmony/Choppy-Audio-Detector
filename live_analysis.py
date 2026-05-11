@@ -304,6 +304,8 @@ class BalancedChoppyDetector:
         twitch_channel=None,
         twitch_bot_username=None,
         twitch_oauth_token=None,
+        clip_capture_enabled=False,
+        clip_capture_buffer_seconds=35.0,
         event_callback=None,
         alert_templates=None,
         file_logger=None,
@@ -312,10 +314,16 @@ class BalancedChoppyDetector:
         self._volume_report_started = False
         self._last_volume_report_time = 0.0
         self._last_audio_level_event_time = 0.0
+        self.last_audio_level_rms_dbfs = -120.0
+        self.last_audio_level_peak_dbfs = -120.0
+        self.last_audio_level_timestamp = 0.0
         self.sample_rate = int(SAMPLE_RATE)
         self.stream_channels = 1
         self.device_info = None
         self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+        self.clip_capture_enabled = bool(clip_capture_enabled)
+        self.clip_capture_buffer_seconds = max(5.0, float(clip_capture_buffer_seconds or 35.0))
+        self.clip_audio_buffer = deque(maxlen=int(self.sample_rate * self.clip_capture_buffer_seconds))
         self.running = False
         self.lock = threading.Lock()
         self.audio_device = audio_device
@@ -331,6 +339,8 @@ class BalancedChoppyDetector:
             'established_baseline': False,
             'learning_started_at': 0.0,
             'last_blocked_at': 0.0,
+            'last_progress_log_at': 0.0,
+            'last_quiet_log_at': 0.0,
         }
         
         # Twitch integration
@@ -408,6 +418,7 @@ class BalancedChoppyDetector:
 
         if self.audio_device is None:
             self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+            self.clip_audio_buffer = deque(maxlen=int(self.sample_rate * self.clip_capture_buffer_seconds))
             return
 
         try:
@@ -425,6 +436,7 @@ class BalancedChoppyDetector:
             self.input_channel_index = min(self.input_channel_index, max_input_channels - 1)
             self.stream_channels = max(1, self.input_channel_index + 1)
             self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+            self.clip_audio_buffer = deque(maxlen=int(self.sample_rate * self.clip_capture_buffer_seconds))
         except Exception as e:
             print(
                 f"[{self._timestamp()}] [WARN] Could not load selected device defaults: {e}. "
@@ -434,6 +446,74 @@ class BalancedChoppyDetector:
             self.input_channel_index = 0
             self.stream_channels = 1
             self.audio_buffer = deque(maxlen=int(self.sample_rate * BUFFER_DURATION))
+            self.clip_audio_buffer = deque(maxlen=int(self.sample_rate * self.clip_capture_buffer_seconds))
+
+    def set_clip_capture_enabled(self, enabled: bool) -> None:
+        with self.lock:
+            self.clip_capture_enabled = bool(enabled)
+            if not self.clip_capture_enabled:
+                self.clip_audio_buffer.clear()
+
+    def capture_recent_audio_clip(self, seconds: float = 30.0) -> dict[str, object] | None:
+        with self.lock:
+            if not self.clip_capture_enabled:
+                return None
+            sample_rate = int(max(1, self.sample_rate))
+            requested_seconds = max(1.0, float(seconds or 30.0))
+            requested_samples = max(1, int(round(requested_seconds * sample_rate)))
+            available_samples = len(self.clip_audio_buffer)
+            if available_samples <= 0:
+                return None
+            capture = np.asarray(self.clip_audio_buffer, dtype=np.float32)
+            if available_samples > requested_samples:
+                capture = capture[-requested_samples:]
+            baseline_rms = float(self.get_baseline_rms())
+            return {
+                "audio": capture.copy(),
+                "sample_rate": sample_rate,
+                "clip_seconds_requested": requested_seconds,
+                "clip_seconds_actual": float(len(capture) / sample_rate),
+                "baseline": {
+                    "rms": baseline_rms,
+                    "sample_count": int(len(self.baseline_stats.get('rms_history', []))),
+                    "established": bool(self.baseline_stats.get('established_baseline', False)),
+                    "learning_started_at": float(self.baseline_stats.get('learning_started_at', 0.0) or 0.0),
+                },
+                "runtime": {
+                    "audio_stale_active": bool(self.audio_stale_active),
+                    "stream_restart_requested": bool(self.stream_restart_requested),
+                    "last_audio_callback_time": float(self.last_audio_callback_time or 0.0),
+                    "device": self.device_info.get('name') if isinstance(self.device_info, dict) else self.audio_device,
+                    "channel_index": int(self.input_channel_index),
+                },
+            }
+
+    def clip_capture_state(self) -> dict[str, object]:
+        with self.lock:
+            sample_rate = int(max(1, self.sample_rate))
+            samples = int(len(self.clip_audio_buffer))
+            callback_age = (
+                max(0.0, time_module.time() - float(self.last_audio_callback_time or 0.0))
+                if self.last_audio_callback_time > 0
+                else None
+            )
+            return {
+                "enabled": bool(self.clip_capture_enabled),
+                "sample_rate": sample_rate,
+                "buffer_samples": samples,
+                "buffer_seconds": float(samples / sample_rate),
+                "callback_started": bool(self._audio_callback_started),
+                "callback_age_seconds": callback_age,
+                "audio_stale_active": bool(self.audio_stale_active),
+            }
+
+    def latest_audio_levels(self) -> dict[str, object]:
+        with self.lock:
+            return {
+                "peak_dbfs": float(self.last_audio_level_peak_dbfs),
+                "rms_dbfs": float(self.last_audio_level_rms_dbfs),
+                "timestamp": float(self.last_audio_level_timestamp or 0.0),
+            }
 
     def _start_detection_thread(self):
         if self.detection_thread and self.detection_thread.is_alive():
@@ -597,6 +677,20 @@ class BalancedChoppyDetector:
             self.baseline_stats['rms_history'].append(rms)
             if not self.baseline_stats['learning_started_at']:
                 self.baseline_stats['learning_started_at'] = now
+            if (now - float(self.baseline_stats.get('last_progress_log_at') or 0.0)) >= 5.0:
+                print(
+                    f"[{self._timestamp()}] Baseline learning: "
+                    f"{len(self.baseline_stats['rms_history'])}/{BASELINE_MIN_RMS_SAMPLES} samples "
+                    f"(clean lock target {BASELINE_CLEAN_LOCK_SECONDS:.0f}s)"
+                )
+                self.baseline_stats['last_progress_log_at'] = now
+        else:
+            if (now - float(self.baseline_stats.get('last_quiet_log_at') or 0.0)) >= 10.0:
+                print(
+                    f"[{self._timestamp()}] Baseline waiting for audible input: "
+                    f"{self._format_volume(float(rms))} < min_audio_level={THRESHOLDS['min_audio_level']}"
+                )
+                self.baseline_stats['last_quiet_log_at'] = now
 
         # Check if we now have enough samples to lock in a baseline
         learning_elapsed = (
@@ -610,6 +704,7 @@ class BalancedChoppyDetector:
             and learning_elapsed >= BASELINE_CLEAN_LOCK_SECONDS
         ):
             self.baseline_stats['established_baseline'] = True
+            self.baseline_stats['last_progress_log_at'] = now
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] Baseline audio profile established "
                 f"({BASELINE_CLEAN_LOCK_SECONDS:.0f}s clean window)."
@@ -639,6 +734,8 @@ class BalancedChoppyDetector:
             self.baseline_stats['established_baseline'] = False
             self.baseline_stats['learning_started_at'] = 0.0
             self.baseline_stats['last_blocked_at'] = 0.0
+            self.baseline_stats['last_progress_log_at'] = 0.0
+            self.baseline_stats['last_quiet_log_at'] = 0.0
             self.stream_warmup_until = time_module.time() + self.stream_warmup_ignore_seconds
         print(
             f"[{self._timestamp()}] Baseline rebuild requested ({reason}). "
@@ -1369,6 +1466,8 @@ class BalancedChoppyDetector:
                 else:
                     audio_data = indata
                 self.audio_buffer.extend(audio_data)
+                if self.clip_capture_enabled:
+                    self.clip_audio_buffer.extend(np.asarray(audio_data, dtype=np.float32))
 
             current_time = time_module.time()
             self.last_audio_callback_time = current_time
@@ -1392,6 +1491,9 @@ class BalancedChoppyDetector:
                 peak_level = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
                 rms_dbfs = 20.0 * math.log10(rms_level + 1e-12)
                 peak_dbfs = 20.0 * math.log10(peak_level + 1e-12)
+                self.last_audio_level_rms_dbfs = float(rms_dbfs)
+                self.last_audio_level_peak_dbfs = float(peak_dbfs)
+                self.last_audio_level_timestamp = float(current_time)
                 self.emit_event(
                     "audio.level",
                     rms=rms_level,

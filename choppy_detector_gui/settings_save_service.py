@@ -18,6 +18,7 @@ def save_all_settings(window) -> None:
     window.update_meter_refresh_timer()
     window.update_auto_restart_timer()
     window.update_command_service()
+    window.runtime.set_clip_capture_enabled(window.settings.enable_clip_capture_buffer)
     window.restart_meter_preview()
     window.update_meter_display_mode()
     window.update_twitch_status_from_settings()

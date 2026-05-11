@@ -18,6 +18,7 @@ def apply_settings_to_controls(window) -> None:
     window.list_devices_command.setText(commands.list_devices_command)
     window.fix_command.setText(commands.fix_command)
     window.rebuild_command.setText(commands.rebuild_command)
+    window.clip_command.setText(commands.clip_command)
     window.switch_device_command_prefix.setText(commands.switch_device_command_prefix)
     window.allowed_chat_users.setPlainText("\n".join(commands.allowed_chat_users))
     window.send_command_responses.setChecked(commands.send_command_responses)
@@ -27,6 +28,7 @@ def apply_settings_to_controls(window) -> None:
     window.smooth_preview_meter.setChecked(window.settings.smooth_preview_meter)
     window.preview_meter_fps.setValue(window.settings.preview_meter_fps)
     window.dark_mode_enabled.setChecked(window.settings.dark_mode_enabled)
+    window.enable_clip_capture_buffer.setChecked(window.settings.enable_clip_capture_buffer)
     window.obs_auto_connect_on_launch.setChecked(window.settings.obs_websocket.auto_connect_on_launch)
     window.obs_auto_connect_retry_enabled.setChecked(window.settings.obs_websocket.auto_connect_retry_enabled)
     window.log_directory.setText(window.settings.log_settings.log_directory)
@@ -48,6 +50,7 @@ def collect_settings_from_controls(window) -> None:
     commands.list_devices_command = window.list_devices_command.text().strip()
     commands.fix_command = window.fix_command.text().strip()
     commands.rebuild_command = window.rebuild_command.text().strip()
+    commands.clip_command = window.clip_command.text().strip()
     commands.switch_device_command_prefix = window.switch_device_command_prefix.text().strip()
     commands.allowed_chat_users = _allowed_chat_users(window)
     commands.send_command_responses = window.send_command_responses.isChecked()
@@ -57,6 +60,7 @@ def collect_settings_from_controls(window) -> None:
     window.settings.smooth_preview_meter = window.smooth_preview_meter.isChecked()
     window.settings.preview_meter_fps = window.preview_meter_fps.value()
     window.settings.dark_mode_enabled = window.dark_mode_enabled.isChecked()
+    window.settings.enable_clip_capture_buffer = window.enable_clip_capture_buffer.isChecked()
     window.settings.obs_websocket.auto_connect_on_launch = window.obs_auto_connect_on_launch.isChecked()
     window.settings.obs_websocket.auto_connect_retry_enabled = window.obs_auto_connect_retry_enabled.isChecked()
     window.settings.log_settings.log_directory = window.log_directory.text().strip()
@@ -81,6 +85,7 @@ def settings_dirty(window) -> bool:
             window.list_devices_command.text().strip() != commands.list_devices_command,
             window.fix_command.text().strip() != commands.fix_command,
             window.rebuild_command.text().strip() != commands.rebuild_command,
+            window.clip_command.text().strip() != commands.clip_command,
             window.switch_device_command_prefix.text().strip() != commands.switch_device_command_prefix,
             allowed_users != commands.allowed_chat_users,
             window.send_command_responses.isChecked() != commands.send_command_responses,
@@ -90,6 +95,7 @@ def settings_dirty(window) -> bool:
             window.smooth_preview_meter.isChecked() != window.settings.smooth_preview_meter,
             window.preview_meter_fps.value() != window.settings.preview_meter_fps,
             window.dark_mode_enabled.isChecked() != window.settings.dark_mode_enabled,
+            window.enable_clip_capture_buffer.isChecked() != window.settings.enable_clip_capture_buffer,
             window.obs_auto_connect_on_launch.isChecked() != window.settings.obs_websocket.auto_connect_on_launch,
             window.obs_auto_connect_retry_enabled.isChecked() != window.settings.obs_websocket.auto_connect_retry_enabled,
             window.log_directory.text().strip() != window.settings.log_settings.log_directory,

@@ -99,7 +99,7 @@ def route_runtime_event(event_type: str, data: dict[str, object], ctx: RuntimeEv
             audio_level=AudioLevelUpdate(
                 peak_dbfs=peak_dbfs,
                 rms_dbfs=rms_dbfs,
-                skip_display=ctx.runtime_running and not ctx.keep_preview_while_monitoring,
+                skip_display=False,
             ),
             append_formatted_event=False,
         )

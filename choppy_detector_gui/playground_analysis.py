@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 import math
 from pathlib import Path
 import json
@@ -13,7 +14,12 @@ import wave
 
 import numpy as np
 
-from .settings import AppSettings
+from .settings import (
+    AppSettings,
+    DEFAULT_ALERT_CONFIG,
+    DEFAULT_APPROACHES,
+    DEFAULT_THRESHOLDS,
+)
 
 
 @dataclass
@@ -381,10 +387,57 @@ def write_compact_report(
     stem = report_stem.strip() if isinstance(report_stem, str) else ""
     if not stem:
         stem = Path(result.file.path).stem
+    timestamp_prefix = datetime.now().strftime("%Y%m%d_%H%M")
     report_prefix = f"w{int(result.window_ms)}_s{int(result.step_ms)}"
-    report_path = reports_dir / f"{report_prefix}_{stem}.report.txt"
+    report_path = reports_dir / f"{timestamp_prefix}_{report_prefix}_{stem}.report.txt"
     report_path.write_text(report_text, encoding="utf-8")
     return report_path
+
+
+def _ordered_keys(current: dict[str, object], defaults: dict[str, object]) -> list[str]:
+    primary = list(defaults.keys())
+    extras = sorted(k for k in current.keys() if k not in defaults)
+    return primary + extras
+
+
+def _format_setting_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "On" if value else "Off"
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return f"{value:.10g}"
+        return "0"
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _build_pasteable_settings_block(settings: AppSettings) -> list[str]:
+    alert_cfg = settings.advanced_alert_config if isinstance(settings.advanced_alert_config, dict) else {}
+    thresholds = settings.advanced_thresholds if isinstance(settings.advanced_thresholds, dict) else {}
+    methods = settings.detection_methods if isinstance(settings.detection_methods, dict) else {}
+
+    lines: list[str] = []
+    lines.append("# Alert Config")
+    for key in _ordered_keys(alert_cfg, DEFAULT_ALERT_CONFIG):
+        if key not in alert_cfg:
+            continue
+        lines.append(f"{key}={_format_setting_value(alert_cfg.get(key))}")
+
+    lines.append("")
+    lines.append("# Thresholds")
+    for key in _ordered_keys(thresholds, DEFAULT_THRESHOLDS):
+        if key not in thresholds:
+            continue
+        lines.append(f"{key}={_format_setting_value(thresholds.get(key))}")
+
+    lines.append("")
+    lines.append("# Detection Methods")
+    for key in _ordered_keys(methods, DEFAULT_APPROACHES):
+        if key not in methods:
+            continue
+        lines.append(f"{key}={_format_setting_value(bool(methods.get(key)))}")
+    return lines
 
 
 def build_compact_report(
@@ -492,8 +545,36 @@ def build_compact_report(
         gaps = [starts[i] - starts[i - 1] for i in range(1, len(starts))]
         dedup_gap_text = ",".join(str(g) for g in gaps[:20])
 
+    expected_text = "glitch" if expected_glitch else "no glitch"
+    detected_text = "glitch" if detected_glitch else "no glitch"
+    outcome_text = {
+        "TP": "expected glitch and detector found glitch",
+        "TN": "expected no glitch and detector stayed clean",
+        "FP": "expected no glitch but detector found glitch",
+        "FN": "expected glitch but detector stayed clean",
+    }.get(outcome, "unknown")
+    loop_text = (
+        f"would trigger alert in looped playback ({loop_projection.mode})"
+        if loop_projection_pass
+        else "would not trigger alert in looped playback"
+    )
+    prod_text = (
+        f"would trigger live alert ({prod_simulation.mode})"
+        if prod_simulation.trigger
+        else "would not trigger live alert"
+    )
+
     lines = [
         "CHOPPY_PLAYGROUND_REPORT v3",
+        "Human Summary",
+        f"Expected outcome: {expected_text}.",
+        f"Detector outcome: {outcome} ({outcome_text}; detected {detected_text}).",
+        f"Loop projection: {loop_text}.",
+        (
+            f"Live simulation: {prod_text}; counted detections={prod_simulation.counted_detection_count}, "
+            f"dedup_suppressed={prod_simulation.dedup_suppressed_count}, blockers={prod_simulation.blocker_summary}."
+        ),
+        "",
         f"sample={Path(result.file.path).name}",
         (
             f"audio=duration_ms:{result.file.duration_ms},sample_rate:{result.file.sample_rate},"
@@ -547,98 +628,7 @@ def build_compact_report(
             f"max_standard_count:{prod_simulation.max_standard_count},"
             f"blockers:{prod_simulation.blocker_summary}"
         ),
-        (
-            "alert_config="
-            f"confidence_threshold:{confidence_threshold:.1f},"
-            f"detections_for_alert:{detections_for_alert},"
-            f"detection_window_ms:{detection_window_ms},"
-            f"fast_min_confidence:{fast_min_conf:.1f},"
-            f"fast_burst_required:{fast_burst_required},"
-            f"fast_window_ms:{fast_window_ms},"
-            f"stream_start_warmup_ignore_ms:{int(round(float(alert_cfg.get('stream_start_warmup_ignore_seconds', 3.0)) * 1000.0))},"
-            f"clean_audio_reset_ms:{clean_reset_ms}"
-        ),
         f"active_methods={active_methods}",
-        (
-            "thresholds="
-            f"min_audio_level:{thresholds.get('min_audio_level')},"
-            f"silence_ratio:{thresholds.get('silence_ratio')},"
-            f"gap_duration_ms:{thresholds.get('gap_duration_ms')},"
-            f"suspicious_gap_count:{thresholds.get('suspicious_gap_count')},"
-            f"silence_guardrail_cap:{thresholds.get('silence_guardrail_cap')},"
-            f"silence_extreme_ratio:{thresholds.get('silence_extreme_ratio')},"
-            f"silence_extreme_gap_ms:{thresholds.get('silence_extreme_gap_ms')},"
-            f"silence_extreme_gap_count_offset:{thresholds.get('silence_extreme_gap_count_offset')},"
-            f"silence_require_modulation_hit:{1 if bool(thresholds.get('silence_require_modulation_hit')) else 0},"
-            f"silence_persistence_require_modulation_hit:{1 if bool(thresholds.get('silence_persistence_require_modulation_hit')) else 0},"
-            f"burst_promotion_require_modulation_hit:{1 if bool(thresholds.get('burst_promotion_require_modulation_hit')) else 0},"
-            f"long_window_sparse_promotion_require_modulation_hit:{1 if bool(thresholds.get('long_window_sparse_promotion_require_modulation_hit')) else 0},"
-            f"burst_promotion_uncorroborated_cap:{thresholds.get('burst_promotion_uncorroborated_cap')},"
-            f"long_window_sparse_uncorroborated_cap:{thresholds.get('long_window_sparse_uncorroborated_cap')},"
-            f"burst_episode_window_seconds:{thresholds.get('burst_episode_window_seconds')},"
-            f"burst_episode_hits_required:{thresholds.get('burst_episode_hits_required')},"
-            f"burst_episode_min_conf:{thresholds.get('burst_episode_min_conf')},"
-            f"burst_episode_max_conf:{thresholds.get('burst_episode_max_conf')},"
-            f"burst_episode_min_gap_ms:{thresholds.get('burst_episode_min_gap_ms')},"
-            f"burst_episode_max_density_per_second:{thresholds.get('burst_episode_max_density_per_second')},"
-            f"burst_episode_promotion_conf:{thresholds.get('burst_episode_promotion_conf')},"
-            f"burst_episode_max_span_seconds:{thresholds.get('burst_episode_max_span_seconds')},"
-            f"burst_episode_guard_window_seconds:{thresholds.get('burst_episode_guard_window_seconds')},"
-            f"burst_episode_guard_max_candidates:{thresholds.get('burst_episode_guard_max_candidates')},"
-            f"compact_silence_cluster_min_conf:{thresholds.get('compact_silence_cluster_min_conf')},"
-            f"compact_silence_cluster_max_conf:{thresholds.get('compact_silence_cluster_max_conf')},"
-            f"compact_silence_cluster_min_silence_ratio:{thresholds.get('compact_silence_cluster_min_silence_ratio')},"
-            f"compact_silence_cluster_max_silence_ratio:{thresholds.get('compact_silence_cluster_max_silence_ratio')},"
-            f"compact_silence_cluster_min_gap_ms:{thresholds.get('compact_silence_cluster_min_gap_ms')},"
-            f"compact_silence_cluster_max_gap_count:{thresholds.get('compact_silence_cluster_max_gap_count')},"
-            f"compact_silence_cluster_min_mod_strength:{thresholds.get('compact_silence_cluster_min_mod_strength')},"
-            f"compact_silence_cluster_min_mod_depth:{thresholds.get('compact_silence_cluster_min_mod_depth')},"
-            f"compact_silence_cluster_min_mod_concentration:{thresholds.get('compact_silence_cluster_min_mod_concentration')},"
-            f"compact_silence_cluster_mod_halo_seconds:{thresholds.get('compact_silence_cluster_mod_halo_seconds')},"
-            f"compact_silence_cluster_recent_mod_window_seconds:{thresholds.get('compact_silence_cluster_recent_mod_window_seconds')},"
-            f"compact_silence_cluster_recent_mod_min_hits:{thresholds.get('compact_silence_cluster_recent_mod_min_hits')},"
-            f"compact_silence_cluster_recent_mod_max_hits:{thresholds.get('compact_silence_cluster_recent_mod_max_hits')},"
-            f"compact_silence_cluster_recent_silence_window_seconds:{thresholds.get('compact_silence_cluster_recent_silence_window_seconds')},"
-            f"compact_silence_cluster_recent_silence_max_hits:{thresholds.get('compact_silence_cluster_recent_silence_max_hits')},"
-            f"compact_silence_cluster_hits_required:{thresholds.get('compact_silence_cluster_hits_required')},"
-            f"compact_silence_cluster_max_span_seconds:{thresholds.get('compact_silence_cluster_max_span_seconds')},"
-            f"compact_silence_cluster_guard_window_seconds:{thresholds.get('compact_silence_cluster_guard_window_seconds')},"
-            f"compact_silence_cluster_guard_max_candidates:{thresholds.get('compact_silence_cluster_guard_max_candidates')},"
-            f"compact_silence_cluster_promotion_conf:{thresholds.get('compact_silence_cluster_promotion_conf')},"
-            f"subtle_sparse_min_conf:{thresholds.get('subtle_sparse_min_conf')},"
-            f"subtle_sparse_max_conf:{thresholds.get('subtle_sparse_max_conf')},"
-            f"subtle_sparse_min_silence_ratio:{thresholds.get('subtle_sparse_min_silence_ratio')},"
-            f"subtle_sparse_max_silence_ratio:{thresholds.get('subtle_sparse_max_silence_ratio')},"
-            f"subtle_sparse_min_gap_ms:{thresholds.get('subtle_sparse_min_gap_ms')},"
-            f"subtle_sparse_recent_mod_window_seconds:{thresholds.get('subtle_sparse_recent_mod_window_seconds')},"
-            f"subtle_sparse_hits_required:{thresholds.get('subtle_sparse_hits_required')},"
-            f"subtle_sparse_max_span_seconds:{thresholds.get('subtle_sparse_max_span_seconds')},"
-            f"subtle_sparse_guard_window_seconds:{thresholds.get('subtle_sparse_guard_window_seconds')},"
-            f"subtle_sparse_guard_max_candidates:{thresholds.get('subtle_sparse_guard_max_candidates')},"
-            f"subtle_sparse_promotion_conf:{thresholds.get('subtle_sparse_promotion_conf')},"
-            f"modulation_mid_silence_min_strength:{thresholds.get('modulation_mid_silence_min_strength')},"
-            f"modulation_mid_silence_min_depth:{thresholds.get('modulation_mid_silence_min_depth')},"
-            f"modulation_mid_silence_min_concentration:{thresholds.get('modulation_mid_silence_min_concentration')},"
-            f"modulation_mid_silence_min_silence_ratio:{thresholds.get('modulation_mid_silence_min_silence_ratio')},"
-            f"modulation_mid_silence_max_silence_ratio:{thresholds.get('modulation_mid_silence_max_silence_ratio')},"
-            f"modulation_mid_silence_max_gap_count:{thresholds.get('modulation_mid_silence_max_gap_count')},"
-            f"modulation_mid_silence_promotion_conf:{thresholds.get('modulation_mid_silence_promotion_conf')},"
-            f"modulation_burst_min_strength:{thresholds.get('modulation_burst_min_strength')},"
-            f"modulation_burst_min_depth:{thresholds.get('modulation_burst_min_depth')},"
-            f"modulation_burst_min_concentration:{thresholds.get('modulation_burst_min_concentration')},"
-            f"modulation_burst_max_silence_ratio:{thresholds.get('modulation_burst_max_silence_ratio')},"
-            f"modulation_burst_max_gap_count:{thresholds.get('modulation_burst_max_gap_count')},"
-            f"modulation_burst_window_seconds:{thresholds.get('modulation_burst_window_seconds')},"
-            f"modulation_burst_hits_required:{thresholds.get('modulation_burst_hits_required')},"
-            f"modulation_burst_spacing_seconds:{thresholds.get('modulation_burst_spacing_seconds')},"
-            f"modulation_burst_guard_window_seconds:{thresholds.get('modulation_burst_guard_window_seconds')},"
-            f"modulation_burst_guard_max_candidates:{thresholds.get('modulation_burst_guard_max_candidates')},"
-            f"modulation_burst_promotion_conf:{thresholds.get('modulation_burst_promotion_conf')},"
-            f"envelope_discontinuity:{thresholds.get('envelope_discontinuity')},"
-            f"modulation_strength:{thresholds.get('modulation_strength')},"
-            f"modulation_depth:{thresholds.get('modulation_depth')},"
-            f"modulation_peak_concentration:{thresholds.get('modulation_peak_concentration')}"
-        ),
         f"method_hits_high_conf={method_counts_text}",
         f"method_hits_all_windows={method_windows_all_text}",
         (
@@ -867,6 +857,12 @@ def build_compact_report(
         )
     else:
         lines.append("extended=0")
+
+    lines.extend([
+        "",
+        "PASTEABLE_SETTINGS",
+    ])
+    lines.extend(_build_pasteable_settings_block(settings))
 
     return "\n".join(lines) + "\n"
 

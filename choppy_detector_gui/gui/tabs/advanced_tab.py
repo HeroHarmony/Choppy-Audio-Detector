@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -126,4 +127,9 @@ def build_advanced_tab(window) -> None:
     actions.addWidget(window.paste_advanced_clipboard_btn)
     actions.addStretch(1)
     layout.addLayout(actions)
+
+    window.advanced_paste_shortcut = QShortcut(QKeySequence.Paste, tab)
+    window.advanced_paste_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+    window.advanced_paste_shortcut.activated.connect(window.paste_advanced_settings_from_clipboard)
+
     window.tabs.addTab(tab, "Advanced")

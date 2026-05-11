@@ -181,10 +181,15 @@ THRESHOLDS = {
     'compact_silence_cluster_min_mod_depth': 0.90,  # Minimum raw modulation depth for compact silence corroboration
     'compact_silence_cluster_min_mod_concentration': 0.10,  # Minimum raw modulation peak concentration for compact silence corroboration
     'compact_silence_cluster_mod_halo_seconds': 1.0,  # Nearby raw modulation feature horizon for compact silence corroboration
-    'compact_silence_cluster_hits_required': 4,  # Distinct hits required before promotion
+    'compact_silence_cluster_recent_mod_window_seconds': 12.0,  # Broader recent modulation-feature horizon
+    'compact_silence_cluster_recent_mod_min_hits': 2,  # Minimum recent modulation-feature hits needed
+    'compact_silence_cluster_recent_mod_max_hits': 12,  # Max recent modulation-feature hits before pattern is too dense
+    'compact_silence_cluster_recent_silence_window_seconds': 20.0,  # Recent silence-burst horizon
+    'compact_silence_cluster_recent_silence_max_hits': 20,  # Max recent silence-burst hits before blocking
+    'compact_silence_cluster_hits_required': 2,  # Distinct hits required before promotion
     'compact_silence_cluster_max_span_seconds': 2.0,  # Max promoted cluster span
     'compact_silence_cluster_guard_window_seconds': 20.0,  # Guard horizon for candidate volume
-    'compact_silence_cluster_guard_max_candidates': 12,  # Max candidates allowed in guard horizon
+    'compact_silence_cluster_guard_max_candidates': 24,  # Max candidates allowed in guard horizon
     'compact_silence_cluster_promotion_conf': 0.76,  # Promoted confidence for compact silence bursts
     'subtle_sparse_min_conf': 0.68,  # Lower bound for short-window subtle sparse candidates
     'subtle_sparse_max_conf': 0.75,  # Upper bound (exclusive) for short-window subtle sparse candidates
@@ -1396,6 +1401,7 @@ class BalancedChoppyDetector:
         burst_episode_candidate_hits = deque(maxlen=256)
         compact_silence_cluster_hits = deque(maxlen=64)
         compact_silence_cluster_candidate_hits = deque(maxlen=128)
+        compact_silence_recent_silence_hits = deque(maxlen=256)
         compact_silence_modulation_feature_hits = deque(maxlen=128)
         subtle_sparse_hits = deque(maxlen=32)
         subtle_sparse_candidate_hits = deque(maxlen=128)
@@ -1706,8 +1712,25 @@ class BalancedChoppyDetector:
                 compact_silence_cluster_mod_halo_seconds = max(
                     0.1, float(THRESHOLDS.get('compact_silence_cluster_mod_halo_seconds', 1.0))
                 )
+                compact_silence_cluster_recent_mod_window_seconds = max(
+                    compact_silence_cluster_mod_halo_seconds,
+                    float(THRESHOLDS.get('compact_silence_cluster_recent_mod_window_seconds', 12.0))
+                )
+                compact_silence_cluster_recent_mod_min_hits = max(
+                    1, int(THRESHOLDS.get('compact_silence_cluster_recent_mod_min_hits', 2))
+                )
+                compact_silence_cluster_recent_mod_max_hits = max(
+                    compact_silence_cluster_recent_mod_min_hits,
+                    int(THRESHOLDS.get('compact_silence_cluster_recent_mod_max_hits', 12))
+                )
+                compact_silence_cluster_recent_silence_window_seconds = max(
+                    0.5, float(THRESHOLDS.get('compact_silence_cluster_recent_silence_window_seconds', 20.0))
+                )
+                compact_silence_cluster_recent_silence_max_hits = max(
+                    1, int(THRESHOLDS.get('compact_silence_cluster_recent_silence_max_hits', 20))
+                )
                 compact_silence_cluster_hits_required = max(
-                    2, int(THRESHOLDS.get('compact_silence_cluster_hits_required', 4))
+                    2, int(THRESHOLDS.get('compact_silence_cluster_hits_required', 2))
                 )
                 compact_silence_cluster_max_span_seconds = max(
                     0.1, float(THRESHOLDS.get('compact_silence_cluster_max_span_seconds', 2.0))
@@ -1716,7 +1739,7 @@ class BalancedChoppyDetector:
                     5.0, float(THRESHOLDS.get('compact_silence_cluster_guard_window_seconds', 20.0))
                 )
                 compact_silence_cluster_guard_max_candidates = max(
-                    2, int(THRESHOLDS.get('compact_silence_cluster_guard_max_candidates', 12))
+                    2, int(THRESHOLDS.get('compact_silence_cluster_guard_max_candidates', 24))
                 )
                 compact_silence_cluster_promotion_conf = float(
                     THRESHOLDS.get('compact_silence_cluster_promotion_conf', 0.76)
@@ -1732,11 +1755,16 @@ class BalancedChoppyDetector:
                     current_time - compact_silence_modulation_feature_hits[0]
                 ) > compact_silence_cluster_guard_window_seconds:
                     compact_silence_modulation_feature_hits.popleft()
+                compact_recent_modulation_count = sum(
+                    1
+                    for mod_time in compact_silence_modulation_feature_hits
+                    if (current_time - mod_time) <= compact_silence_cluster_recent_mod_window_seconds
+                )
                 compact_modulation_corroborated = any(
                     abs(current_time - mod_time) <= compact_silence_cluster_mod_halo_seconds
                     for mod_time in compact_silence_modulation_feature_hits
                 )
-                compact_silence_cluster_candidate = (
+                compact_silence_cluster_base_candidate = (
                     current_window_ms < 1600
                     and silence_choppy
                     and not envelope_hit
@@ -1744,7 +1772,30 @@ class BalancedChoppyDetector:
                     and compact_silence_cluster_min_silence_ratio <= silence_ratio <= compact_silence_cluster_max_silence_ratio
                     and silence_max_gap_ms >= compact_silence_cluster_min_gap_ms
                     and silence_gap_count <= compact_silence_cluster_max_gap_count
-                    and compact_modulation_corroborated
+                )
+                while compact_silence_recent_silence_hits and (
+                    current_time - compact_silence_recent_silence_hits[0]
+                ) > compact_silence_cluster_recent_silence_window_seconds:
+                    compact_silence_recent_silence_hits.popleft()
+                if compact_silence_cluster_base_candidate:
+                    if (
+                        not compact_silence_recent_silence_hits
+                        or (current_time - compact_silence_recent_silence_hits[-1]) >= 0.15
+                    ):
+                        compact_silence_recent_silence_hits.append(current_time)
+                compact_recent_silence_count = len(compact_silence_recent_silence_hits)
+                compact_recent_modulation_ok = (
+                    compact_silence_cluster_recent_mod_min_hits
+                    <= compact_recent_modulation_count
+                    <= compact_silence_cluster_recent_mod_max_hits
+                )
+                compact_recent_silence_ok = (
+                    compact_recent_silence_count <= compact_silence_cluster_recent_silence_max_hits
+                )
+                compact_silence_cluster_candidate = (
+                    compact_silence_cluster_base_candidate
+                    and compact_recent_silence_ok
+                    and (compact_modulation_corroborated or compact_recent_modulation_ok)
                 )
                 while compact_silence_cluster_hits and (
                     current_time - compact_silence_cluster_hits[0]
@@ -1776,6 +1827,8 @@ class BalancedChoppyDetector:
                 compact_silence_cluster_promoted = False
                 if (
                     compact_silence_cluster_candidate
+                    and compact_recent_modulation_ok
+                    and compact_recent_silence_ok
                     and len(compact_silence_cluster_candidate_hits) <= compact_silence_cluster_guard_max_candidates
                     and compact_silence_cluster_hit_count >= compact_silence_cluster_hits_required
                     and compact_silence_cluster_span_seconds <= compact_silence_cluster_max_span_seconds

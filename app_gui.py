@@ -543,6 +543,11 @@ class MainWindow(QMainWindow):
             ("compact_silence_cluster_min_mod_depth", "Minimum raw modulation depth for compact silence-burst corroboration.", "float", 0.0, 1.0, 0.01),
             ("compact_silence_cluster_min_mod_concentration", "Minimum raw modulation peak concentration for compact silence-burst corroboration.", "float", 0.0, 1.0, 0.01),
             ("compact_silence_cluster_mod_halo_seconds", "Nearby raw modulation feature horizon for compact silence-burst corroboration.", "float", 0.1, 10.0, 0.1),
+            ("compact_silence_cluster_recent_mod_window_seconds", "Broader recent modulation-feature horizon for compact silence-burst corroboration.", "float", 0.5, 60.0, 0.1),
+            ("compact_silence_cluster_recent_mod_min_hits", "Minimum recent modulation-feature hits needed for compact silence-burst promotion.", "int", 1, 50, 1),
+            ("compact_silence_cluster_recent_mod_max_hits", "Maximum recent modulation-feature hits allowed before compact silence-burst promotion is treated as too speech-dense.", "int", 1, 100, 1),
+            ("compact_silence_cluster_recent_silence_window_seconds", "Recent silence-burst guard horizon for compact silence promotion.", "float", 0.5, 60.0, 0.1),
+            ("compact_silence_cluster_recent_silence_max_hits", "Maximum recent silence-burst candidate hits allowed before compact silence promotion is blocked.", "int", 1, 100, 1),
             ("compact_silence_cluster_hits_required", "Distinct hits required for compact silence-burst promotion.", "int", 2, 20, 1),
             ("compact_silence_cluster_max_span_seconds", "Maximum allowed time span for a compact silence-burst promoted cluster.", "float", 0.1, 10.0, 0.1),
             ("compact_silence_cluster_guard_window_seconds", "Guard horizon for compact silence-burst candidate volume.", "float", 5.0, 120.0, 0.5),
@@ -1031,6 +1036,9 @@ class MainWindow(QMainWindow):
             return []
         return list(self._playground_markers_by_path.get(marker_path, []))
 
+    def _playground_batch_mode(self) -> bool:
+        return len(self._playground_loaded_files) > 1
+
     def _playground_marker_context_path(self) -> str | None:
         if self._playground_is_playing and self._playground_preview_active_path:
             return self._playground_preview_active_path
@@ -1049,7 +1057,7 @@ class MainWindow(QMainWindow):
         cleaned = sorted({max(0, int(round(v))) for v in markers_ms})
         self._playground_markers_by_path[path] = cleaned
         marker_path = self._playground_marker_context_path()
-        if marker_path is not None and marker_path == path:
+        if marker_path is not None and marker_path == path and not self._playground_batch_mode():
             self.playground_progress.set_markers_ms(cleaned)
         self.update_playground_marker_status()
 
@@ -1063,12 +1071,17 @@ class MainWindow(QMainWindow):
             self._reset_playground_preview_meters()
             return
         self.playground_progress.set_duration_ms(int(max(1, loaded.duration_ms)))
-        self.playground_progress.set_markers_ms(list(self._playground_markers_by_path.get(loaded.path, [])))
+        if self._playground_batch_mode():
+            self.playground_progress.set_markers_ms([])
+        else:
+            self.playground_progress.set_markers_ms(list(self._playground_markers_by_path.get(loaded.path, [])))
         self._set_playground_seek_time_display(int(self._playground_preview_start_offset_ms))
         if not self._playground_is_playing:
             self._reset_playground_preview_meters()
 
     def remove_playground_marker_at(self, marker_ms: int) -> None:
+        if self._playground_batch_mode():
+            return
         marker_path = self._playground_marker_context_path()
         if marker_path is None:
             return
@@ -1085,9 +1098,21 @@ class MainWindow(QMainWindow):
         self.append_console(f"Playground marker removed at {int(marker_ms)}ms ({Path(loaded.path).name})")
 
     def update_playground_marker_status(self) -> None:
-        loaded = self._playground_audio_file
-        if loaded is None:
+        if not self._playground_loaded_files:
             self.playground_marker_status.setText("Markers: 0")
+            return
+        if self._playground_batch_mode():
+            files_with_markers = sum(
+                1 for file in self._playground_loaded_files
+                if len(self._playground_markers_by_path.get(file.path, [])) > 0
+            )
+            total_markers = sum(
+                len(self._playground_markers_by_path.get(file.path, []))
+                for file in self._playground_loaded_files
+            )
+            self.playground_marker_status.setText(
+                f"Batch markers: {total_markers} across {files_with_markers}/{len(self._playground_loaded_files)} files"
+            )
             return
         markers = self._playground_current_markers()
         self.playground_marker_status.setText(f"Markers: {len(markers)}")
@@ -1115,6 +1140,13 @@ class MainWindow(QMainWindow):
         save_marker_sidecar(loaded, markers)
 
     def add_playground_marker(self) -> None:
+        if self._playground_batch_mode():
+            QMessageBox.information(
+                self,
+                "Playground marker",
+                "Marker editing is disabled while multiple files are loaded for batch analysis.",
+            )
+            return
         marker_path = self._playground_marker_context_path()
         if marker_path is None:
             QMessageBox.information(self, "Playground marker", "Load a WAV file first.")
@@ -1136,6 +1168,13 @@ class MainWindow(QMainWindow):
         self.append_console(f"Playground marker added at {marker_ms}ms ({Path(loaded.path).name})")
 
     def clear_playground_markers(self) -> None:
+        if self._playground_batch_mode():
+            QMessageBox.information(
+                self,
+                "Playground marker",
+                "Marker editing is disabled while multiple files are loaded for batch analysis.",
+            )
+            return
         marker_path = self._playground_marker_context_path()
         if marker_path is None:
             return
@@ -1182,6 +1221,18 @@ class MainWindow(QMainWindow):
         )
         self.playground_preview_reset_button.setEnabled(can_seek and not controls_locked)
         self.playground_seek_time.setEnabled(can_seek and not controls_locked)
+        self.playground_progress.setEnabled(can_seek and not controls_locked)
+        if batch_mode:
+            self.playground_progress.setToolTip(
+                "Batch mode loaded.\n"
+                "Markers remain available to analysis, but marker editing and preview seeking are disabled."
+            )
+        else:
+            self.playground_progress.setToolTip(
+                "Playback progress for WAV mode.\n"
+                "Click the bar to seek preview.\n"
+                "Click a marker to remove it."
+            )
         self.playground_add_marker_button.setEnabled(
             has_file and (not batch_mode) and not controls_locked and self._playground_is_playing
         )
@@ -2628,6 +2679,25 @@ class MainWindow(QMainWindow):
             lookup[key] = ("method", self.advanced_widgets.get(f"method:{key}"))
         return lookup
 
+    def _current_advanced_clipboard_values(self) -> dict[str, object]:
+        current: dict[str, object] = {}
+        for key, *_ in self.alert_config_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            current[key] = self._get_advanced_widget_value(widget, self.settings.advanced_alert_config.get(key))
+        for key, *_ in self.threshold_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            current[key] = self._get_advanced_widget_value(widget, self.settings.advanced_thresholds.get(key))
+        for key, _ in self.methods_schema():
+            widget = self.advanced_widgets.get(f"method:{key}")
+            if widget is None:
+                continue
+            current[key] = bool(widget.isChecked())
+        return current
+
     def _coerce_advanced_clipboard_value(self, key: str, raw_value: str):
         value_type = None
         for candidate_key, *_schema in self.alert_config_schema():
@@ -2736,13 +2806,30 @@ class MainWindow(QMainWindow):
                 "No matching advanced settings were found on the clipboard.",
             )
             return
-        change_count = len(updates)
+        current_values = self._current_advanced_clipboard_values()
+        changed_updates = {
+            key: value for key, value in updates.items()
+            if current_values.get(key) != value
+        }
+        pasted_count = len(updates)
+        change_count = len(changed_updates)
+        if change_count == 0:
+            QMessageBox.information(
+                self,
+                "Paste from Clipboard",
+                (
+                    f"Found {pasted_count} matching advanced setting"
+                    f"{'s' if pasted_count != 1 else ''}, but none would change."
+                ),
+            )
+            return
         confirmation = QMessageBox.question(
             self,
             "Confirm Advanced Paste",
             (
-                f"This will alter {change_count} advanced setting"
-                f"{'s' if change_count != 1 else ''}.\n\n"
+                f"Are you sure you want to paste {pasted_count} setting"
+                f"{'s' if pasted_count != 1 else ''}?\n"
+                f"{change_count} will be altered.\n\n"
                 "Continue?"
             ),
             QMessageBox.Yes | QMessageBox.No,
@@ -2753,7 +2840,7 @@ class MainWindow(QMainWindow):
             return
         lookup = self._advanced_schema_lookup()
         applied = 0
-        for key, value in updates.items():
+        for key, value in changed_updates.items():
             widget_type, widget = lookup.get(key, (None, None))
             if widget is None:
                 continue
@@ -2764,7 +2851,10 @@ class MainWindow(QMainWindow):
             applied += 1
         collect_advanced_from_controls_controller(self)
         save_settings(self.settings)
-        message = f"Pasted {applied} advanced setting{'s' if applied != 1 else ''} from clipboard."
+        message = (
+            f"Pasted {pasted_count} advanced setting{'s' if pasted_count != 1 else ''} from clipboard. "
+            f"{applied} applied change{'s' if applied != 1 else ''}."
+        )
         if ignored:
             message += f" Ignored invalid values for: {', '.join(sorted(set(ignored)))}."
         self.append_console(message)

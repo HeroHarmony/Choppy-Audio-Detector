@@ -9,8 +9,10 @@ Playground is for detector calibration and verification. It lets you:
 - Analyze local WAV files with configurable `window/step/warm-up`.
 - Run optional second-pass analysis using production timing.
 - Preview audio before/after analysis.
-- Create compact report files in `Reports/`.
+- Create full diagnostic report files in `Reports/`.
 - Capture live audio to WAV and save a baseline sidecar for later analysis.
+
+Playground should be treated as the main detector-analysis harness. Its job is not just to say whether a file is `TP` or `FN`; its job is to explain whether production logic would actually escalate to a useful alert, and why.
 
 ## Controls
 
@@ -21,7 +23,6 @@ Playground is for detector calibration and verification. It lets you:
 - `Warm-up Ignore (ms)`: Initial analysis duration where detections are suppressed.
 - `Preview on done`: If enabled, starts preview playback when analysis completes.
 - `Also run prod timing`: If enabled (default `on`) and current timing differs from production timing, writes a second report using production timing.
-- `Extended report`: If enabled (default `on`), includes deeper diagnostics for thresholds, clusters, and method transitions.
 - `Analyze File`: Runs offline analysis for the loaded file.
 - `Analyze File` / `Analyze Batch`: Label changes automatically based on loaded file count.
 - `Preview Sound`: Toggle playback preview for loaded WAV.
@@ -74,7 +75,8 @@ Notes:
 3. When ready, click `Stop & Save Live WAV`.
 4. Choose where to save the captured WAV.
 5. A baseline sidecar (`.wav.baseline.json`) is saved next to the WAV when a running Main-tab baseline is available.
-6. Load the saved WAV in Playground and run normal file analysis/report workflow.
+6. After save, Playground can immediately prompt to analyze the new recording and generate a report.
+7. The saved WAV can also be reloaded later with the same baseline sidecar for repeat analysis.
 
 ## Report Files
 
@@ -96,8 +98,39 @@ Each report includes:
 - Input metadata (source/file, sample rate, channels, duration, channel analyzed).
 - Runtime settings (window, step, warm-up, expected label).
 - Outcome evaluation (`TP`, `TN`, `FP`, `FN`).
-- Confidence and method summaries.
+- Production alert simulation summary.
+- Confidence, threshold, cluster, and method summaries.
 - Per-window row data for deeper inspection.
+
+Important report fields:
+
+- `loop_alert_projection`: Estimates whether repeated playback of the same sample would eventually trigger an alert.
+- `prod_alert_simulation`: Replays production alert accumulation logic against the analyzed capture.
+- `promotion_audit`: Shows whether experimental or derived promotion paths actually fired.
+- `counted_detection_windows` / `dedup_suppressed_windows`: Distinguish windows that would count toward alerting from windows that were ignored by dedup rules.
+- `baseline` and `baseline_source`: Show whether analysis used an imported baseline sidecar and whether that baseline was established.
+
+## How To Judge Reports
+
+Do not optimize reports only for strict `TP/TN/FP/FN` cleanliness.
+
+The intended judgement order is:
+
+1. For expected glitchy samples:
+- Would production logic eventually escalate to a useful alert?
+- If not, is the blocker `no_high_conf_windows`, dedup, or alert accumulation?
+2. For expected clean samples:
+- Does the report avoid repeated counted detections or loop-triggered alert behavior?
+- A rare isolated event can be acceptable if it does not turn into repeated alert spam.
+3. If there is a tradeoff:
+- prefer recovering useful live alerts over forcing zero false positives
+- but avoid changes that create constant or runaway alerting on normal speech/game audio
+
+This matches the detector’s live operational goal:
+
+- occasional false positives are tolerable
+- missing recurring real glitches is worse
+- one alert is often enough to make the streamer investigate manually
 
 ## Production Timing Source of Truth
 

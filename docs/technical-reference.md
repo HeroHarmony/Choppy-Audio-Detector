@@ -4,6 +4,35 @@ This page is for advanced tuning and script-first workflows.
 
 For Playground tab workflows and report behavior, see [Playground Reference](playground-reference.md).
 
+## Detector Tuning Objective
+
+The detector is tuned for live-stream usefulness, not perfect offline sample classification.
+
+The target outcome is:
+
+- known-bad audio should escalate often enough to produce actionable Twitch chat alerts
+- occasional false positives are acceptable if they stay bounded and do not become constant spam
+- a single alert is already useful because the streamer can manually verify with viewers and investigate
+- missing obvious recurring glitches is worse than producing a rare ignorable alert
+
+In practice, tuning should prefer:
+
+- better recall on real live-stream glitches
+- bounded alert noise on changing real-world audio
+- operational usefulness over perfect separation on synthetic or offline test sets
+
+This means report review should ask these questions in order:
+
+1. Would this glitchy sample eventually produce a real alert under production timing?
+2. Would a clean sample avoid repeated or runaway alerts?
+3. If there is a tradeoff, does it still help the live workflow more than it hurts it?
+
+The detector is not optimized for:
+
+- zero false positives at any cost
+- perfect agreement with every human-marked subtle edge case
+- maximizing offline classification score when that makes live alerts too conservative
+
 ## CLI Usage (`live_analysis.py`)
 
 Show available audio devices:
@@ -62,6 +91,15 @@ ALERT_CONFIG = {
 - `detection_window_seconds`: Window for counting recent detections.
 - `confidence_threshold`: Minimum confidence percentage to count a detection.
 - `clean_audio_reset_seconds`: Clean-audio duration before a new episode starts.
+
+### Production Timing
+
+Production timing currently uses:
+
+- `production_window_ms = 1000`
+- `production_step_ms = 50`
+
+This is the primary truth for live behavior. Longer-window comparisons such as `2000/200` are useful as reference lanes in Playground, but should not override production tuning decisions unless live behavior is also being changed intentionally.
 
 ### Thresholds
 

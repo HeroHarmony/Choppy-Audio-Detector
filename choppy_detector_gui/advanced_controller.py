@@ -77,6 +77,31 @@ def advanced_dirty(window) -> bool:
     return False
 
 
+def count_non_default_advanced_settings(window) -> int:
+    count = 0
+    for key, *_ in window.alert_config_schema():
+        widget = window.advanced_widgets.get(f"value:{key}")
+        if widget is None:
+            continue
+        current = window._get_advanced_widget_value(widget, DEFAULT_ALERT_CONFIG[key])
+        if current != DEFAULT_ALERT_CONFIG[key]:
+            count += 1
+    for key, *_ in window.threshold_schema():
+        widget = window.advanced_widgets.get(f"value:{key}")
+        if widget is None:
+            continue
+        current = window._get_advanced_widget_value(widget, DEFAULT_THRESHOLDS[key])
+        if current != DEFAULT_THRESHOLDS[key]:
+            count += 1
+    for key, _ in window.methods_schema():
+        widget = window.advanced_widgets.get(f"method:{key}")
+        if widget is None:
+            continue
+        if bool(widget.isChecked()) != bool(DEFAULT_APPROACHES[key]):
+            count += 1
+    return count
+
+
 def reset_advanced_defaults(window) -> None:
     window.settings.advanced_alert_config = dict(DEFAULT_ALERT_CONFIG)
     window.settings.advanced_thresholds = dict(DEFAULT_THRESHOLDS)

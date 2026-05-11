@@ -49,6 +49,7 @@ except ImportError as exc:
 from choppy_detector_gui.alert_templates import severity_for_detection_count
 from choppy_detector_gui.advanced_controller import (
     apply_advanced_to_controls as apply_advanced_controls_controller,
+    count_non_default_advanced_settings as count_non_default_advanced_settings_controller,
     collect_advanced_from_controls as collect_advanced_from_controls_controller,
     reset_advanced_defaults as reset_advanced_defaults_controller,
 )
@@ -2690,6 +2691,20 @@ class MainWindow(QMainWindow):
         self.append_console("Advanced settings saved.")
 
     def reset_advanced_defaults(self) -> None:
+        changed_count = count_non_default_advanced_settings_controller(self)
+        plural = "setting is" if changed_count == 1 else "settings are"
+        confirmation = QMessageBox.question(
+            self,
+            "Reset Advanced Defaults",
+            (
+                "Are you sure?\n\n"
+                f"{changed_count} {plural} different from defaults and will be reverted."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirmation != QMessageBox.Yes:
+            return
         reset_advanced_defaults_controller(self)
         apply_advanced_controls_controller(self)
         save_settings(self.settings)

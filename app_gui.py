@@ -2498,6 +2498,157 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.append_console("Advanced settings reset to defaults.")
 
+    def _advanced_schema_lookup(self) -> dict[str, tuple[str, object]]:
+        lookup: dict[str, tuple[str, object]] = {}
+        for key, *_ in self.alert_config_schema():
+            lookup[key] = ("value", self.advanced_widgets.get(f"value:{key}"))
+        for key, *_ in self.threshold_schema():
+            lookup[key] = ("value", self.advanced_widgets.get(f"value:{key}"))
+        for key, _ in self.methods_schema():
+            lookup[key] = ("method", self.advanced_widgets.get(f"method:{key}"))
+        return lookup
+
+    def _coerce_advanced_clipboard_value(self, key: str, raw_value: str):
+        value_type = None
+        for candidate_key, *_schema in self.alert_config_schema():
+            if candidate_key == key:
+                value_type = _schema[1]
+                break
+        if value_type is None:
+            for candidate_key, *_schema in self.threshold_schema():
+                if candidate_key == key:
+                    value_type = _schema[1]
+                    break
+        if value_type is None:
+            for candidate_key, _ in self.methods_schema():
+                if candidate_key == key:
+                    value_type = "bool"
+                    break
+        cleaned = str(raw_value).strip()
+        if value_type == "int":
+            return int(round(float(cleaned)))
+        if value_type == "float":
+            return float(cleaned)
+        lowered = cleaned.lower()
+        if lowered in {"1", "true", "on", "yes", "enabled"}:
+            return True
+        if lowered in {"0", "false", "off", "no", "disabled"}:
+            return False
+        raise ValueError(f"Unsupported boolean value for {key}: {raw_value}")
+
+    def _parse_advanced_clipboard_text(self, text: str) -> tuple[dict[str, object], list[str]]:
+        known_keys = set(self._advanced_schema_lookup().keys())
+        updates: dict[str, object] = {}
+        ignored: list[str] = []
+
+        def parse_chunk(chunk: str) -> None:
+            token = chunk.strip()
+            if not token:
+                return
+            token = token.split("#", 1)[0].strip()
+            if not token:
+                return
+            delimiter = "=" if "=" in token else (":" if ":" in token else None)
+            if delimiter is None:
+                return
+            key, value = token.split(delimiter, 1)
+            key = key.strip()
+            value = value.strip()
+            if key in known_keys:
+                try:
+                    updates[key] = self._coerce_advanced_clipboard_value(key, value)
+                except ValueError:
+                    ignored.append(key)
+                return
+            nested_delimiter = "=" if "=" in value else (":" if ":" in value else None)
+            if nested_delimiter is not None:
+                parse_chunk(value)
+
+        for line in str(text or "").splitlines():
+            cleaned_line = line.strip()
+            if not cleaned_line:
+                continue
+            for chunk in re.split(r"[;,]", cleaned_line):
+                parse_chunk(chunk)
+        return updates, ignored
+
+    def copy_advanced_settings_to_clipboard(self) -> None:
+        lines = ["# Alert Config"]
+        for key, *_ in self.alert_config_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            value = self._get_advanced_widget_value(widget, self.settings.advanced_alert_config.get(key))
+            lines.append(f"{key}={self._format_default_value(value)}")
+        lines.append("")
+        lines.append("# Thresholds")
+        for key, *_ in self.threshold_schema():
+            widget = self.advanced_widgets.get(f"value:{key}")
+            if widget is None:
+                continue
+            value = self._get_advanced_widget_value(widget, self.settings.advanced_thresholds.get(key))
+            lines.append(f"{key}={self._format_default_value(value)}")
+        lines.append("")
+        lines.append("# Detection Methods")
+        for key, _ in self.methods_schema():
+            widget = self.advanced_widgets.get(f"method:{key}")
+            if widget is None:
+                continue
+            lines.append(f"{key}={'On' if bool(widget.isChecked()) else 'Off'}")
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            QMessageBox.warning(self, "Clipboard unavailable", "The system clipboard is not available.")
+            return
+        clipboard.setText("\n".join(lines))
+        self.append_console("Advanced settings copied to clipboard.")
+
+    def paste_advanced_settings_from_clipboard(self) -> None:
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            QMessageBox.warning(self, "Clipboard unavailable", "The system clipboard is not available.")
+            return
+        text = clipboard.text()
+        updates, ignored = self._parse_advanced_clipboard_text(text)
+        if not updates:
+            QMessageBox.information(
+                self,
+                "Paste from Clipboard",
+                "No matching advanced settings were found on the clipboard.",
+            )
+            return
+        change_count = len(updates)
+        confirmation = QMessageBox.question(
+            self,
+            "Confirm Advanced Paste",
+            (
+                f"This will alter {change_count} advanced setting"
+                f"{'s' if change_count != 1 else ''}.\n\n"
+                "Continue?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirmation != QMessageBox.Yes:
+            self.append_console("Advanced settings paste canceled.")
+            return
+        lookup = self._advanced_schema_lookup()
+        applied = 0
+        for key, value in updates.items():
+            widget_type, widget = lookup.get(key, (None, None))
+            if widget is None:
+                continue
+            if widget_type == "method" and isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+            else:
+                self._set_advanced_widget_value(widget, value)
+            applied += 1
+        collect_advanced_from_controls_controller(self)
+        save_settings(self.settings)
+        message = f"Pasted {applied} advanced setting{'s' if applied != 1 else ''} from clipboard."
+        if ignored:
+            message += f" Ignored invalid values for: {', '.join(sorted(set(ignored)))}."
+        self.append_console(message)
+
     def _set_advanced_widget_value(self, widget: QWidget, value) -> None:
         if isinstance(widget, QSpinBox):
             widget.setValue(int(value))

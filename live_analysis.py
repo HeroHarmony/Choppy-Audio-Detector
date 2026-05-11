@@ -117,6 +117,9 @@ ALERT_CONFIG = {
     'detection_window_seconds': 120, # Time window to count detections in
     'confidence_threshold': 70,     # Minimum confidence for counting detection
     'stream_start_warmup_ignore_seconds': 3.0, # Ignore startup/reopen transients for this long
+    'baseline_clean_lock_seconds': 10.0, # Clean-audio dwell required before baseline lock
+    'baseline_min_rms_samples': 80, # Minimum qualifying RMS samples before baseline lock
+    'baseline_rms_cv_max': 0.85,    # Maximum RMS coefficient-of-variation at lock
     'clean_audio_reset_seconds': 60, # Seconds of clean audio to reset episode
     'event_dedup_seconds': 0.9,     # Suppress duplicate hits from one burst
     'fast_alert_burst_detections': 4,    # Fast path for obvious glitches
@@ -134,8 +137,8 @@ ALERT_CONFIG = {
 }
 
 STREAM_START_WARMUP_IGNORE_SECONDS = 3.0
-BASELINE_MIN_RMS_SAMPLES = 20
-BASELINE_CLEAN_LOCK_SECONDS = 20.0
+BASELINE_MIN_RMS_SAMPLES = 80
+BASELINE_CLEAN_LOCK_SECONDS = 10.0
 
 # More reasonable thresholds for streaming glitch detection
 THRESHOLDS = {
@@ -335,12 +338,13 @@ class BalancedChoppyDetector:
         self.alert_templates = alert_templates or AlertTemplates()
         self.file_logger = file_logger
         self.baseline_stats = {
-            'rms_history': deque(maxlen=50),
+            'rms_history': deque(maxlen=300),
             'established_baseline': False,
             'learning_started_at': 0.0,
             'last_blocked_at': 0.0,
             'last_progress_log_at': 0.0,
             'last_quiet_log_at': 0.0,
+            'last_unstable_log_at': 0.0,
         }
         
         # Twitch integration
@@ -392,6 +396,15 @@ class BalancedChoppyDetector:
         self._pending_alert_by_key = {}
         self._twitch_send_fail_streak = 0
         self._twitch_send_paused_until = 0.0
+
+    def _baseline_clean_lock_seconds(self) -> float:
+        return max(2.0, float(ALERT_CONFIG.get('baseline_clean_lock_seconds', BASELINE_CLEAN_LOCK_SECONDS)))
+
+    def _baseline_min_rms_samples(self) -> int:
+        return max(5, int(ALERT_CONFIG.get('baseline_min_rms_samples', BASELINE_MIN_RMS_SAMPLES)))
+
+    def _baseline_rms_cv_max(self) -> float:
+        return max(0.05, float(ALERT_CONFIG.get('baseline_rms_cv_max', 1.0)))
 
     def emit_event(self, event_type, **payload):
         if self.event_callback:
@@ -653,7 +666,10 @@ class BalancedChoppyDetector:
             # Freeze baseline after initial lock to avoid long-session drift.
             return
         now = time_module.time()
-        high_conf_recent_cutoff = now - BASELINE_CLEAN_LOCK_SECONDS
+        clean_lock_seconds = self._baseline_clean_lock_seconds()
+        min_samples = self._baseline_min_rms_samples()
+        baseline_cv_max = self._baseline_rms_cv_max()
+        high_conf_recent_cutoff = now - clean_lock_seconds
         recent_high_conf = any(
             det['timestamp'] > high_conf_recent_cutoff
             and float(det.get('confidence', 0.0) or 0.0) >= float(ALERT_CONFIG['confidence_threshold'])
@@ -680,8 +696,8 @@ class BalancedChoppyDetector:
             if (now - float(self.baseline_stats.get('last_progress_log_at') or 0.0)) >= 5.0:
                 print(
                     f"[{self._timestamp()}] Baseline learning: "
-                    f"{len(self.baseline_stats['rms_history'])}/{BASELINE_MIN_RMS_SAMPLES} samples "
-                    f"(clean lock target {BASELINE_CLEAN_LOCK_SECONDS:.0f}s)"
+                    f"{len(self.baseline_stats['rms_history'])}/{min_samples} samples "
+                    f"(clean lock target {clean_lock_seconds:.0f}s)"
                 )
                 self.baseline_stats['last_progress_log_at'] = now
         else:
@@ -698,28 +714,49 @@ class BalancedChoppyDetector:
             if self.baseline_stats['learning_started_at']
             else 0.0
         )
+        history_values = np.asarray(self.baseline_stats['rms_history'], dtype=np.float64)
+        hist_mean = float(np.mean(history_values)) if history_values.size > 0 else 0.0
+        hist_std = float(np.std(history_values)) if history_values.size > 0 else 0.0
+        hist_cv = hist_std / (hist_mean + 1e-12) if hist_mean > 0.0 else 999.0
+        stability_ok = hist_cv <= baseline_cv_max
+
         if (
             not self.baseline_stats['established_baseline']
-            and len(self.baseline_stats['rms_history']) >= BASELINE_MIN_RMS_SAMPLES
-            and learning_elapsed >= BASELINE_CLEAN_LOCK_SECONDS
+            and len(self.baseline_stats['rms_history']) >= min_samples
+            and learning_elapsed >= clean_lock_seconds
+            and stability_ok
         ):
             self.baseline_stats['established_baseline'] = True
             self.baseline_stats['last_progress_log_at'] = now
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}] Baseline audio profile established "
-                f"({BASELINE_CLEAN_LOCK_SECONDS:.0f}s clean window)."
+                f"({clean_lock_seconds:.0f}s clean window, cv={hist_cv:.3f})."
             )
             self.emit_event(
                 "baseline.established",
                 sample_count=len(self.baseline_stats['rms_history']),
-                clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+                clean_window_seconds=clean_lock_seconds,
+                rms_cv=round(hist_cv, 4),
             )
             self.log_file_event(
                 "info",
                 "baseline.established",
                 sample_count=len(self.baseline_stats['rms_history']),
-                clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+                clean_window_seconds=clean_lock_seconds,
+                rms_cv=round(hist_cv, 4),
             )
+        elif (
+            not self.baseline_stats['established_baseline']
+            and len(self.baseline_stats['rms_history']) >= min_samples
+            and learning_elapsed >= clean_lock_seconds
+            and not stability_ok
+            and (now - float(self.baseline_stats.get('last_unstable_log_at') or 0.0)) >= 5.0
+        ):
+            print(
+                f"[{self._timestamp()}] Baseline waiting for stability: "
+                f"cv={hist_cv:.3f} > max={baseline_cv_max:.3f}"
+            )
+            self.baseline_stats['last_unstable_log_at'] = now
             
     def get_baseline_rms(self):
         """Get typical RMS level"""
@@ -729,6 +766,7 @@ class BalancedChoppyDetector:
 
     def rebuild_baseline(self, *, reason: str = "manual") -> None:
         """Reset baseline learning so a fresh clean-gated profile can be learned."""
+        clean_lock_seconds = self._baseline_clean_lock_seconds()
         with self.lock:
             self.baseline_stats['rms_history'].clear()
             self.baseline_stats['established_baseline'] = False
@@ -736,21 +774,22 @@ class BalancedChoppyDetector:
             self.baseline_stats['last_blocked_at'] = 0.0
             self.baseline_stats['last_progress_log_at'] = 0.0
             self.baseline_stats['last_quiet_log_at'] = 0.0
+            self.baseline_stats['last_unstable_log_at'] = 0.0
             self.stream_warmup_until = time_module.time() + self.stream_warmup_ignore_seconds
         print(
             f"[{self._timestamp()}] Baseline rebuild requested ({reason}). "
-            f"Learning will relock after {BASELINE_CLEAN_LOCK_SECONDS:.0f}s clean audio."
+            f"Learning will relock after {clean_lock_seconds:.0f}s clean audio."
         )
         self.emit_event(
             "baseline.rebuild_requested",
             reason=reason,
-            clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+            clean_window_seconds=clean_lock_seconds,
         )
         self.log_file_event(
             "info",
             "baseline.rebuild_requested",
             reason=reason,
-            clean_window_seconds=BASELINE_CLEAN_LOCK_SECONDS,
+            clean_window_seconds=clean_lock_seconds,
         )
     
     def _format_volume(self, rms: float) -> str:

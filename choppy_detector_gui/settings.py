@@ -171,6 +171,7 @@ class ObsWebSocketSettings:
     port: int = 4455
     password: str = ""
     target_source: str = ""
+    target_sources: list[str] = field(default_factory=list)
     target_scene: str = ""
     auto_refresh_enabled: bool = False
     auto_refresh_min_severity: str = "severe"
@@ -194,6 +195,11 @@ class ObsWebSocketSettings:
             port=int(data.get("port") or 4455),
             password=str(data.get("password") or ""),
             target_source=str(data.get("target_source") or ""),
+            target_sources=[
+                str(value).strip()
+                for value in (data.get("target_sources") or [])
+                if str(value).strip()
+            ],
             target_scene=str(data.get("target_scene") or ""),
             auto_refresh_enabled=bool(data.get("auto_refresh_enabled", False)),
             auto_refresh_min_severity=str(data.get("auto_refresh_min_severity") or "severe").strip().lower(),
@@ -252,6 +258,16 @@ class AppSettings:
         self.alert_cooldown_ms = int(self.advanced_alert_config.get("alert_cooldown_ms", self.alert_cooldown_ms))
         self.obs_websocket.host = self.obs_websocket.host.strip() or "127.0.0.1"
         self.obs_websocket.port = min(65535, max(1, int(self.obs_websocket.port or 4455)))
+        normalized_targets: list[str] = []
+        for value in list(self.obs_websocket.target_sources or []):
+            source = str(value or "").strip()
+            if source and source not in normalized_targets:
+                normalized_targets.append(source)
+        fallback_target = str(self.obs_websocket.target_source or "").strip()
+        if fallback_target and fallback_target not in normalized_targets:
+            normalized_targets.insert(0, fallback_target)
+        self.obs_websocket.target_sources = normalized_targets
+        self.obs_websocket.target_source = normalized_targets[0] if normalized_targets else fallback_target
         self.obs_websocket.auto_connect_retry_enabled = bool(self.obs_websocket.auto_connect_retry_enabled)
         self.obs_websocket.auto_refresh_min_severity = (
             self.obs_websocket.auto_refresh_min_severity

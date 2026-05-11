@@ -23,7 +23,7 @@ class ObsFormValues:
     baseline_rebuild_delay_sec: int
     baseline_rebuild_cooldown_sec: int
     target_scene: str
-    target_source: str
+    target_sources: tuple[str, ...]
 
 
 def normalize_scene(scene_value: str) -> str:
@@ -34,6 +34,15 @@ def normalize_scene(scene_value: str) -> str:
 def normalize_watched_scene(scene_value: str) -> str:
     stripped = str(scene_value or "").strip()
     return "" if stripped == "Any Scene" else stripped
+
+
+def normalize_target_sources(source_values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for value in source_values:
+        source = str(value or "").strip()
+        if source and source not in normalized:
+            normalized.append(source)
+    return tuple(normalized)
 
 
 def read_form_values(
@@ -52,7 +61,7 @@ def read_form_values(
     baseline_rebuild_delay_sec: int,
     baseline_rebuild_cooldown_sec: int,
     scene_value: str,
-    source_value: str,
+    source_values: list[str] | tuple[str, ...],
 ) -> ObsFormValues:
     return ObsFormValues(
         enabled=bool(enabled),
@@ -69,7 +78,7 @@ def read_form_values(
         baseline_rebuild_delay_sec=int(baseline_rebuild_delay_sec),
         baseline_rebuild_cooldown_sec=int(baseline_rebuild_cooldown_sec),
         target_scene=normalize_scene(scene_value),
-        target_source=str(source_value or "").strip(),
+        target_sources=normalize_target_sources(source_values),
     )
 
 
@@ -88,8 +97,8 @@ def apply_form_values_to_settings(values: ObsFormValues, settings: ObsWebSocketS
     settings.baseline_rebuild_delay_sec = values.baseline_rebuild_delay_sec
     settings.baseline_rebuild_cooldown_sec = values.baseline_rebuild_cooldown_sec
     settings.target_scene = values.target_scene
-    if values.target_source:
-        settings.target_source = values.target_source
+    settings.target_sources = list(values.target_sources)
+    settings.target_source = settings.target_sources[0] if settings.target_sources else ""
 
 
 def is_form_dirty(saved: ObsWebSocketSettings, current: ObsFormValues) -> bool:
@@ -109,6 +118,6 @@ def is_form_dirty(saved: ObsWebSocketSettings, current: ObsFormValues) -> bool:
             current.baseline_rebuild_delay_sec != saved.baseline_rebuild_delay_sec,
             current.baseline_rebuild_cooldown_sec != saved.baseline_rebuild_cooldown_sec,
             current.target_scene != saved.target_scene,
-            current.target_source != saved.target_source,
+            current.target_sources != tuple(saved.target_sources),
         )
     )

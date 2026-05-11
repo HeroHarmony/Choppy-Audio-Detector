@@ -341,6 +341,7 @@ class MainWindow(QMainWindow):
         self._playground_display_last_update_at = time.monotonic()
         self._playground_live_paused_monitoring = False
         self._playground_live_baseline_profile: dict | None = None
+        self._obs_target_sources: list[str] = []
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -2282,7 +2283,6 @@ class MainWindow(QMainWindow):
             self.obs_target_source.addItems(sources)
             idx = self.obs_target_source.findText(selected_before)
             self.obs_target_source.setCurrentIndex(max(0, idx))
-            self.obs_refresh_now_button.setEnabled(True)
             self.set_obs_status("Connected", "#3fcf5e")
             if selected_before and idx < 0:
                 self.append_console(f"Saved OBS source '{selected_before}' no longer exists. Select a new source.")
@@ -2290,7 +2290,6 @@ class MainWindow(QMainWindow):
             if selected_before:
                 self.obs_target_source.addItem(selected_before)
                 self.obs_target_source.setCurrentIndex(0)
-            self.obs_refresh_now_button.setEnabled(bool(selected_before))
         if selected_scene and selected_scene != "All Scenes" and self.obs_target_scene.findText(selected_scene) < 0:
             self.append_console(f"Saved OBS scene '{selected_scene}' no longer exists. Using scene-agnostic mode.")
         self.obs_target_source.blockSignals(False)
@@ -2302,19 +2301,65 @@ class MainWindow(QMainWindow):
     def queue_obs_refresh_request(self, source: str, action: str = "refresh") -> None:
         queue_obs_refresh_request_service(self, source=source, action=action)
 
+    def obs_target_sources(self) -> list[str]:
+        return list(self._obs_target_sources)
+
+    def set_obs_target_sources(self, sources: list[str]) -> None:
+        normalized: list[str] = []
+        for value in sources:
+            source = str(value or "").strip()
+            if source and source not in normalized:
+                normalized.append(source)
+        self._obs_target_sources = normalized
+        if hasattr(self, "obs_target_badges_layout"):
+            while self.obs_target_badges_layout.count():
+                item = self.obs_target_badges_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            for source in self._obs_target_sources:
+                badge = QWidget()
+                badge.setStyleSheet("background:#4d4d4d; border:1px solid #6a6a6a; border-radius:10px;")
+                badge_layout = QHBoxLayout(badge)
+                badge_layout.setContentsMargins(8, 2, 4, 2)
+                badge_layout.setSpacing(6)
+                label = QLabel(source)
+                remove_button = QPushButton("x")
+                remove_button.setFixedWidth(22)
+                remove_button.clicked.connect(lambda _checked=False, s=source: self.remove_obs_target_source(s))
+                badge_layout.addWidget(label)
+                badge_layout.addWidget(remove_button)
+                self.obs_target_badges_layout.addWidget(badge)
+            self.obs_target_badges_layout.addStretch(1)
+        self.update_obs_controls_enabled()
+
+    def add_obs_target_source_from_combo(self) -> None:
+        source = self.obs_target_source.currentText().strip()
+        if not source:
+            self._show_obs_source_required_message()
+            return
+        sources = self.obs_target_sources()
+        if source not in sources:
+            sources.append(source)
+            self.set_obs_target_sources(sources)
+
+    def remove_obs_target_source(self, source: str) -> None:
+        self.set_obs_target_sources([value for value in self._obs_target_sources if value != source])
+
     def _show_obs_disabled_message(self) -> None:
         QMessageBox.information(self, "OBS WebSocket Disabled", "Enable OBS WebSocket integration first.")
 
     def _show_obs_source_required_message(self) -> None:
-        QMessageBox.warning(self, "No Source Selected", "Choose an OBS source first.")
+        QMessageBox.warning(self, "No Source Selected", "Choose at least one OBS target source first.")
 
     def set_obs_busy(self, busy: bool) -> None:
         self.obs_connect_button.setEnabled(not busy)
         self.obs_disconnect_button.setEnabled(not busy)
         self.obs_test_button.setEnabled(not busy)
-        self.obs_refresh_now_button.setEnabled(not busy and bool(self.obs_target_source.currentText().strip()))
+        self.obs_refresh_now_button.setEnabled(not busy and bool(self.obs_target_sources()))
         self.obs_refresh_sources_button.setEnabled(not busy)
         self.obs_refresh_scenes_button.setEnabled(not busy)
+        self.obs_add_target_button.setEnabled(not busy and bool(self.obs_target_source.currentText().strip()))
 
     def update_obs_controls_enabled(self) -> None:
         enabled = self.obs_enabled.isChecked()
@@ -2332,6 +2377,7 @@ class MainWindow(QMainWindow):
             self.obs_disconnect_button,
             self.obs_test_button,
             self.obs_target_source,
+            self.obs_add_target_button,
             self.obs_target_scene,
             self.obs_refresh_sources_button,
             self.obs_refresh_scenes_button,
@@ -2358,7 +2404,8 @@ class MainWindow(QMainWindow):
             self.set_obs_status("Disconnected", "#ff9c4a")
         # Refresh button should require a selected source.
         if enabled:
-            self.obs_refresh_now_button.setEnabled(bool(self.obs_target_source.currentText().strip()))
+            self.obs_refresh_now_button.setEnabled(bool(self.obs_target_sources()))
+            self.obs_add_target_button.setEnabled(bool(self.obs_target_source.currentText().strip()))
 
     def _reset_obs_scene_watch_state(self) -> None:
         self._obs_scene_watch_last_scene = ""
@@ -2704,8 +2751,8 @@ class MainWindow(QMainWindow):
         return RuntimeEventContext(
             obs_enabled=self.obs_enabled.isChecked(),
             obs_connected=self.obs_service.is_connected,
-            selected_source=self.obs_target_source.currentText().strip(),
-            saved_source=self.settings.obs_websocket.target_source.strip(),
+            selected_source=(self.obs_target_sources()[0] if self.obs_target_sources() else self.obs_target_source.currentText().strip()),
+            saved_source=(self.settings.obs_websocket.target_sources[0] if self.settings.obs_websocket.target_sources else self.settings.obs_websocket.target_source.strip()),
             runtime_running=self.runtime.is_running,
             keep_preview_while_monitoring=self.settings.keep_preview_while_monitoring,
         )

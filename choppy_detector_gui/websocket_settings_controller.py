@@ -25,6 +25,7 @@ def apply_obs_settings_to_controls(window) -> None:
     window.obs_baseline_min_dwell_sec.setValue(obs_settings.baseline_rebuild_min_dwell_sec)
     window.obs_baseline_exit_delay_sec.setValue(obs_settings.baseline_rebuild_delay_sec)
     window.obs_baseline_cooldown_sec.setValue(obs_settings.baseline_rebuild_cooldown_sec)
+    window.set_obs_target_sources(obs_settings.target_sources or ([obs_settings.target_source] if obs_settings.target_source else []))
     window.refresh_obs_scenes()
     if obs_settings.baseline_rebuild_scene:
         idx_watch_scene = window.obs_baseline_scene.findText(obs_settings.baseline_rebuild_scene)
@@ -58,7 +59,7 @@ def collect_obs_from_controls(window) -> None:
         baseline_rebuild_delay_sec=window.obs_baseline_exit_delay_sec.value(),
         baseline_rebuild_cooldown_sec=window.obs_baseline_cooldown_sec.value(),
         scene_value=window.obs_target_scene.currentText(),
-        source_value=window.obs_target_source.currentText(),
+        source_values=window.obs_target_sources(),
     )
     apply_form_values_to_settings(values, window.settings.obs_websocket)
     update_obs_bundle_network_notice(window)
@@ -80,7 +81,7 @@ def websocket_dirty(window) -> bool:
         baseline_rebuild_delay_sec=window.obs_baseline_exit_delay_sec.value(),
         baseline_rebuild_cooldown_sec=window.obs_baseline_cooldown_sec.value(),
         scene_value=window.obs_target_scene.currentText(),
-        source_value=window.obs_target_source.currentText(),
+        source_values=window.obs_target_sources(),
     )
     return is_form_dirty(window.settings.obs_websocket, current)
 

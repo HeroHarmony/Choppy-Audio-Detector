@@ -69,26 +69,53 @@ def refresh_obs_source_now(window) -> None:
     if not window.obs_enabled.isChecked():
         window._show_obs_disabled_message()
         return
-    source = window.obs_target_source.currentText().strip()
-    if not source:
+    sources = window.obs_target_sources() or window.settings.obs_websocket.target_sources
+    if not sources:
         window._show_obs_source_required_message()
         return
-    queue_obs_refresh_request(window, source=source, action="refresh")
+    queue_obs_refresh_request(window, source="", action="refresh")
 
 
 def queue_obs_refresh_request(window, *, source: str, action: str = "refresh") -> None:
+    configured_sources = window.obs_target_sources() or list(window.settings.obs_websocket.target_sources)
+    sources: list[str] = []
+    for candidate in configured_sources or ([source] if source else []):
+        cleaned = str(candidate or "").strip()
+        if cleaned and cleaned not in sources:
+            sources.append(cleaned)
+    if not sources:
+        window.set_obs_busy(False)
+        window.append_console("OBS refresh skipped: no target sources selected.")
+        return
+    scene_name = (
+        ""
+        if window.obs_target_scene.currentText().strip() == "All Scenes"
+        else window.obs_target_scene.currentText().strip()
+    )
+
+    def refresh_targets() -> tuple[bool, str]:
+        messages: list[str] = []
+        failures: list[str] = []
+        for source_name in sources:
+            ok, message = window.obs_service.refresh_source_in_scene(
+                source_name=source_name,
+                scene_name=scene_name,
+                off_on_delay_ms=window.obs_refresh_off_on_delay_ms.value(),
+            )
+            if ok:
+                messages.append(message)
+            else:
+                failures.append(f"{source_name}: {message}")
+        if failures:
+            summary = "; ".join(messages) if messages else "No targets refreshed."
+            return False, f"{summary} Failures: {' | '.join(failures)}"
+        if len(messages) == 1:
+            return True, messages[0]
+        return True, f"Refreshed {len(messages)} OBS targets: {', '.join(sources)}."
+
     window.set_obs_status("Refreshing", "#4aa3ff")
     window.set_obs_busy(True)
-    window._run_obs_task(
-        action,
-        lambda: window.obs_service.refresh_source_in_scene(
-            source_name=source,
-            scene_name=""
-            if window.obs_target_scene.currentText().strip() == "All Scenes"
-            else window.obs_target_scene.currentText().strip(),
-            off_on_delay_ms=window.obs_refresh_off_on_delay_ms.value(),
-        ),
-    )
+    window._run_obs_task(action, refresh_targets)
 
 
 def maybe_trigger_obs_auto_refresh(window, glitch_data: dict[str, object]) -> None:
@@ -99,11 +126,12 @@ def maybe_trigger_obs_auto_refresh(window, glitch_data: dict[str, object]) -> No
         window.append_console("OBS auto-refresh skipped: OBS is not connected.")
         return
 
-    source = window.obs_target_source.currentText().strip() or obs_settings.target_source.strip()
+    source_list = window.obs_target_sources() or list(obs_settings.target_sources)
+    source = source_list[0] if source_list else (window.obs_target_source.currentText().strip() or obs_settings.target_source.strip())
     scene_choice = window.obs_target_scene.currentText().strip()
     scene = "" if scene_choice == "All Scenes" else (scene_choice or obs_settings.target_scene.strip())
-    if not source:
-        window.append_console("OBS auto-refresh skipped: no target source selected.")
+    if not source_list and not source:
+        window.append_console("OBS auto-refresh skipped: no target sources selected.")
         return
 
     event_severity = window.derive_glitch_severity(glitch_data)
@@ -130,9 +158,31 @@ def maybe_trigger_obs_auto_refresh(window, glitch_data: dict[str, object]) -> No
     window.set_obs_busy(True)
     window._run_obs_task(
         "auto_refresh",
-        lambda: window.obs_service.refresh_source_in_scene(
-            source_name=source,
-            scene_name=scene,
-            off_on_delay_ms=obs_settings.refresh_off_on_delay_ms,
-        ),
+        lambda: _refresh_multiple_sources(window, source_list or [source], scene, obs_settings.refresh_off_on_delay_ms),
     )
+
+
+def _refresh_multiple_sources(window, sources: list[str], scene: str, delay_ms: int) -> tuple[bool, str]:
+    unique_sources: list[str] = []
+    for source in sources:
+        cleaned = str(source or "").strip()
+        if cleaned and cleaned not in unique_sources:
+            unique_sources.append(cleaned)
+    messages: list[str] = []
+    failures: list[str] = []
+    for source_name in unique_sources:
+        ok, message = window.obs_service.refresh_source_in_scene(
+            source_name=source_name,
+            scene_name=scene,
+            off_on_delay_ms=delay_ms,
+        )
+        if ok:
+            messages.append(message)
+        else:
+            failures.append(f"{source_name}: {message}")
+    if failures:
+        summary = "; ".join(messages) if messages else "No targets refreshed."
+        return False, f"{summary} Failures: {' | '.join(failures)}"
+    if len(messages) == 1:
+        return True, messages[0]
+    return True, f"Refreshed {len(messages)} OBS targets: {', '.join(unique_sources)}."

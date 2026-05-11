@@ -25,6 +25,8 @@ def templates_dirty(window) -> bool:
             current.ongoing != saved.ongoing,
             window.template_rebuild_response.text().strip()
             != window.settings.chat_commands.rebuild_response_template,
+            window.template_rebuild_completed_response.text().strip()
+            != window.settings.chat_commands.rebuild_completed_response_template,
         )
     )
 
@@ -36,6 +38,9 @@ def apply_templates_to_controls(window) -> None:
     window.template_first_severe.setPlainText(templates.first_severe)
     window.template_ongoing.setPlainText(templates.ongoing)
     window.template_rebuild_response.setText(window.settings.chat_commands.rebuild_response_template)
+    window.template_rebuild_completed_response.setText(
+        window.settings.chat_commands.rebuild_completed_response_template
+    )
 
 
 def reset_template_to_default(window, template_key: str) -> None:

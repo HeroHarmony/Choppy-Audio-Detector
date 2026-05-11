@@ -149,7 +149,8 @@ class ChatCommandSettings:
     rebuild_command: str = "!choppy rebuild"
     clip_command: str = "!choppy clip"
     switch_device_command_prefix: str = "!choppy device"
-    rebuild_response_template: str = "Baseline relearn started."
+    rebuild_response_template: str = "Rebuilding baseline profile."
+    rebuild_completed_response_template: str = "Baseline profile created."
     allowed_chat_users: list[str] = field(default_factory=list)
     allow_broadcaster: bool = True
     allow_moderators: bool = True
@@ -177,6 +178,9 @@ class ChatCommandSettings:
             ),
             rebuild_response_template=str(
                 data.get("rebuild_response_template") or cls.rebuild_response_template
+            ),
+            rebuild_completed_response_template=str(
+                data.get("rebuild_completed_response_template") or cls.rebuild_completed_response_template
             ),
             allowed_chat_users=[str(user).strip().lower() for user in users if str(user).strip()],
             allow_broadcaster=bool(data.get("allow_broadcaster", True)),
@@ -349,6 +353,13 @@ class AppSettings:
         self.chat_commands.rebuild_response_template = (
             str(self.chat_commands.rebuild_response_template or ChatCommandSettings.rebuild_response_template).strip()
             or ChatCommandSettings.rebuild_response_template
+        )
+        self.chat_commands.rebuild_completed_response_template = (
+            str(
+                self.chat_commands.rebuild_completed_response_template
+                or ChatCommandSettings.rebuild_completed_response_template
+            ).strip()
+            or ChatCommandSettings.rebuild_completed_response_template
         )
         self.log_settings.log_retention_days = max(1, int(self.log_settings.log_retention_days or 30))
         self.log_settings.log_window_retention_minutes = max(

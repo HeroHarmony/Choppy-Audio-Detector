@@ -44,6 +44,7 @@ class DetectorRuntime:
         self._monitoring_started_at = 0.0
         self._last_clip_result = ""
         self._last_clip_result_at = 0.0
+        self._pending_baseline_rebuild: dict[str, object] | None = None
 
     @property
     def is_running(self) -> bool:
@@ -53,6 +54,52 @@ class DetectorRuntime:
     def emit(self, event_type: str, **payload: Any) -> None:
         if self.event_handler:
             self.event_handler(event_type, payload)
+
+        if event_type == "baseline.established":
+            with self.lock:
+                pending = self._pending_baseline_rebuild
+                self._pending_baseline_rebuild = None
+            if pending and self.event_handler:
+                completion_payload = {
+                    "source": pending.get("source", "unknown"),
+                    "user": pending.get("user"),
+                    "requested_at": pending.get("requested_at"),
+                    "completed_at": time.time(),
+                    "sample_count": payload.get("sample_count"),
+                    "clean_window_seconds": payload.get("clean_window_seconds"),
+                    "rms_cv": payload.get("rms_cv"),
+                }
+                self.event_handler("baseline.rebuild_completed", completion_payload)
+                self.file_logger.log(
+                    "info",
+                    "baseline.rebuild_completed",
+                    source=completion_payload["source"],
+                    user=completion_payload["user"],
+                    sample_count=completion_payload["sample_count"],
+                    clean_window_seconds=completion_payload["clean_window_seconds"],
+                    rms_cv=completion_payload["rms_cv"],
+                )
+
+        if event_type in {"monitoring.stopped", "monitoring.stopped_by_request", "monitoring.error", "audio.stream_error", "detector.error"}:
+            with self.lock:
+                pending = self._pending_baseline_rebuild
+                self._pending_baseline_rebuild = None
+            if pending and self.event_handler:
+                aborted_payload = {
+                    "source": pending.get("source", "unknown"),
+                    "user": pending.get("user"),
+                    "requested_at": pending.get("requested_at"),
+                    "aborted_at": time.time(),
+                    "reason": event_type,
+                }
+                self.event_handler("baseline.rebuild_aborted", aborted_payload)
+                self.file_logger.log(
+                    "warn",
+                    "baseline.rebuild_aborted",
+                    source=aborted_payload["source"],
+                    user=aborted_payload["user"],
+                    reason=event_type,
+                )
 
     def start(self, source: str = "gui") -> bool:
         with self.lock:
@@ -378,7 +425,18 @@ class DetectorRuntime:
             self.emit("baseline.rebuild_failed", source=source, user=user, error=message)
             self.file_logger.log("error", "baseline.rebuild_failed", source=source, user=user, error=message)
             return False, message
-        rebuild_fn(reason=source)
+        with self.lock:
+            self._pending_baseline_rebuild = {
+                "source": source,
+                "user": user,
+                "requested_at": time.time(),
+            }
+        try:
+            rebuild_fn(reason=source)
+        except Exception:
+            with self.lock:
+                self._pending_baseline_rebuild = None
+            raise
         return True, "Baseline relearn started."
 
     def switch_device(self, selection_index: int, source: str = "gui", user: str | None = None) -> tuple[bool, str]:

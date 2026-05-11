@@ -2307,7 +2307,11 @@ class MainWindow(QMainWindow):
         self.settings.alert_templates = templates
         rebuild_template = self.template_rebuild_response.text().strip()
         self.settings.chat_commands.rebuild_response_template = (
-            rebuild_template or "Baseline relearn started."
+            rebuild_template or "Rebuilding baseline profile."
+        )
+        rebuild_done_template = self.template_rebuild_completed_response.text().strip()
+        self.settings.chat_commands.rebuild_completed_response_template = (
+            rebuild_done_template or "Baseline profile created."
         )
         save_settings(self.settings)
         self.update_command_service()
@@ -2990,6 +2994,15 @@ class MainWindow(QMainWindow):
         if event_type == "baseline.rebuild_requested":
             source = str(data.get("source") or data.get("reason") or "unknown")
             return f"Baseline relearn requested ({source})."
+        if event_type == "baseline.rebuild_completed":
+            source = str(data.get("source") or "unknown")
+            user = str(data.get("user") or "unknown")
+            return f"Baseline relearn completed ({source}, user={user})."
+        if event_type == "baseline.rebuild_aborted":
+            source = str(data.get("source") or "unknown")
+            user = str(data.get("user") or "unknown")
+            reason = str(data.get("reason") or "unknown")
+            return f"Baseline relearn aborted ({source}, user={user}, reason={reason})."
         if event_type == "baseline.rebuild_failed":
             return f"Baseline relearn failed: {data.get('error')}"
         if event_type == "clip.captured":

@@ -42,9 +42,15 @@ def build_responses_tab(window) -> None:
     form.addRow("First severe", _template_row(window, window.template_first_severe, "first_severe"))
     form.addRow("Ongoing", _template_row(window, window.template_ongoing, "ongoing"))
     window.template_rebuild_response = QLineEdit()
-    window.template_rebuild_response.setPlaceholderText("Baseline relearn started.")
+    window.template_rebuild_response.setPlaceholderText("Rebuilding baseline profile.")
     window.template_rebuild_response.setToolTip("Twitch chat response for !choppy rebuild. Token: {user}")
     form.addRow("Rebuild reply", window.template_rebuild_response)
+    window.template_rebuild_completed_response = QLineEdit()
+    window.template_rebuild_completed_response.setPlaceholderText("Baseline profile created.")
+    window.template_rebuild_completed_response.setToolTip(
+        "Twitch chat response when a rebuild initiated from chat completes. Token: {user}"
+    )
+    form.addRow("Rebuild done reply", window.template_rebuild_completed_response)
     left_col.addLayout(form)
 
     button_row = QHBoxLayout()

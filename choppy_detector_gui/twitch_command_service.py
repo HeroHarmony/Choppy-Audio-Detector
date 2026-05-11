@@ -48,6 +48,8 @@ class TwitchCommandService:
         self.thread: threading.Thread | None = None
         self.running = False
         self._connect_retry_count = 0
+        self._rebuild_followup_lock = threading.Lock()
+        self._rebuild_followup_serial_by_user: dict[str, int] = {}
 
     def start(self) -> None:
         if self.running or not self.settings.chat_commands.chat_commands_enabled:
@@ -246,6 +248,7 @@ class TwitchCommandService:
         if action == "rebuild_baseline":
             ok, message = self.runtime.rebuild_baseline(source="twitch", user=username)
             if ok:
+                self._schedule_rebuild_followup(username)
                 return self._render_rebuild_response(username=username)
             return f"Could not rebuild baseline: {message}"
         if action == "capture_clip":
@@ -254,6 +257,59 @@ class TwitchCommandService:
                 return message
             return f"Could not capture clip: {message}"
         return ""
+
+    def _schedule_rebuild_followup(self, username: str) -> None:
+        user_key = str(username or "").strip().lower() or "unknown"
+        with self._rebuild_followup_lock:
+            serial = int(self._rebuild_followup_serial_by_user.get(user_key, 0)) + 1
+            self._rebuild_followup_serial_by_user[user_key] = serial
+        thread = threading.Thread(
+            target=self._await_rebuild_and_notify,
+            name=f"rebuild-followup-{user_key}",
+            daemon=True,
+            args=(user_key, serial),
+        )
+        thread.start()
+
+    def _await_rebuild_and_notify(self, user_key: str, serial: int) -> None:
+        deadline = time.monotonic() + 120.0
+        saw_unlocked = False
+
+        while time.monotonic() < deadline and self.running:
+            with self._rebuild_followup_lock:
+                current = int(self._rebuild_followup_serial_by_user.get(user_key, 0))
+            if current != serial:
+                return
+
+            snap = self.runtime.status_snapshot()
+            running = bool(snap.get("running", False))
+            locked = bool(snap.get("baseline_established", False))
+
+            if not running:
+                break
+            if not locked:
+                saw_unlocked = True
+            elif saw_unlocked and locked:
+                template = str(
+                    self.settings.chat_commands.rebuild_completed_response_template
+                    or "Baseline profile created."
+                ).strip()
+                try:
+                    message = template.format(user=user_key)
+                except Exception:
+                    message = template
+                if self.settings.chat_commands.send_command_responses:
+                    self.send_response(message[:500])
+                return
+            time.sleep(0.5)
+
+        # Timeout/aborted path for the latest request for this user.
+        with self._rebuild_followup_lock:
+            current = int(self._rebuild_followup_serial_by_user.get(user_key, 0))
+        if current != serial:
+            return
+        if self.settings.chat_commands.send_command_responses:
+            self.send_response("Baseline rebuild did not complete."[:500])
 
     def _render_status_response(self, *, full: bool) -> str:
         snap = self.runtime.status_snapshot()
@@ -323,7 +379,7 @@ class TwitchCommandService:
     def _render_rebuild_response(self, *, username: str) -> str:
         template = str(self.settings.chat_commands.rebuild_response_template or "").strip()
         if not template:
-            template = "Baseline relearn started."
+            template = "Rebuilding baseline profile."
         try:
             rendered = template.format(user=username)
         except Exception:

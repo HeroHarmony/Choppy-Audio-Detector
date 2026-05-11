@@ -102,6 +102,20 @@ class LoopAlertProjection:
     qualifying_events_per_loop: int
 
 
+@dataclass
+class ProdAlertSimulation:
+    trigger: bool
+    mode: str
+    first_counted_ms: int
+    first_fast_alert_ms: int
+    first_standard_alert_ms: int
+    counted_detection_count: int
+    dedup_suppressed_count: int
+    max_fast_count: int
+    max_standard_count: int
+    blocker_summary: str
+
+
 def _project_loop_alert(result: PlaygroundAnalysisResult, settings: AppSettings) -> LoopAlertProjection:
     events_template = sorted(
         (
@@ -187,6 +201,161 @@ def _project_loop_alert(result: PlaygroundAnalysisResult, settings: AppSettings)
     )
 
 
+def _simulate_prod_alert_run(
+    result: PlaygroundAnalysisResult,
+    settings: AppSettings,
+) -> tuple[ProdAlertSimulation, list[PlaygroundTelemetryRow], list[PlaygroundTelemetryRow]]:
+    alert = settings.advanced_alert_config if isinstance(settings.advanced_alert_config, dict) else {}
+    confidence_threshold = float(alert.get("confidence_threshold", 70.0))
+    detection_window_ms = int(round(float(alert.get("detection_window_seconds", 120.0)) * 1000.0))
+    detections_for_alert = max(1, int(alert.get("detections_for_alert", 6)))
+    fast_min_conf = float(alert.get("fast_alert_min_confidence", 75.0))
+    fast_window_ms = int(round(float(alert.get("fast_alert_window_seconds", 15.0)) * 1000.0))
+    fast_burst_required = max(1, int(alert.get("fast_alert_burst_detections", 4)))
+    clean_reset_ms = int(round(float(alert.get("clean_audio_reset_seconds", 60.0)) * 1000.0))
+
+    high_conf_rows = [
+        row for row in result.rows if row.high_confidence and not row.suppressed_by_warmup
+    ]
+    counted_rows = [
+        row for row in result.rows
+        if row.deduped_detection and row.high_confidence and not row.suppressed_by_warmup
+    ]
+    dedup_suppressed_rows = [
+        row for row in result.rows
+        if row.high_confidence and not row.deduped_detection and not row.suppressed_by_warmup
+    ]
+
+    standard_hits: deque[int] = deque()
+    fast_hits: deque[int] = deque()
+    max_standard_count = 0
+    max_fast_count = 0
+    first_counted_ms = counted_rows[0].start_ms if counted_rows else -1
+    first_fast_alert_ms = -1
+    first_standard_alert_ms = -1
+
+    for row in counted_rows:
+        event_time_ms = int(row.start_ms)
+        conf_pct = float(row.confidence_pct)
+        if conf_pct >= fast_min_conf:
+            fast_hits.append(event_time_ms)
+            while fast_hits and (event_time_ms - fast_hits[0]) > fast_window_ms:
+                fast_hits.popleft()
+            max_fast_count = max(max_fast_count, len(fast_hits))
+            if first_fast_alert_ms < 0 and len(fast_hits) >= fast_burst_required:
+                first_fast_alert_ms = event_time_ms
+
+        if conf_pct >= confidence_threshold:
+            if standard_hits and clean_reset_ms > 0 and (event_time_ms - standard_hits[-1]) > clean_reset_ms:
+                standard_hits.clear()
+            standard_hits.append(event_time_ms)
+            while standard_hits and (event_time_ms - standard_hits[0]) > detection_window_ms:
+                standard_hits.popleft()
+            max_standard_count = max(max_standard_count, len(standard_hits))
+            if first_standard_alert_ms < 0 and len(standard_hits) >= detections_for_alert:
+                first_standard_alert_ms = event_time_ms
+
+    if first_fast_alert_ms >= 0 and (first_standard_alert_ms < 0 or first_fast_alert_ms <= first_standard_alert_ms):
+        trigger = True
+        mode = "fast"
+    elif first_standard_alert_ms >= 0:
+        trigger = True
+        mode = "standard"
+    else:
+        trigger = False
+        mode = "none"
+
+    if trigger:
+        blocker_summary = "none"
+    elif not high_conf_rows:
+        blocker_summary = "no_high_conf_windows"
+    elif not counted_rows:
+        if dedup_suppressed_rows:
+            blocker_summary = "all_high_conf_windows_dedup_suppressed"
+        else:
+            blocker_summary = "all_high_conf_windows_warmup_suppressed"
+    else:
+        blocker_parts: list[str] = []
+        if first_fast_alert_ms < 0:
+            blocker_parts.append(f"fast_peak_{max_fast_count}_of_{fast_burst_required}")
+        if first_standard_alert_ms < 0:
+            blocker_parts.append(f"standard_peak_{max_standard_count}_of_{detections_for_alert}")
+        if dedup_suppressed_rows:
+            blocker_parts.append(f"dedup_suppressed_{len(dedup_suppressed_rows)}")
+        blocker_summary = ",".join(blocker_parts) if blocker_parts else "below_alert_threshold"
+
+    return (
+        ProdAlertSimulation(
+            trigger=trigger,
+            mode=mode,
+            first_counted_ms=first_counted_ms,
+            first_fast_alert_ms=first_fast_alert_ms,
+            first_standard_alert_ms=first_standard_alert_ms,
+            counted_detection_count=len(counted_rows),
+            dedup_suppressed_count=len(dedup_suppressed_rows),
+            max_fast_count=max_fast_count,
+            max_standard_count=max_standard_count,
+            blocker_summary=blocker_summary,
+        ),
+        counted_rows,
+        dedup_suppressed_rows,
+    )
+
+
+def _format_event_windows(rows: list[PlaygroundTelemetryRow], *, limit: int = 60) -> str:
+    if not rows:
+        return "none"
+    return ";".join(
+        f"{row.start_ms}-{row.end_ms}@{row.confidence_pct:.1f}%|{row.methods or '-'}"
+        for row in rows[:limit]
+    )
+
+
+def _format_event_clusters(rows: list[PlaygroundTelemetryRow], *, gap_ms: int = 1000, limit: int = 60) -> str:
+    if not rows:
+        return "none"
+    ordered = sorted(rows, key=lambda row: row.start_ms)
+    cluster_items: list[str] = []
+    cluster_start = ordered[0].start_ms
+    cluster_end = ordered[0].end_ms
+    cluster_count = 1
+    cluster_peak = float(ordered[0].confidence_pct)
+    cluster_methods: set[str] = {ordered[0].methods or "-"}
+    for row in ordered[1:]:
+        if row.start_ms - cluster_end <= gap_ms:
+            cluster_end = max(cluster_end, row.end_ms)
+            cluster_count += 1
+            cluster_peak = max(cluster_peak, float(row.confidence_pct))
+            cluster_methods.add(row.methods or "-")
+            continue
+        cluster_items.append(
+            f"{cluster_start}-{cluster_end}|n:{cluster_count}|peak:{cluster_peak:.1f}|methods:{'+'.join(sorted(cluster_methods))}"
+        )
+        cluster_start = row.start_ms
+        cluster_end = row.end_ms
+        cluster_count = 1
+        cluster_peak = float(row.confidence_pct)
+        cluster_methods = {row.methods or "-"}
+    cluster_items.append(
+        f"{cluster_start}-{cluster_end}|n:{cluster_count}|peak:{cluster_peak:.1f}|methods:{'+'.join(sorted(cluster_methods))}"
+    )
+    return ";".join(cluster_items[:limit]) or "none"
+
+
+def _summarize_reason_counts(rows: list[PlaygroundTelemetryRow], *, limit: int = 12) -> str:
+    counts: dict[str, int] = {}
+    for row in rows:
+        for raw_reason in str(row.reasons or "").split(";"):
+            reason = raw_reason.strip()
+            if not reason:
+                continue
+            counts[reason] = counts.get(reason, 0) + 1
+    if not counts:
+        return "none"
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ",".join(f"{reason}:{count}" for reason, count in ranked[:limit])
+
+
 def write_compact_report(
     result: PlaygroundAnalysisResult,
     settings: AppSettings,
@@ -228,6 +397,7 @@ def build_compact_report(
     marker_window_ms: int = 450,
     marker_latency_ms: int = 270,
 ) -> str:
+    extended_report = True
     rows = result.rows
     high_conf_rows = [r for r in rows if r.high_confidence]
     dedup_rows = [r for r in rows if r.deduped_detection]
@@ -270,9 +440,18 @@ def build_compact_report(
     else:
         outcome = "FN"
     loop_projection = _project_loop_alert(result, settings)
+    prod_simulation, counted_rows, dedup_suppressed_rows = _simulate_prod_alert_run(result, settings)
     loop_projection_pass = (
         loop_projection.trigger if expected_glitch else (not loop_projection.trigger)
     )
+    alert_cfg = settings.advanced_alert_config if isinstance(settings.advanced_alert_config, dict) else {}
+    confidence_threshold = float(alert_cfg.get("confidence_threshold", 70.0))
+    detections_for_alert = max(1, int(alert_cfg.get("detections_for_alert", 6)))
+    detection_window_ms = int(round(float(alert_cfg.get("detection_window_seconds", 120.0)) * 1000.0))
+    fast_min_conf = float(alert_cfg.get("fast_alert_min_confidence", 75.0))
+    fast_window_ms = int(round(float(alert_cfg.get("fast_alert_window_seconds", 15.0)) * 1000.0))
+    fast_burst_required = max(1, int(alert_cfg.get("fast_alert_burst_detections", 4)))
+    clean_reset_ms = int(round(float(alert_cfg.get("clean_audio_reset_seconds", 60.0)) * 1000.0))
 
     confidence_values = np.array([float(r.confidence_pct) for r in rows], dtype=np.float64)
     nonzero_conf = int(np.sum(confidence_values > 0.0))
@@ -314,7 +493,7 @@ def build_compact_report(
         dedup_gap_text = ",".join(str(g) for g in gaps[:20])
 
     lines = [
-        "CHOPPY_PLAYGROUND_REPORT v2",
+        "CHOPPY_PLAYGROUND_REPORT v3",
         f"sample={Path(result.file.path).name}",
         (
             f"audio=duration_ms:{result.file.duration_ms},sample_rate:{result.file.sample_rate},"
@@ -354,6 +533,29 @@ def build_compact_report(
             f"events_per_loop:{loop_projection.qualifying_events_per_loop},"
             f"loop_duration_ms:{loop_projection.loop_duration_ms},"
             f"judgement:{'pass' if loop_projection_pass else 'fail'}"
+        ),
+        (
+            "prod_alert_simulation="
+            f"trigger:{1 if prod_simulation.trigger else 0},"
+            f"mode:{prod_simulation.mode},"
+            f"first_counted_ms:{prod_simulation.first_counted_ms},"
+            f"first_fast_alert_ms:{prod_simulation.first_fast_alert_ms},"
+            f"first_standard_alert_ms:{prod_simulation.first_standard_alert_ms},"
+            f"counted_detections:{prod_simulation.counted_detection_count},"
+            f"dedup_suppressed:{prod_simulation.dedup_suppressed_count},"
+            f"max_fast_count:{prod_simulation.max_fast_count},"
+            f"max_standard_count:{prod_simulation.max_standard_count},"
+            f"blockers:{prod_simulation.blocker_summary}"
+        ),
+        (
+            "alert_config="
+            f"confidence_threshold:{confidence_threshold:.1f},"
+            f"detections_for_alert:{detections_for_alert},"
+            f"detection_window_ms:{detection_window_ms},"
+            f"fast_min_confidence:{fast_min_conf:.1f},"
+            f"fast_burst_required:{fast_burst_required},"
+            f"fast_window_ms:{fast_window_ms},"
+            f"clean_audio_reset_ms:{clean_reset_ms}"
         ),
         f"active_methods={active_methods}",
         (
@@ -610,6 +812,12 @@ def build_compact_report(
                     f"subtle_modulation:{1 if bool(alert_cfg.get('enable_subtle_modulation_promotion', False)) else 0},"
                     f"burst_episode:{1 if bool(alert_cfg.get('enable_burst_episode_promotion', False)) else 0}"
                 ),
+                f"counted_detection_windows={_format_event_windows(counted_rows)}",
+                f"dedup_suppressed_windows={_format_event_windows(dedup_suppressed_rows)}",
+                f"counted_cluster_summary={_format_event_clusters(counted_rows)}",
+                f"dedup_suppressed_cluster_summary={_format_event_clusters(dedup_suppressed_rows)}",
+                f"counted_reason_summary={_summarize_reason_counts(counted_rows)}",
+                f"dedup_suppressed_reason_summary={_summarize_reason_counts(dedup_suppressed_rows)}",
             ]
         )
     else:

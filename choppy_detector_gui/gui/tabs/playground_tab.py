@@ -132,20 +132,12 @@ def build_playground_tab(window) -> None:
     )
     controls_layout.addWidget(window.playground_also_prod_timing, 1, 2, 1, 2)
 
-    window.playground_extended_report = QCheckBox("Extended report")
-    window.playground_extended_report.setChecked(True)
-    window.playground_extended_report.setToolTip(
-        "When enabled, include deeper diagnostics in report output\n"
-        "(near-threshold windows, clusters, feature ranges, and transition summaries)."
-    )
-    controls_layout.addWidget(window.playground_extended_report, 1, 4, 1, 2)
-
     window.playground_analyze_button = QPushButton("Analyze File")
     window.playground_analyze_button.clicked.connect(window.run_playground_analysis)
     window.playground_analyze_button.setToolTip(
-        "Run offline detector analysis on the loaded WAV file and save a compact report."
+        "Run offline detector analysis on the loaded WAV file and save a full diagnostic report."
     )
-    controls_layout.addWidget(window.playground_analyze_button, 1, 6, 1, 2)
+    controls_layout.addWidget(window.playground_analyze_button, 1, 4, 1, 4)
 
     layout.addWidget(controls)
 

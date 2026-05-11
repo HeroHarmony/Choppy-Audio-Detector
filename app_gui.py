@@ -1137,7 +1137,6 @@ class MainWindow(QMainWindow):
         self.playground_file_path.setEnabled(not controls_locked)
         self.playground_preview_on_done.setEnabled(has_file and not controls_locked)
         self.playground_also_prod_timing.setEnabled(has_file and not controls_locked)
-        self.playground_extended_report.setEnabled(has_file and not controls_locked)
         self.playground_also_prod_timing.setToolTip(
             "When enabled and current timing is not "
             f"{compare_window_ms}/{compare_step_ms},\n"
@@ -1150,9 +1149,9 @@ class MainWindow(QMainWindow):
         else:
             self.playground_analyze_button.setText("Analyze Batch" if batch_mode else "Analyze File")
             self.playground_analyze_button.setToolTip(
-                "Run offline detector analysis on loaded WAV files and save compact report(s)."
+                "Run offline detector analysis on loaded WAV files and save full diagnostic report(s)."
                 if batch_mode
-                else "Run offline detector analysis on the loaded WAV file and save a compact report."
+                else "Run offline detector analysis on the loaded WAV file and save a full diagnostic report."
             )
             self.playground_analyze_button.setEnabled(has_file and not controls_locked)
         self.playground_preview_button.setEnabled(
@@ -2048,9 +2047,22 @@ class MainWindow(QMainWindow):
             if baseline_sidecar is not None:
                 self.append_console(f"Live baseline profile saved: {baseline_sidecar}")
             self.load_playground_files([str(saved_wav)])
-            self.playground_analysis_summary.setPlainText(
-                "Live recording saved. Add markers if needed, then run Analyze File."
+            analyze_now = QMessageBox.question(
+                self,
+                "Analyze Live Recording",
+                "Live recording and baseline profile saved.\n\nAnalyze this new recording now and generate a report?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
+            if analyze_now == QMessageBox.Yes:
+                self.playground_analysis_summary.setPlainText(
+                    "Live recording saved. Starting analysis..."
+                )
+                QTimer.singleShot(0, self.run_playground_analysis)
+            else:
+                self.playground_analysis_summary.setPlainText(
+                    "Live recording saved. Add markers if needed, then run Analyze File."
+                )
         except Exception as exc:
             QMessageBox.warning(self, "Live report save failed", str(exc))
         finally:
@@ -2158,7 +2170,6 @@ class MainWindow(QMainWindow):
             reports_dir=Path.cwd() / "Reports",
             expected_glitch=expected_glitch,
             report_stem=report_stem,
-            extended_report=bool(self.playground_extended_report.isChecked()),
             markers_ms=markers_ms,
             marker_window_ms=int(self.playground_marker_match_ms_spin.value()),
             marker_latency_ms=int(self.playground_marker_latency_ms_spin.value()),

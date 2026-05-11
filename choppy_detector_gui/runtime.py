@@ -11,6 +11,7 @@ import time
 import wave
 from datetime import datetime, timezone
 from collections.abc import Callable
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,9 @@ class DetectorRuntime:
         self.lock = threading.RLock()
         self._last_clip_capture_at = 0.0
         self.clip_min_interval_seconds = 3.0
+        self._monitoring_started_at = 0.0
+        self._last_clip_result = ""
+        self._last_clip_result_at = 0.0
 
     @property
     def is_running(self) -> bool:
@@ -96,6 +100,7 @@ class DetectorRuntime:
                 kwargs={"source": source},
             )
             self.thread.start()
+            self._monitoring_started_at = time.time()
             self.emit(
                 "monitoring.started",
                 source=source,
@@ -131,11 +136,15 @@ class DetectorRuntime:
             message = "Clip capture is switched off in Settings."
             self.emit("clip.capture_failed", source=source, user=user, reason="capture_disabled", error=message)
             self.file_logger.log("warn", "clip.capture_failed", source=source, user=user, reason="capture_disabled")
+            self._last_clip_result = "failed:capture_disabled"
+            self._last_clip_result_at = time.time()
             return False, message
         if detector is None or not running:
             message = "Monitoring is not running."
             self.emit("clip.capture_failed", source=source, user=user, reason="monitoring_stopped", error=message)
             self.file_logger.log("warn", "clip.capture_failed", source=source, user=user, reason="monitoring_stopped")
+            self._last_clip_result = "failed:monitoring_stopped"
+            self._last_clip_result_at = time.time()
             return False, message
         if elapsed < min_interval:
             wait_seconds = max(0.0, min_interval - elapsed)
@@ -156,6 +165,8 @@ class DetectorRuntime:
                 reason="cooldown_active",
                 seconds=f"{wait_seconds:.1f}",
             )
+            self._last_clip_result = "failed:cooldown_active"
+            self._last_clip_result_at = time.time()
             return False, message
 
         capture_fn = getattr(detector, "capture_recent_audio_clip", None)
@@ -163,6 +174,8 @@ class DetectorRuntime:
             message = "Detector does not support clip capture."
             self.emit("clip.capture_failed", source=source, user=user, reason="unsupported", error=message)
             self.file_logger.log("error", "clip.capture_failed", source=source, user=user, reason="unsupported")
+            self._last_clip_result = "failed:unsupported"
+            self._last_clip_result_at = time.time()
             return False, message
 
         try:
@@ -178,6 +191,8 @@ class DetectorRuntime:
                 reason="capture_exception",
                 error=str(exc),
             )
+            self._last_clip_result = "failed:capture_exception"
+            self._last_clip_result_at = time.time()
             return False, message
         if not isinstance(clip_payload, dict):
             state_fn = getattr(detector, "clip_capture_state", None)
@@ -221,6 +236,8 @@ class DetectorRuntime:
                 callback_age_seconds=round(float(callback_age), 3) if callback_age is not None else "",
                 stale_active=stale_active,
             )
+            self._last_clip_result = "failed:buffer_not_ready"
+            self._last_clip_result_at = time.time()
             return False, message
 
         audio = np.asarray(clip_payload.get("audio"), dtype=np.float32)
@@ -228,6 +245,8 @@ class DetectorRuntime:
             message = "Clip buffer not ready yet."
             self.emit("clip.capture_failed", source=source, user=user, reason="buffer_empty", error=message)
             self.file_logger.log("warn", "clip.capture_failed", source=source, user=user, reason="buffer_empty")
+            self._last_clip_result = "failed:buffer_empty"
+            self._last_clip_result_at = time.time()
             return False, message
 
         try:
@@ -290,6 +309,8 @@ class DetectorRuntime:
                 reason="io_error",
                 error=str(exc),
             )
+            self._last_clip_result = "failed:io_error"
+            self._last_clip_result_at = time.time()
             return False, message
 
         with self.lock:
@@ -312,6 +333,8 @@ class DetectorRuntime:
             meta=str(meta_path),
             seconds=metadata["clip_seconds"],
         )
+        self._last_clip_result = f"ok:{wav_name}"
+        self._last_clip_result_at = time.time()
         return True, f"Clip saved: {wav_name}"
 
     def stop(self, source: str = "gui") -> None:
@@ -329,6 +352,7 @@ class DetectorRuntime:
         with self.lock:
             self.detector = None
             self.thread = None
+            self._monitoring_started_at = 0.0
 
         self.emit("monitoring.stopped_by_request", source=source)
         self.file_logger.log("info", "monitoring.stopped", source=source)
@@ -442,6 +466,114 @@ class DetectorRuntime:
             "rms_dbfs": float(levels.get("rms_dbfs", -120.0)),
             "timestamp": float(levels.get("timestamp", 0.0)),
         }
+
+    def status_snapshot(self) -> dict[str, object]:
+        now = time.time()
+        with self.lock:
+            detector = self.detector
+            running = bool(detector and getattr(detector, "running", False))
+            started_at = float(self._monitoring_started_at or 0.0)
+            last_clip_result = str(self._last_clip_result or "")
+            last_clip_result_at = float(self._last_clip_result_at or 0.0)
+
+        snapshot: dict[str, object] = {
+            "running": running,
+            "device": self.device_summary(),
+            "channel_index": int(self.settings.selected_channel_index) + 1,
+            "monitoring_uptime_seconds": max(0.0, now - started_at) if started_at > 0 else 0.0,
+            "clip_enabled": bool(self.settings.enable_clip_capture_buffer),
+            "last_clip_result": last_clip_result,
+            "last_clip_age_seconds": max(0.0, now - last_clip_result_at) if last_clip_result_at > 0 else None,
+        }
+        if detector is None or not running:
+            return snapshot
+
+        import live_analysis
+
+        with detector.lock:
+            sample_rate = int(getattr(detector, "sample_rate", 0) or 0)
+            stream_channels = int(getattr(detector, "stream_channels", 0) or 0)
+            last_callback_at = float(getattr(detector, "last_audio_callback_time", 0.0) or 0.0)
+            audio_stale_active = bool(getattr(detector, "audio_stale_active", False))
+            stream_restart_requested = bool(getattr(detector, "stream_restart_requested", False))
+            baseline_stats = dict(getattr(detector, "baseline_stats", {}) or {})
+            detection_history = list(getattr(detector, "detection_history", []) or [])
+            last_alert_time = float(getattr(detector, "last_alert_time", 0.0) or 0.0)
+            twitch_enabled = bool(getattr(detector, "twitch_enabled", False))
+            twitch_bot = getattr(detector, "twitch_bot", None)
+
+        levels = self.latest_audio_levels() or {"peak_dbfs": -120.0, "rms_dbfs": -120.0, "timestamp": 0.0}
+        callback_age = max(0.0, now - last_callback_at) if last_callback_at > 0 else None
+        rms_history: list[float] = []
+        for value in list(baseline_stats.get("rms_history", [])):
+            if isinstance(value, Real):
+                as_float = float(value)
+                if np.isfinite(as_float):
+                    rms_history.append(as_float)
+        rms_cv = None
+        if rms_history:
+            mean = float(np.mean(np.asarray(rms_history, dtype=np.float64)))
+            std = float(np.std(np.asarray(rms_history, dtype=np.float64)))
+            rms_cv = std / (mean + 1e-12) if mean > 0 else None
+
+        alert_cfg = live_analysis.ALERT_CONFIG
+        threshold = float(alert_cfg.get("confidence_threshold", 70))
+        detection_window_seconds = float(alert_cfg.get("detection_window_seconds", 120))
+        fast_window_seconds = float(alert_cfg.get("fast_alert_window_seconds", 15))
+        fast_min_conf = float(alert_cfg.get("fast_alert_min_confidence", 75))
+        detections_for_alert = int(alert_cfg.get("detections_for_alert", 6))
+        fast_required = int(alert_cfg.get("fast_alert_burst_detections", 4))
+        cooldown_seconds = float(alert_cfg.get("alert_cooldown_ms", self.settings.alert_cooldown_ms)) / 1000.0
+
+        detect_cutoff = now - detection_window_seconds
+        fast_cutoff = now - fast_window_seconds
+        recent_high = [
+            det for det in detection_history
+            if float(det.get("timestamp", 0.0) or 0.0) > detect_cutoff
+            and float(det.get("confidence", 0.0) or 0.0) >= threshold
+        ]
+        fast_hits = [
+            det for det in detection_history
+            if float(det.get("timestamp", 0.0) or 0.0) > fast_cutoff
+            and float(det.get("confidence", 0.0) or 0.0) >= fast_min_conf
+            and bool(det.get("primary_hit", False))
+        ]
+        last_detection_ts = max((float(det.get("timestamp", 0.0) or 0.0) for det in detection_history), default=0.0)
+        cooldown_remaining = max(0.0, (last_alert_time + cooldown_seconds) - now) if last_alert_time > 0 else 0.0
+
+        clip_state_fn = getattr(detector, "clip_capture_state", None)
+        clip_state = clip_state_fn() if callable(clip_state_fn) else {}
+        clip_buffer_seconds = float(clip_state.get("buffer_seconds", 0.0) or 0.0) if isinstance(clip_state, dict) else 0.0
+
+        snapshot.update(
+            {
+                "sample_rate": sample_rate,
+                "stream_channels": stream_channels,
+                "callback_age_seconds": callback_age,
+                "audio_stale_active": audio_stale_active,
+                "stream_restart_requested": stream_restart_requested,
+                "peak_dbfs": float(levels.get("peak_dbfs", -120.0)),
+                "rms_dbfs": float(levels.get("rms_dbfs", -120.0)),
+                "baseline_established": bool(baseline_stats.get("established_baseline", False)),
+                "baseline_samples": int(len(rms_history)),
+                "baseline_cv": rms_cv,
+                "baseline_clean_lock_seconds": float(alert_cfg.get("baseline_clean_lock_seconds", 20.0)),
+                "baseline_min_samples": int(alert_cfg.get("baseline_min_rms_samples", 20)),
+                "baseline_cv_max": float(alert_cfg.get("baseline_rms_cv_max", 1.0)),
+                "recent_high_conf": int(len(recent_high)),
+                "detections_for_alert": detections_for_alert,
+                "detection_window_seconds": detection_window_seconds,
+                "fast_hits": int(len(fast_hits)),
+                "fast_required": fast_required,
+                "fast_window_seconds": fast_window_seconds,
+                "cooldown_remaining_seconds": cooldown_remaining,
+                "last_detection_age_seconds": (max(0.0, now - last_detection_ts) if last_detection_ts > 0 else None),
+                "twitch_alerts_enabled": twitch_enabled,
+                "twitch_alerts_connected": bool(twitch_bot and getattr(twitch_bot, "connected", False)),
+                "clip_buffer_seconds": clip_buffer_seconds,
+            }
+        )
+        return snapshot
 
     def _run_detector(self, source: str) -> None:
         try:

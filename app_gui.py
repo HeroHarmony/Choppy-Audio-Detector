@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import math
+import numbers
 from pathlib import Path
 import re
 import sys
@@ -1017,7 +1018,7 @@ class MainWindow(QMainWindow):
                 rms_history = [
                     float(v)
                     for v in list((detector.baseline_stats or {}).get("rms_history", []))
-                    if isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) > 0.0
+                    if isinstance(v, numbers.Real) and math.isfinite(float(v)) and float(v) > 0.0
                 ]
                 established = bool((detector.baseline_stats or {}).get("established_baseline", False))
                 baseline_rms = float(detector.get_baseline_rms())

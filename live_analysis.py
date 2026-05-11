@@ -690,7 +690,7 @@ class BalancedChoppyDetector:
             return
         rms = np.sqrt(np.mean(audio**2))
         if rms > THRESHOLDS['min_audio_level']:
-            self.baseline_stats['rms_history'].append(rms)
+            self.baseline_stats['rms_history'].append(float(rms))
             if not self.baseline_stats['learning_started_at']:
                 self.baseline_stats['learning_started_at'] = now
             if (now - float(self.baseline_stats.get('last_progress_log_at') or 0.0)) >= 5.0:

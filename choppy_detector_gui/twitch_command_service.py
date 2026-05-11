@@ -182,7 +182,12 @@ class TwitchCommandService:
                 action=command.action,
             )
             try:
-                response = self.execute_command(command.action, command.device_number, message.username)
+                response = self.execute_command(
+                    command.action,
+                    command.device_number,
+                    message.username,
+                    status_full=bool(getattr(command, "status_full", False)),
+                )
             except Exception as exc:
                 self.emit(
                     "chat_commands.command_error",
@@ -201,7 +206,14 @@ class TwitchCommandService:
             if response and self.settings.chat_commands.send_command_responses:
                 self.send_response(response)
 
-    def execute_command(self, action: str, device_number: int | None, username: str) -> str:
+    def execute_command(
+        self,
+        action: str,
+        device_number: int | None,
+        username: str,
+        *,
+        status_full: bool = False,
+    ) -> str:
         if action == "start":
             self.runtime.start(source="twitch")
             return "Monitoring started."
@@ -212,8 +224,7 @@ class TwitchCommandService:
             self.runtime.restart(source="twitch")
             return "Monitoring restarted."
         if action == "status":
-            state = "running" if self.runtime.is_running else "stopped"
-            return f"Monitoring is {state}. Current device: {self.runtime.device_summary()}."
+            return self._render_status_response(full=status_full)
         if action == "list_devices":
             labels = [
                 f"{device.selection_index}: {device.name}"
@@ -243,6 +254,71 @@ class TwitchCommandService:
                 return message
             return f"Could not capture clip: {message}"
         return ""
+
+    def _render_status_response(self, *, full: bool) -> str:
+        snap = self.runtime.status_snapshot()
+        running = bool(snap.get("running", False))
+        state = "RUNNING" if running else "STOPPED"
+        device = str(snap.get("device", "unknown"))
+        channel = int(snap.get("channel_index", 1) or 1)
+
+        callback_age = snap.get("callback_age_seconds", None)
+        if callback_age is None:
+            cb_text = "n/a"
+        else:
+            cb_text = f"{float(callback_age):.1f}s"
+        audio_state = "STALE" if bool(snap.get("audio_stale_active", False)) else ("LIVE" if running else "IDLE")
+        rms_dbfs = float(snap.get("rms_dbfs", -120.0) or -120.0)
+        peak_dbfs = float(snap.get("peak_dbfs", -120.0) or -120.0)
+
+        baseline_state = "Locked" if bool(snap.get("baseline_established", False)) else "Learning"
+        baseline_samples = int(snap.get("baseline_samples", 0) or 0)
+        baseline_min_samples = int(snap.get("baseline_min_samples", 0) or 0)
+        baseline_cv = snap.get("baseline_cv", None)
+        if baseline_cv is None:
+            baseline_cv_text = "n/a"
+        else:
+            baseline_cv_text = f"{float(baseline_cv):.2f}"
+
+        recent = int(snap.get("recent_high_conf", 0) or 0)
+        need = int(snap.get("detections_for_alert", 0) or 0)
+        window_s = int(float(snap.get("detection_window_seconds", 0) or 0))
+        cooldown = float(snap.get("cooldown_remaining_seconds", 0.0) or 0.0)
+        fast_hits = int(snap.get("fast_hits", 0) or 0)
+        fast_need = int(snap.get("fast_required", 0) or 0)
+        fast_window = int(float(snap.get("fast_window_seconds", 0.0) or 0.0))
+
+        clip_enabled = bool(snap.get("clip_enabled", False))
+        clip_on_off = "ON" if clip_enabled else "OFF"
+        clip_buf = float(snap.get("clip_buffer_seconds", 0.0) or 0.0)
+        clip_last = str(snap.get("last_clip_result", "") or "none")
+
+        chat_state = "Connected" if (self.running and self.bot and getattr(self.bot, "connected", False)) else "Reconnecting"
+        if not self.running:
+            chat_state = "Stopped"
+
+        if not full:
+            return (
+                f"Status:{state} | Audio:{audio_state} cb={cb_text} rms={rms_dbfs:.1f} peak={peak_dbfs:.1f} | "
+                f"Base:{baseline_state} {baseline_samples}/{baseline_min_samples} cv={baseline_cv_text} | "
+                f"Detect:{recent}/{need} in {window_s}s cd={cooldown:.0f}s | "
+                f"Clip:{clip_on_off} {clip_buf:.1f}s | Dev:{device} ch{channel}"
+            )[:500]
+
+        uptime = float(snap.get("monitoring_uptime_seconds", 0.0) or 0.0)
+        uptime_h = int(uptime // 3600)
+        uptime_m = int((uptime % 3600) // 60)
+        uptime_s = int(uptime % 60)
+        return (
+            f"Full:{state} up={uptime_h:02d}:{uptime_m:02d}:{uptime_s:02d} | "
+            f"Dev:{device} ch{channel} sr={int(snap.get('sample_rate', 0) or 0)}Hz/{int(snap.get('stream_channels', 0) or 0)}ch | "
+            f"Audio:{audio_state} cb={cb_text} rms={rms_dbfs:.1f} peak={peak_dbfs:.1f} | "
+            f"Base:{baseline_state} s={baseline_samples}/{baseline_min_samples} cv={baseline_cv_text}<= {float(snap.get('baseline_cv_max', 0.0) or 0.0):.2f} | "
+            f"Detect:{recent}/{need}@{window_s}s fast={fast_hits}/{fast_need}@{fast_window}s cd={cooldown:.0f}s | "
+            f"Chat:{chat_state} Alerts:{'ON' if bool(snap.get('twitch_alerts_enabled', False)) else 'OFF'}/"
+            f"{'Connected' if bool(snap.get('twitch_alerts_connected', False)) else 'Disconnected'} | "
+            f"Clip:{clip_on_off} buf={clip_buf:.1f}s last={clip_last}"
+        )[:500]
 
     def _render_rebuild_response(self, *, username: str) -> str:
         template = str(self.settings.chat_commands.rebuild_response_template or "").strip()

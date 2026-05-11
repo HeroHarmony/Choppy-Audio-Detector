@@ -18,6 +18,7 @@ class ChatUser:
 class ParsedCommand:
     action: str
     device_number: int | None = None
+    status_full: bool = False
 
 
 def normalize_command(value: str) -> str:
@@ -54,6 +55,10 @@ def parse_chat_command(message: str, settings: ChatCommandSettings) -> ParsedCom
     action = exact_matches.get(text)
     if action:
         return ParsedCommand(action=action)
+
+    status_prefix = normalize_command(settings.status_command)
+    if text == f"{status_prefix} full":
+        return ParsedCommand(action="status", status_full=True)
 
     prefix = normalize_command(settings.switch_device_command_prefix)
     if text.startswith(prefix + " "):

@@ -468,6 +468,7 @@ class MainWindow(QMainWindow):
             ("alert_cooldown_ms", "Minimum time between alerts in milliseconds.", "int", 1000, 3600000, 1000),
             ("detection_window_seconds", "Window for counting detections toward an alert.", "int", 5, 600, 1),
             ("confidence_threshold", "Minimum confidence percent to count a detection.", "int", 1, 100, 1),
+            ("stream_start_warmup_ignore_seconds", "Ignore detections for this many seconds after stream start/reopen.", "float", 0.0, 30.0, 0.1),
             ("clean_audio_reset_seconds", "Seconds of clean audio before episode resets.", "int", 5, 600, 1),
             ("event_dedup_seconds", "Suppress duplicate events from one burst.", "float", 0.0, 10.0, 0.1),
             ("fast_alert_burst_detections", "Fast alert count in short window.", "int", 1, 50, 1),
@@ -532,6 +533,21 @@ class MainWindow(QMainWindow):
             ("burst_episode_max_span_seconds", "Maximum allowed time span for a promoted burst-episode cluster.", "float", 0.2, 10.0, 0.1),
             ("burst_episode_guard_window_seconds", "Guard horizon for burst-episode candidate volume.", "float", 5.0, 120.0, 0.5),
             ("burst_episode_guard_max_candidates", "Max burst-episode candidates allowed in guard horizon.", "int", 4, 200, 1),
+            ("compact_silence_cluster_min_conf", "Minimum near-threshold confidence for compact silence-burst candidates.", "float", 0.0, 1.0, 0.01),
+            ("compact_silence_cluster_max_conf", "Maximum near-threshold confidence (exclusive) for compact silence-burst candidates.", "float", 0.0, 1.0, 0.01),
+            ("compact_silence_cluster_min_silence_ratio", "Minimum silence ratio for compact silence-burst candidates.", "float", 0.0, 1.0, 0.01),
+            ("compact_silence_cluster_max_silence_ratio", "Maximum silence ratio for compact silence-burst candidates.", "float", 0.0, 1.0, 0.01),
+            ("compact_silence_cluster_min_gap_ms", "Minimum max-gap size for compact silence-burst candidates.", "int", 50, 3000, 10),
+            ("compact_silence_cluster_max_gap_count", "Maximum silence gaps allowed in a compact silence-burst candidate window.", "int", 0, 10, 1),
+            ("compact_silence_cluster_min_mod_strength", "Minimum raw modulation strength for compact silence-burst corroboration.", "float", 0.0, 20.0, 0.1),
+            ("compact_silence_cluster_min_mod_depth", "Minimum raw modulation depth for compact silence-burst corroboration.", "float", 0.0, 1.0, 0.01),
+            ("compact_silence_cluster_min_mod_concentration", "Minimum raw modulation peak concentration for compact silence-burst corroboration.", "float", 0.0, 1.0, 0.01),
+            ("compact_silence_cluster_mod_halo_seconds", "Nearby raw modulation feature horizon for compact silence-burst corroboration.", "float", 0.1, 10.0, 0.1),
+            ("compact_silence_cluster_hits_required", "Distinct hits required for compact silence-burst promotion.", "int", 2, 20, 1),
+            ("compact_silence_cluster_max_span_seconds", "Maximum allowed time span for a compact silence-burst promoted cluster.", "float", 0.1, 10.0, 0.1),
+            ("compact_silence_cluster_guard_window_seconds", "Guard horizon for compact silence-burst candidate volume.", "float", 5.0, 120.0, 0.5),
+            ("compact_silence_cluster_guard_max_candidates", "Max compact silence-burst candidates allowed in guard horizon.", "int", 2, 100, 1),
+            ("compact_silence_cluster_promotion_conf", "Confidence assigned when compact silence-burst promotion triggers.", "float", 0.0, 1.0, 0.01),
             ("subtle_sparse_min_conf", "Minimum near-threshold confidence for subtle sparse candidates.", "float", 0.0, 1.0, 0.01),
             ("subtle_sparse_max_conf", "Maximum near-threshold confidence (exclusive) for subtle sparse candidates.", "float", 0.0, 1.0, 0.01),
             ("subtle_sparse_min_silence_ratio", "Minimum local silence ratio for subtle sparse candidates.", "float", 0.0, 1.0, 0.01),
@@ -574,6 +590,13 @@ class MainWindow(QMainWindow):
             and playback_timer.isActive()
         ):
             playback_timer.start(interval_ms)
+        live_timer = getattr(self, "playground_live_timer", None)
+        if (
+            getattr(self, "_playground_live_running", False)
+            and live_timer is not None
+            and live_timer.isActive()
+        ):
+            live_timer.start(interval_ms)
 
     def set_twitch_status_badge(self, label: str, color_hex: str) -> None:
         self.twitch_badge_presenter.apply(label, color_hex)
@@ -1930,7 +1953,7 @@ class MainWindow(QMainWindow):
             return
 
         self._playground_live_running = True
-        self.playground_live_timer.start(200)
+        self.playground_live_timer.start(self._preview_timer_interval_ms())
         self.playground_live_status.setText("Recording live...")
         self.append_console(
             f"Playground live report started on {selected_device.full_label} "

@@ -555,6 +555,7 @@ def build_compact_report(
             f"fast_min_confidence:{fast_min_conf:.1f},"
             f"fast_burst_required:{fast_burst_required},"
             f"fast_window_ms:{fast_window_ms},"
+            f"stream_start_warmup_ignore_ms:{int(round(float(alert_cfg.get('stream_start_warmup_ignore_seconds', 3.0)) * 1000.0))},"
             f"clean_audio_reset_ms:{clean_reset_ms}"
         ),
         f"active_methods={active_methods}",
@@ -584,6 +585,21 @@ def build_compact_report(
             f"burst_episode_max_span_seconds:{thresholds.get('burst_episode_max_span_seconds')},"
             f"burst_episode_guard_window_seconds:{thresholds.get('burst_episode_guard_window_seconds')},"
             f"burst_episode_guard_max_candidates:{thresholds.get('burst_episode_guard_max_candidates')},"
+            f"compact_silence_cluster_min_conf:{thresholds.get('compact_silence_cluster_min_conf')},"
+            f"compact_silence_cluster_max_conf:{thresholds.get('compact_silence_cluster_max_conf')},"
+            f"compact_silence_cluster_min_silence_ratio:{thresholds.get('compact_silence_cluster_min_silence_ratio')},"
+            f"compact_silence_cluster_max_silence_ratio:{thresholds.get('compact_silence_cluster_max_silence_ratio')},"
+            f"compact_silence_cluster_min_gap_ms:{thresholds.get('compact_silence_cluster_min_gap_ms')},"
+            f"compact_silence_cluster_max_gap_count:{thresholds.get('compact_silence_cluster_max_gap_count')},"
+            f"compact_silence_cluster_min_mod_strength:{thresholds.get('compact_silence_cluster_min_mod_strength')},"
+            f"compact_silence_cluster_min_mod_depth:{thresholds.get('compact_silence_cluster_min_mod_depth')},"
+            f"compact_silence_cluster_min_mod_concentration:{thresholds.get('compact_silence_cluster_min_mod_concentration')},"
+            f"compact_silence_cluster_mod_halo_seconds:{thresholds.get('compact_silence_cluster_mod_halo_seconds')},"
+            f"compact_silence_cluster_hits_required:{thresholds.get('compact_silence_cluster_hits_required')},"
+            f"compact_silence_cluster_max_span_seconds:{thresholds.get('compact_silence_cluster_max_span_seconds')},"
+            f"compact_silence_cluster_guard_window_seconds:{thresholds.get('compact_silence_cluster_guard_window_seconds')},"
+            f"compact_silence_cluster_guard_max_candidates:{thresholds.get('compact_silence_cluster_guard_max_candidates')},"
+            f"compact_silence_cluster_promotion_conf:{thresholds.get('compact_silence_cluster_promotion_conf')},"
             f"subtle_sparse_min_conf:{thresholds.get('subtle_sparse_min_conf')},"
             f"subtle_sparse_max_conf:{thresholds.get('subtle_sparse_max_conf')},"
             f"subtle_sparse_min_silence_ratio:{thresholds.get('subtle_sparse_min_silence_ratio')},"
@@ -773,6 +789,7 @@ def build_compact_report(
             "silence_gaps_persistent": sum(1 for r in rows if "silence_gaps_persistent" in (r.methods or "")),
             "envelope_discontinuity": sum(1 for r in rows if "envelope_discontinuity" in (r.methods or "")),
             "amplitude_modulation": sum(1 for r in rows if "amplitude_modulation" in (r.methods or "")),
+            "compact_silence_cluster": sum(1 for r in rows if "compact_silence_cluster" in (r.methods or "")),
             "subtle_sparse_cluster": sum(1 for r in rows if "subtle_sparse_cluster" in (r.methods or "")),
             "subtle_modulation_cluster": sum(1 for r in rows if "subtle_modulation_cluster" in (r.methods or "")),
             "burst_episode_cluster": sum(1 for r in rows if "burst_episode_cluster" in (r.methods or "")),
@@ -782,6 +799,7 @@ def build_compact_report(
             f"silence_rows:{method_presence['silence_gaps']},"
             f"envelope_rows:{method_presence['envelope_discontinuity']},"
             f"mod_rows:{method_presence['amplitude_modulation']},"
+            f"compact_silence_rows:{method_presence['compact_silence_cluster']},"
             f"subtle_sparse_rows:{method_presence['subtle_sparse_cluster']},"
             f"subtle_rows:{method_presence['subtle_modulation_cluster']},"
             f"burst_episode_rows:{method_presence['burst_episode_cluster']}"
@@ -1022,6 +1040,9 @@ def analyze_wav_file(
     long_window_sparse_burst_hits_ms: list[int] = []
     burst_episode_hits_ms: list[int] = []
     burst_episode_candidate_hits_ms: list[int] = []
+    compact_silence_cluster_hits_ms: list[int] = []
+    compact_silence_cluster_candidate_hits_ms: list[int] = []
+    compact_silence_modulation_feature_hits_ms: list[int] = []
     subtle_sparse_hits_ms: list[int] = []
     subtle_sparse_candidate_hits_ms: list[int] = []
     recent_modulation_hits_ms: list[int] = []
@@ -1057,6 +1078,7 @@ def analyze_wav_file(
         persistence_promoted = False
         subtle_sparse_promoted = False
         burst_episode_promoted = False
+        compact_silence_cluster_promoted = False
         subtle_modulation_promoted = False
         start_ms = int(round((start / loaded.sample_rate) * 1000.0))
         end_ms = int(round((end / loaded.sample_rate) * 1000.0))
@@ -1190,6 +1212,112 @@ def analyze_wav_file(
                     float(live_analysis.THRESHOLDS.get("long_window_sparse_uncorroborated_cap", 0.74)),
                 )
                 reasons = f"{reasons}; Uncorroborated long-window sparse cluster capped"
+
+        compact_silence_cluster_min_conf = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_min_conf", 0.68)
+        )
+        compact_silence_cluster_max_conf = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_max_conf", 0.75)
+        )
+        compact_silence_cluster_min_silence_ratio = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_min_silence_ratio", 0.70)
+        )
+        compact_silence_cluster_max_silence_ratio = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_max_silence_ratio", 0.82)
+        )
+        compact_silence_cluster_min_gap_ms = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_min_gap_ms", 500.0)
+        )
+        compact_silence_cluster_max_gap_count = max(
+            0, int(live_analysis.THRESHOLDS.get("compact_silence_cluster_max_gap_count", 1))
+        )
+        compact_silence_cluster_min_mod_strength = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_min_mod_strength", 3.8)
+        )
+        compact_silence_cluster_min_mod_depth = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_min_mod_depth", 0.90)
+        )
+        compact_silence_cluster_min_mod_concentration = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_min_mod_concentration", 0.10)
+        )
+        compact_silence_cluster_mod_halo_ms = max(
+            100,
+            int(round(float(live_analysis.THRESHOLDS.get("compact_silence_cluster_mod_halo_seconds", 1.0)) * 1000.0)),
+        )
+        compact_silence_cluster_hits_required = max(
+            2, int(live_analysis.THRESHOLDS.get("compact_silence_cluster_hits_required", 4))
+        )
+        compact_silence_cluster_max_span_ms = max(
+            100,
+            int(round(float(live_analysis.THRESHOLDS.get("compact_silence_cluster_max_span_seconds", 2.0)) * 1000.0)),
+        )
+        compact_silence_cluster_guard_window_ms = max(
+            5000,
+            int(round(float(live_analysis.THRESHOLDS.get("compact_silence_cluster_guard_window_seconds", 20.0)) * 1000.0)),
+        )
+        compact_silence_cluster_guard_max_candidates = max(
+            2, int(live_analysis.THRESHOLDS.get("compact_silence_cluster_guard_max_candidates", 12))
+        )
+        compact_silence_cluster_promotion_conf = float(
+            live_analysis.THRESHOLDS.get("compact_silence_cluster_promotion_conf", 0.76)
+        )
+        compact_modulation_window_hit = (
+            mod_strength >= compact_silence_cluster_min_mod_strength
+            and mod_depth >= compact_silence_cluster_min_mod_depth
+            and mod_peak_concentration >= compact_silence_cluster_min_mod_concentration
+        )
+        if compact_modulation_window_hit:
+            compact_silence_modulation_feature_hits_ms.append(start_ms)
+        compact_silence_modulation_feature_hits_ms = [
+            t for t in compact_silence_modulation_feature_hits_ms if (start_ms - t) <= compact_silence_cluster_guard_window_ms
+        ]
+        compact_modulation_corroborated = any(
+            abs(start_ms - mod_ms) <= compact_silence_cluster_mod_halo_ms
+            for mod_ms in compact_silence_modulation_feature_hits_ms
+        )
+        compact_silence_cluster_candidate = (
+            int(window_ms) < 1600
+            and silence_choppy
+            and not envelope_hit
+            and compact_silence_cluster_min_conf <= confidence < compact_silence_cluster_max_conf
+            and compact_silence_cluster_min_silence_ratio <= silence_ratio <= compact_silence_cluster_max_silence_ratio
+            and silence_max_gap_ms >= compact_silence_cluster_min_gap_ms
+            and silence_gap_count <= compact_silence_cluster_max_gap_count
+            and compact_modulation_corroborated
+        )
+        compact_silence_cluster_hits_ms = [
+            t for t in compact_silence_cluster_hits_ms if (start_ms - t) <= compact_silence_cluster_guard_window_ms
+        ]
+        compact_silence_cluster_candidate_hits_ms = [
+            t for t in compact_silence_cluster_candidate_hits_ms if (start_ms - t) <= compact_silence_cluster_guard_window_ms
+        ]
+        if compact_silence_cluster_candidate:
+            if (
+                not compact_silence_cluster_candidate_hits_ms
+                or (start_ms - compact_silence_cluster_candidate_hits_ms[-1]) >= 150
+            ):
+                compact_silence_cluster_candidate_hits_ms.append(start_ms)
+            if (
+                not compact_silence_cluster_hits_ms
+                or (start_ms - compact_silence_cluster_hits_ms[-1]) >= 150
+            ):
+                compact_silence_cluster_hits_ms.append(start_ms)
+        if len(compact_silence_cluster_candidate_hits_ms) > compact_silence_cluster_guard_max_candidates:
+            compact_silence_cluster_hits_ms = []
+        compact_silence_cluster_hit_count = len(compact_silence_cluster_hits_ms)
+        compact_silence_cluster_span_ms = (
+            (compact_silence_cluster_hits_ms[-1] - compact_silence_cluster_hits_ms[0])
+            if compact_silence_cluster_hit_count >= 2 else 0
+        )
+        if (
+            compact_silence_cluster_candidate
+            and len(compact_silence_cluster_candidate_hits_ms) <= compact_silence_cluster_guard_max_candidates
+            and compact_silence_cluster_hit_count >= compact_silence_cluster_hits_required
+            and compact_silence_cluster_span_ms <= compact_silence_cluster_max_span_ms
+        ):
+            confidence = max(confidence, compact_silence_cluster_promotion_conf)
+            reasons = f"{reasons}; Compact repeated silence-gap burst"
+            compact_silence_cluster_promoted = True
 
         subtle_sparse_min_conf = float(live_analysis.THRESHOLDS.get("subtle_sparse_min_conf", 0.68))
         subtle_sparse_max_conf = float(live_analysis.THRESHOLDS.get("subtle_sparse_max_conf", 0.75))
@@ -1377,6 +1505,8 @@ def analyze_wav_file(
             active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
         if subtle_sparse_promoted:
             active_methods = tuple(sorted(set(active_methods) | {"subtle_sparse_cluster"}))
+        if compact_silence_cluster_promoted:
+            active_methods = tuple(sorted(set(active_methods) | {"compact_silence_cluster"}))
         if burst_episode_promoted:
             active_methods = tuple(sorted(set(active_methods) | {"burst_episode_cluster"}))
         if subtle_modulation_promoted:

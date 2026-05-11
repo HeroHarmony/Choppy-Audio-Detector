@@ -6,6 +6,8 @@ __pycache__/
 .venv/
 .vscode/
 Log/
+Clips/
+Reports/
 settings.json
 *.local.settings.json
 build/

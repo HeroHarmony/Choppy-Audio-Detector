@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from choppy_detector_gui.settings import normalize_twitch_username
+
 
 def apply_settings_to_controls(window) -> None:
     window.auto_restart_minutes.setValue(window.settings.auto_restart_minutes)
@@ -20,6 +22,8 @@ def apply_settings_to_controls(window) -> None:
     window.rebuild_command.setText(commands.rebuild_command)
     window.clip_command.setText(commands.clip_command)
     window.switch_device_command_prefix.setText(commands.switch_device_command_prefix)
+    window.allow_broadcaster_commands.setChecked(commands.allow_broadcaster)
+    window.allow_moderator_commands.setChecked(commands.allow_moderators)
     window.allowed_chat_users.setPlainText("\n".join(commands.allowed_chat_users))
     window.send_command_responses.setChecked(commands.send_command_responses)
     window.logs_enabled.setChecked(window.settings.log_settings.logs_enabled)
@@ -52,6 +56,8 @@ def collect_settings_from_controls(window) -> None:
     commands.rebuild_command = window.rebuild_command.text().strip()
     commands.clip_command = window.clip_command.text().strip()
     commands.switch_device_command_prefix = window.switch_device_command_prefix.text().strip()
+    commands.allow_broadcaster = window.allow_broadcaster_commands.isChecked()
+    commands.allow_moderators = window.allow_moderator_commands.isChecked()
     commands.allowed_chat_users = _allowed_chat_users(window)
     commands.send_command_responses = window.send_command_responses.isChecked()
     window.settings.log_settings.logs_enabled = window.logs_enabled.isChecked()
@@ -87,6 +93,8 @@ def settings_dirty(window) -> bool:
             window.rebuild_command.text().strip() != commands.rebuild_command,
             window.clip_command.text().strip() != commands.clip_command,
             window.switch_device_command_prefix.text().strip() != commands.switch_device_command_prefix,
+            window.allow_broadcaster_commands.isChecked() != commands.allow_broadcaster,
+            window.allow_moderator_commands.isChecked() != commands.allow_moderators,
             allowed_users != commands.allowed_chat_users,
             window.send_command_responses.isChecked() != commands.send_command_responses,
             window.logs_enabled.isChecked() != window.settings.log_settings.logs_enabled,
@@ -105,7 +113,9 @@ def settings_dirty(window) -> bool:
 
 def _allowed_chat_users(window) -> list[str]:
     return [
-        line.strip().lower()
-        for line in window.allowed_chat_users.toPlainText().splitlines()
-        if line.strip()
+        normalized
+        for normalized in (
+            normalize_twitch_username(line) for line in window.allowed_chat_users.toPlainText().splitlines()
+        )
+        if normalized
     ]

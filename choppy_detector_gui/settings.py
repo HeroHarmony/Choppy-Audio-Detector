@@ -137,6 +137,11 @@ DEFAULT_THRESHOLDS = {
 }
 
 
+def normalize_twitch_username(value: str) -> str:
+    """Normalize Twitch usernames for case-insensitive checks."""
+    return str(value or "").strip().lstrip("@").casefold()
+
+
 @dataclass
 class ChatCommandSettings:
     chat_commands_enabled: bool = False
@@ -182,7 +187,11 @@ class ChatCommandSettings:
             rebuild_completed_response_template=str(
                 data.get("rebuild_completed_response_template") or cls.rebuild_completed_response_template
             ),
-            allowed_chat_users=[str(user).strip().lower() for user in users if str(user).strip()],
+            allowed_chat_users=[
+                normalized
+                for normalized in (normalize_twitch_username(str(user)) for user in users)
+                if normalized
+            ],
             allow_broadcaster=bool(data.get("allow_broadcaster", True)),
             allow_moderators=bool(data.get("allow_moderators", True)),
             send_command_responses=bool(data.get("send_command_responses", True)),

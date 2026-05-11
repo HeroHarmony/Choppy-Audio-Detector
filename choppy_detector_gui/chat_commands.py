@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .settings import ChatCommandSettings
+from .settings import ChatCommandSettings, normalize_twitch_username
 
 
 @dataclass(frozen=True)
@@ -26,8 +26,8 @@ def normalize_command(value: str) -> str:
 
 
 def is_authorized(user: ChatUser, settings: ChatCommandSettings) -> bool:
-    username = user.username.strip().lower()
-    allowed = {name.strip().lower() for name in settings.allowed_chat_users if name.strip()}
+    username = normalize_twitch_username(user.username)
+    allowed = {normalize_twitch_username(name) for name in settings.allowed_chat_users if name.strip()}
     if username in allowed:
         return True
     if settings.allow_broadcaster and user.is_broadcaster:

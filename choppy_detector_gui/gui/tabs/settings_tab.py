@@ -146,6 +146,17 @@ def build_settings_tab(window) -> None:
     commands_form.addRow("Capture clip", window.clip_command)
     commands_form.addRow("Switch device prefix", window.switch_device_command_prefix)
 
+    window.allow_broadcaster_commands = QCheckBox("Allow broadcaster")
+    window.allow_moderator_commands = QCheckBox("Allow moderators")
+    permission_row = QWidget()
+    permission_row_layout = QHBoxLayout(permission_row)
+    permission_row_layout.setContentsMargins(0, 0, 0, 0)
+    permission_row_layout.setSpacing(12)
+    permission_row_layout.addWidget(window.allow_broadcaster_commands)
+    permission_row_layout.addWidget(window.allow_moderator_commands)
+    permission_row_layout.addStretch(1)
+    commands_form.addRow("Role bypass", permission_row)
+
     window.allowed_chat_users = QPlainTextEdit()
     window.allowed_chat_users.setPlaceholderText("One Twitch username per line")
     window.allowed_chat_users.setFixedHeight(120)

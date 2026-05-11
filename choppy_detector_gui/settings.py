@@ -41,6 +41,7 @@ DEFAULT_ALERT_CONFIG = {
     "possible_log_min_confidence": 0.70,
     "possible_log_interval_seconds": 10.0,
     "enable_subtle_modulation_promotion": False,
+    "enable_burst_episode_promotion": False,
     "max_alert_age_seconds": 15.0,
     "max_alert_send_window_seconds": 8.0,
     "twitch_send_failures_for_pause": 3,
@@ -48,18 +49,18 @@ DEFAULT_ALERT_CONFIG = {
 }
 
 DEFAULT_THRESHOLDS = {
-    "silence_ratio": 0.60,
+    "silence_ratio": 0.70,
     "amplitude_jump": 2.5,
     "envelope_discontinuity": 2.0,
     "modulation_freq_min_hz": 15.0,
     "modulation_freq_max_hz": 36.0,
-    "modulation_strength": 8.5,
+    "modulation_strength": 6.3,
     "modulation_depth": 0.42,
     "modulation_peak_concentration": 0.20,
-    "gap_duration_ms": 100,
+    "gap_duration_ms": 180,
     "min_audio_level": 0.005,
     "max_normal_gaps": 2,
-    "suspicious_gap_count": 4,
+    "suspicious_gap_count": 7,
     "silence_guardrail_cap": 0.72,
     "silence_extreme_ratio": 0.92,
     "silence_extreme_gap_ms": 800,
@@ -68,8 +69,15 @@ DEFAULT_THRESHOLDS = {
     "silence_persistence_require_modulation_hit": True,
     "burst_promotion_require_modulation_hit": True,
     "long_window_sparse_promotion_require_modulation_hit": True,
-    "burst_promotion_uncorroborated_cap": 0.74,
-    "long_window_sparse_uncorroborated_cap": 0.74,
+    "burst_promotion_uncorroborated_cap": 0.75,
+    "long_window_sparse_uncorroborated_cap": 0.75,
+    "burst_episode_window_seconds": 8.0,
+    "burst_episode_hits_required": 5,
+    "burst_episode_min_conf": 0.68,
+    "burst_episode_max_conf": 0.75,
+    "burst_episode_min_gap_ms": 500,
+    "burst_episode_max_density_per_second": 0.55,
+    "burst_episode_promotion_conf": 0.76,
 }
 
 

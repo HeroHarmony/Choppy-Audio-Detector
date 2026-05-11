@@ -475,6 +475,14 @@ class MainWindow(QMainWindow):
                 1,
                 1,
             ),
+            (
+                "enable_burst_episode_promotion",
+                "Enable experimental sparse burst-episode promotion path.",
+                "bool",
+                0,
+                1,
+                1,
+            ),
             ("max_alert_age_seconds", "Drop queued alerts older than this age.", "float", 1.0, 120.0, 0.5),
             ("max_alert_send_window_seconds", "Max send+retry window before giving up.", "float", 0.5, 60.0, 0.5),
             ("twitch_send_failures_for_pause", "Consecutive send failures before pausing alerts.", "int", 1, 20, 1),
@@ -505,6 +513,13 @@ class MainWindow(QMainWindow):
             ("long_window_sparse_promotion_require_modulation_hit", "Require modulation hit for long-window sparse promotion.", "bool", 0, 1, 1),
             ("burst_promotion_uncorroborated_cap", "Cap for uncorroborated burst-cluster promotion confidence.", "float", 0.0, 1.0, 0.01),
             ("long_window_sparse_uncorroborated_cap", "Cap for uncorroborated long-window sparse promotion confidence.", "float", 0.0, 1.0, 0.01),
+            ("burst_episode_window_seconds", "Rolling horizon for sparse burst-episode accumulation.", "float", 1.0, 60.0, 0.1),
+            ("burst_episode_hits_required", "Burst-episode hits required before promotion.", "int", 2, 40, 1),
+            ("burst_episode_min_conf", "Minimum near-threshold confidence for burst-episode candidates.", "float", 0.0, 1.0, 0.01),
+            ("burst_episode_max_conf", "Maximum near-threshold confidence (exclusive) for burst-episode candidates.", "float", 0.0, 1.0, 0.01),
+            ("burst_episode_min_gap_ms", "Minimum max-gap size for burst-episode candidates.", "int", 50, 3000, 10),
+            ("burst_episode_max_density_per_second", "Maximum burst-episode hit density per second.", "float", 0.05, 5.0, 0.01),
+            ("burst_episode_promotion_conf", "Confidence assigned when burst-episode promotion triggers.", "float", 0.0, 1.0, 0.01),
         )
 
     def methods_schema(self):

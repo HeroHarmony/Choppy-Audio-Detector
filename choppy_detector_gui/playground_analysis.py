@@ -371,6 +371,13 @@ def build_compact_report(
             f"long_window_sparse_promotion_require_modulation_hit:{1 if bool(thresholds.get('long_window_sparse_promotion_require_modulation_hit')) else 0},"
             f"burst_promotion_uncorroborated_cap:{thresholds.get('burst_promotion_uncorroborated_cap')},"
             f"long_window_sparse_uncorroborated_cap:{thresholds.get('long_window_sparse_uncorroborated_cap')},"
+            f"burst_episode_window_seconds:{thresholds.get('burst_episode_window_seconds')},"
+            f"burst_episode_hits_required:{thresholds.get('burst_episode_hits_required')},"
+            f"burst_episode_min_conf:{thresholds.get('burst_episode_min_conf')},"
+            f"burst_episode_max_conf:{thresholds.get('burst_episode_max_conf')},"
+            f"burst_episode_min_gap_ms:{thresholds.get('burst_episode_min_gap_ms')},"
+            f"burst_episode_max_density_per_second:{thresholds.get('burst_episode_max_density_per_second')},"
+            f"burst_episode_promotion_conf:{thresholds.get('burst_episode_promotion_conf')},"
             f"envelope_discontinuity:{thresholds.get('envelope_discontinuity')},"
             f"modulation_strength:{thresholds.get('modulation_strength')},"
             f"modulation_depth:{thresholds.get('modulation_depth')},"
@@ -549,13 +556,18 @@ def build_compact_report(
             "silence_gaps_persistent": sum(1 for r in rows if "silence_gaps_persistent" in (r.methods or "")),
             "envelope_discontinuity": sum(1 for r in rows if "envelope_discontinuity" in (r.methods or "")),
             "amplitude_modulation": sum(1 for r in rows if "amplitude_modulation" in (r.methods or "")),
+            "subtle_modulation_cluster": sum(1 for r in rows if "subtle_modulation_cluster" in (r.methods or "")),
+            "burst_episode_cluster": sum(1 for r in rows if "burst_episode_cluster" in (r.methods or "")),
         }
         promotion_audit = (
             f"persistent_rows:{method_presence['silence_gaps_persistent']},"
             f"silence_rows:{method_presence['silence_gaps']},"
             f"envelope_rows:{method_presence['envelope_discontinuity']},"
-            f"mod_rows:{method_presence['amplitude_modulation']}"
+            f"mod_rows:{method_presence['amplitude_modulation']},"
+            f"subtle_rows:{method_presence['subtle_modulation_cluster']},"
+            f"burst_episode_rows:{method_presence['burst_episode_cluster']}"
         )
+        alert_cfg = settings.advanced_alert_config if isinstance(settings.advanced_alert_config, dict) else {}
 
         lines.extend(
             [
@@ -576,6 +588,11 @@ def build_compact_report(
                     f"mod_conc[{range_text(modulation_conc_values)}]"
                 ),
                 f"promotion_audit={promotion_audit}",
+                (
+                    "promotion_toggles="
+                    f"subtle_modulation:{1 if bool(alert_cfg.get('enable_subtle_modulation_promotion', False)) else 0},"
+                    f"burst_episode:{1 if bool(alert_cfg.get('enable_burst_episode_promotion', False)) else 0}"
+                ),
             ]
         )
     else:
@@ -777,6 +794,7 @@ def analyze_wav_file(
     silence_persistence_hits_ms: list[int] = []
     burst_cluster_hits_ms: list[int] = []
     long_window_sparse_burst_hits_ms: list[int] = []
+    burst_episode_hits_ms: list[int] = []
     subtle_modulation_hits_ms: list[int] = []
     last_detection_ms = -10_000_000
     last_detection_signature = ""
@@ -805,6 +823,7 @@ def analyze_wav_file(
         envelope_hit = bool((results.get("envelope_discontinuity", {}) or {}).get("choppy", False))
         modulation_hit = bool((results.get("amplitude_modulation", {}) or {}).get("choppy", False))
         persistence_promoted = False
+        burst_episode_promoted = False
         subtle_modulation_promoted = False
         start_ms = int(round((start / loaded.sample_rate) * 1000.0))
         end_ms = int(round((end / loaded.sample_rate) * 1000.0))
@@ -925,6 +944,35 @@ def analyze_wav_file(
                 )
                 reasons = f"{reasons}; Uncorroborated long-window sparse cluster capped"
 
+        if bool(live_analysis.ALERT_CONFIG.get("enable_burst_episode_promotion", False)):
+            episode_min_conf = float(live_analysis.THRESHOLDS.get("burst_episode_min_conf", 0.68))
+            episode_max_conf = float(live_analysis.THRESHOLDS.get("burst_episode_max_conf", 0.75))
+            episode_min_gap_ms = float(live_analysis.THRESHOLDS.get("burst_episode_min_gap_ms", 500.0))
+            episode_window_ms = max(
+                1000, int(round(float(live_analysis.THRESHOLDS.get("burst_episode_window_seconds", 8.0)) * 1000.0))
+            )
+            episode_hits_required = max(2, int(live_analysis.THRESHOLDS.get("burst_episode_hits_required", 5)))
+            episode_max_density = max(
+                0.05, float(live_analysis.THRESHOLDS.get("burst_episode_max_density_per_second", 0.55))
+            )
+            episode_promotion_conf = float(live_analysis.THRESHOLDS.get("burst_episode_promotion_conf", 0.76))
+            episode_candidate = (
+                silence_choppy
+                and not envelope_hit
+                and episode_min_conf <= confidence < episode_max_conf
+                and silence_max_gap_ms >= episode_min_gap_ms
+            )
+            burst_episode_hits_ms = [t for t in burst_episode_hits_ms if (start_ms - t) <= episode_window_ms]
+            if episode_candidate:
+                if not burst_episode_hits_ms or (start_ms - burst_episode_hits_ms[-1]) >= 180:
+                    burst_episode_hits_ms.append(start_ms)
+            hit_count = len(burst_episode_hits_ms)
+            density_per_second = hit_count / max((episode_window_ms / 1000.0), 0.001)
+            if hit_count >= episode_hits_required and density_per_second <= episode_max_density:
+                confidence = max(confidence, episode_promotion_conf)
+                reasons = f"{reasons}; Sparse burst-episode pattern"
+                burst_episode_promoted = True
+
         if bool(live_analysis.ALERT_CONFIG.get("enable_subtle_modulation_promotion", False)):
             # Subtle low-ambient path:
             # Recover gradual/ambient glitch texture where hard gap detectors stay below threshold.
@@ -982,6 +1030,8 @@ def analyze_wav_file(
         )
         if persistence_promoted:
             active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
+        if burst_episode_promoted:
+            active_methods = tuple(sorted(set(active_methods) | {"burst_episode_cluster"}))
         if subtle_modulation_promoted:
             active_methods = tuple(sorted(set(active_methods) | {"subtle_modulation_cluster"}))
         signature = "|".join(active_methods)

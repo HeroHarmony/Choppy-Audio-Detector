@@ -125,6 +125,7 @@ ALERT_CONFIG = {
     'possible_log_min_confidence': 0.70, # Only log stronger low-confidence hits
     'possible_log_interval_seconds': 10.0,# Throttle repeated "possible" logs
     'enable_subtle_modulation_promotion': False,  # Experimental subtle ambient promotion path
+    'enable_burst_episode_promotion': False,      # Experimental sparse burst-episode promotion path
     'max_alert_age_seconds': 15.0,       # Drop stale queued alerts
     'max_alert_send_window_seconds': 8.0,# Give up on sending if retries exceed this window
     'twitch_send_failures_for_pause': 3, # Consecutive send failures before pausing
@@ -137,18 +138,18 @@ BASELINE_CLEAN_LOCK_SECONDS = 20.0
 
 # More reasonable thresholds for streaming glitch detection
 THRESHOLDS = {
-    'silence_ratio': 0.60,         # Only flag if >60% silence (major dropouts)
+    'silence_ratio': 0.70,         # Tuned baseline: stricter silence gating
     'amplitude_jump': 2.5,         # Much higher - only flag dramatic jumps
     'envelope_discontinuity': 2.0, # Higher threshold
     'modulation_freq_min_hz': 15.0,  # Ignore normal speech cadence (<15Hz)
     'modulation_freq_max_hz': 36.0,  # Focus on rapid glitchy flutter
-    'modulation_strength': 8.5,      # Peak-vs-floor ratio in modulation band
+    'modulation_strength': 6.3,      # Tuned baseline for modulation corroboration
     'modulation_depth': 0.42,        # Required envelope flutter depth
     'modulation_peak_concentration': 0.20,  # Require narrow, strong modulation peak
-    'gap_duration_ms': 100,        # Flag gaps longer than 100ms (significant dropouts)
+    'gap_duration_ms': 180,        # Tuned baseline: longer gaps only
     'min_audio_level': 0.005,      # Minimum RMS to even analyze
     'max_normal_gaps': 2,          # Max gaps allowed in normal audio
-    'suspicious_gap_count': 4,     # Number of gaps that suggests real problems
+    'suspicious_gap_count': 7,     # Tuned baseline: higher gap count required
     'silence_guardrail_cap': 0.72,  # Max confidence for uncorroborated silence-only hits
     'silence_extreme_ratio': 0.92,  # Extreme silence ratio escape hatch
     'silence_extreme_gap_ms': 800,  # Extreme max-gap escape hatch
@@ -157,8 +158,15 @@ THRESHOLDS = {
     'silence_persistence_require_modulation_hit': True,  # Require modulation hit for persistence promotion
     'burst_promotion_require_modulation_hit': True,  # Require modulation hit for burst-cluster promotion
     'long_window_sparse_promotion_require_modulation_hit': True,  # Require modulation hit for long-window sparse promotion
-    'burst_promotion_uncorroborated_cap': 0.74,  # Cap for uncorroborated burst promotion
-    'long_window_sparse_uncorroborated_cap': 0.74,  # Cap for uncorroborated long-window sparse promotion
+    'burst_promotion_uncorroborated_cap': 0.75,  # Tuned cap for uncorroborated burst promotion
+    'long_window_sparse_uncorroborated_cap': 0.75,  # Tuned cap for uncorroborated long-window sparse promotion
+    'burst_episode_window_seconds': 8.0,  # Rolling horizon for sparse burst-episode evidence
+    'burst_episode_hits_required': 5,  # Distinct burst hits needed in episode horizon
+    'burst_episode_min_conf': 0.68,  # Lower bound for near-threshold burst candidates
+    'burst_episode_max_conf': 0.75,  # Upper bound (exclusive) for near-threshold burst candidates
+    'burst_episode_min_gap_ms': 500,  # Minimum max-gap signal for burst-episode candidate
+    'burst_episode_max_density_per_second': 0.55,  # Reject dense continuous patterns (speech/ambience)
+    'burst_episode_promotion_conf': 0.76,  # Promoted confidence when burst-episode evidence passes
 }
 
 def list_audio_devices():
@@ -1352,6 +1360,7 @@ class BalancedChoppyDetector:
         silence_persistence_hits = deque(maxlen=32)
         burst_cluster_hits = deque(maxlen=64)
         long_window_sparse_burst_hits = deque(maxlen=64)
+        burst_episode_hits = deque(maxlen=128)
         subtle_modulation_hits = deque(maxlen=96)
         
         print("Listening for streaming audio glitches...")
@@ -1498,6 +1507,7 @@ class BalancedChoppyDetector:
                 envelope_hit = bool(results.get('envelope_discontinuity', {}).get('choppy', False))
                 modulation_hit = bool(results.get('amplitude_modulation', {}).get('choppy', False))
                 persistence_promoted = False
+                burst_episode_promoted = False
                 subtle_modulation_promoted = False
                 severe_silence_ratio = max(float(THRESHOLDS['silence_ratio']) + 0.08, 0.68)
                 severe_gap_pattern = (
@@ -1614,6 +1624,34 @@ class BalancedChoppyDetector:
                         )
                         reasons = f"{reasons}; Uncorroborated long-window sparse cluster capped"
 
+                if bool(ALERT_CONFIG.get('enable_burst_episode_promotion', False)):
+                    episode_min_conf = float(THRESHOLDS.get('burst_episode_min_conf', 0.68))
+                    episode_max_conf = float(THRESHOLDS.get('burst_episode_max_conf', 0.75))
+                    episode_min_gap_ms = float(THRESHOLDS.get('burst_episode_min_gap_ms', 500.0))
+                    episode_window_seconds = max(1.0, float(THRESHOLDS.get('burst_episode_window_seconds', 8.0)))
+                    episode_hits_required = max(2, int(THRESHOLDS.get('burst_episode_hits_required', 5)))
+                    episode_max_density = max(
+                        0.05, float(THRESHOLDS.get('burst_episode_max_density_per_second', 0.55))
+                    )
+                    episode_promotion_conf = float(THRESHOLDS.get('burst_episode_promotion_conf', 0.76))
+                    episode_candidate = (
+                        silence_choppy
+                        and not envelope_hit
+                        and episode_min_conf <= confidence < episode_max_conf
+                        and silence_max_gap_ms >= episode_min_gap_ms
+                    )
+                    while burst_episode_hits and (current_time - burst_episode_hits[0]) > episode_window_seconds:
+                        burst_episode_hits.popleft()
+                    if episode_candidate:
+                        if not burst_episode_hits or (current_time - burst_episode_hits[-1]) >= 0.18:
+                            burst_episode_hits.append(current_time)
+                    hit_count = len(burst_episode_hits)
+                    density_per_second = hit_count / max(episode_window_seconds, 0.001)
+                    if hit_count >= episode_hits_required and density_per_second <= episode_max_density:
+                        confidence = max(confidence, episode_promotion_conf)
+                        reasons = f"{reasons}; Sparse burst-episode pattern"
+                        burst_episode_promoted = True
+
                 if bool(ALERT_CONFIG.get('enable_subtle_modulation_promotion', False)):
                     # Subtle low-ambient path:
                     # Recover gradual/ambient glitch texture where hard gap detectors stay below threshold.
@@ -1685,6 +1723,8 @@ class BalancedChoppyDetector:
                 active_methods = tuple(sorted(method for method, result in results.items() if result.get('choppy')))
                 if persistence_promoted:
                     active_methods = tuple(sorted(set(active_methods) | {"silence_gaps_persistent"}))
+                if burst_episode_promoted:
+                    active_methods = tuple(sorted(set(active_methods) | {"burst_episode_cluster"}))
                 if subtle_modulation_promoted:
                     active_methods = tuple(sorted(set(active_methods) | {"subtle_modulation_cluster"}))
                 current_signature = "|".join(active_methods)
@@ -1725,6 +1765,8 @@ class BalancedChoppyDetector:
                 ]
                 if persistence_promoted:
                     active_methods = sorted(set(active_methods) | {"silence_gaps_persistent"})
+                if burst_episode_promoted:
+                    active_methods = sorted(set(active_methods) | {"burst_episode_cluster"})
                 should_alert, detection_count, time_span, cooldown_remaining, alert_path, burst_count = self.should_send_alert()
                 self.emit_event(
                     "glitch.detected",

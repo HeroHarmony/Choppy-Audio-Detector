@@ -30,6 +30,12 @@ class ObsWebSocketService:
         self._connected = False
         self._last_error = ""
 
+    def _mark_disconnected(self, error: str = "") -> None:
+        with self._lock:
+            self._client = None
+            self._connected = False
+            self._last_error = str(error or "")
+
     @property
     def is_connected(self) -> bool:
         with self._lock:
@@ -89,9 +95,7 @@ class ObsWebSocketService:
                 return False, f"Failed to connect to OBS: {exc}{guidance}"
 
     def disconnect(self) -> None:
-        with self._lock:
-            self._client = None
-            self._connected = False
+        self._mark_disconnected("")
 
     def list_sources(self) -> list[str]:
         with self._lock:
@@ -104,7 +108,8 @@ class ObsWebSocketService:
             inputs = client.get_input_list().inputs
             names = [str(item.get("inputName", "")).strip() for item in inputs]
             return sorted([name for name in names if name])
-        except Exception:
+        except Exception as exc:
+            self._mark_disconnected(str(exc))
             return []
 
     def list_scenes(self) -> list[str]:
@@ -118,7 +123,8 @@ class ObsWebSocketService:
             scenes = client.get_scene_list().scenes
             names = [str(item.get("sceneName", "")).strip() for item in scenes]
             return [name for name in names if name]
-        except Exception:
+        except Exception as exc:
+            self._mark_disconnected(str(exc))
             return []
 
     def current_program_scene(self) -> str:
@@ -129,7 +135,8 @@ class ObsWebSocketService:
             return ""
         try:
             response = client.get_current_program_scene()
-        except Exception:
+        except Exception as exc:
+            self._mark_disconnected(str(exc))
             return ""
         for attr in ("current_program_scene_name", "currentProgramSceneName"):
             value = getattr(response, attr, "")
@@ -178,9 +185,10 @@ class ObsWebSocketService:
                     f"with {delay_sec:.2f}s off/on delay"
                     + (f" in scene '{scene_name}'." if scene_name else ".")
                 )
-        except Exception:
+        except Exception as exc:
+            self._mark_disconnected(str(exc))
             # Continue to media restart fallback below.
-            pass
+            return False, f"OBS connection lost while refreshing source: {exc}"
 
         # Fallback: restart media input directly when no scene-item toggle target is found.
         try:
@@ -190,8 +198,22 @@ class ObsWebSocketService:
                 "Note: restart fallback does not keep the source off for the configured delay."
             )
         except Exception as exc:
+            self._mark_disconnected(str(exc))
             return False, (
                 f"Failed to refresh source '{source_name}'. "
                 "No scene item toggle target was found and media restart fallback failed: "
                 f"{exc}"
             )
+
+    def poll_connection_health(self) -> tuple[bool, str]:
+        with self._lock:
+            client = self._client
+            connected = self._connected
+        if not connected or client is None:
+            return False, self.last_error or "OBS is not connected."
+        try:
+            client.get_version()
+            return True, ""
+        except Exception as exc:
+            self._mark_disconnected(str(exc))
+            return False, str(exc)

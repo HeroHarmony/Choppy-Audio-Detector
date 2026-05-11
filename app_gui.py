@@ -303,6 +303,9 @@ class MainWindow(QMainWindow):
         self.obs_scene_watch_timer = QTimer(self)
         self.obs_scene_watch_timer.timeout.connect(self.check_obs_scene_rebuild_automation)
         self.obs_scene_watch_timer.start(1000)
+        self.obs_health_timer = QTimer(self)
+        self.obs_health_timer.timeout.connect(self.check_obs_connection_health)
+        self.obs_health_timer.start(3000)
         self.meter_preview_timer = QTimer(self)
         self.meter_preview_timer.timeout.connect(self.refresh_meter_preview_ui)
         self.update_meter_refresh_timer()
@@ -2437,6 +2440,20 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.append_console(f"OBS scene automation skipped baseline relearn: {message}")
+
+    def check_obs_connection_health(self) -> None:
+        if not self.settings.obs_websocket.enabled:
+            return
+        if not self.obs_service.is_connected:
+            self.update_obs_controls_enabled()
+            return
+        ok, message = self.obs_service.poll_connection_health()
+        if ok:
+            return
+        detail = str(message or self.obs_service.last_error or "Connection lost.").strip()
+        self.set_obs_status("Disconnected", "#ff9c4a")
+        self.append_console(f"OBS connection lost: {detail}")
+        self.update_obs_controls_enabled()
 
     def _run_obs_task(self, action: str, fn, context: dict[str, object] | None = None) -> None:
         def worker() -> None:
